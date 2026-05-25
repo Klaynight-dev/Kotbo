@@ -70,6 +70,7 @@ import * as statsCmd from './commands/stats.js';
 import * as invitesCmd from './commands/invites.js';
 import * as activateCmd from './commands/activate.js';
 import * as sayCmd from './commands/say.js';
+import * as verifpseudoCmd from './commands/verifpseudo.js';
 import { loadActivatedGuilds, isGuildActivated } from './utils/activation.js';
 
 initBotSentry();
@@ -166,7 +167,7 @@ type SlashCommand = {
 import * as demissionCmd from './commands/demission.js';
 
 const commands = new Collection<string, SlashCommand>();
-[setupCmd, configCmd, pingCmd, infoCmd, excuseCmd, epochCmd, devutilsCmd, statusCmd, adminCmd, helpCmd, postCmd, dailyAlgoCmd, profileCmd, profilCmd, sanctionCmd, dcCmd, casierCmd, absentCmd, meetingCmd, statsCmd, invitesCmd, leaderboardCmd, serverstatsCmd, noteCmd, eventCmd, activateCmd, transcriptCmd, sayCmd, demissionCmd].forEach((cmd) => {
+[setupCmd, configCmd, pingCmd, infoCmd, excuseCmd, epochCmd, devutilsCmd, statusCmd, adminCmd, helpCmd, postCmd, dailyAlgoCmd, profileCmd, profilCmd, sanctionCmd, dcCmd, casierCmd, absentCmd, meetingCmd, statsCmd, invitesCmd, leaderboardCmd, serverstatsCmd, noteCmd, eventCmd, activateCmd, transcriptCmd, sayCmd, demissionCmd, verifpseudoCmd].forEach((cmd) => {
   commands.set(cmd.data.name, cmd as SlashCommand);
 });
 commands.set(noteCmd.contextData.name, noteCmd as unknown as SlashCommand);

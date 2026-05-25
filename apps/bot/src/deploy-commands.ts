@@ -29,6 +29,7 @@ import * as noteCmd from './commands/note.js';
 import * as transcriptCmd from './commands/transcript.js';
 import * as sayCmd from './commands/say.js';
 import * as demissionCmd from './commands/demission.js';
+import * as verifpseudoCmd from './commands/verifpseudo.js';
 const commands = [
   setupCmd,
   configCmd,
@@ -55,6 +56,7 @@ const commands = [
   transcriptCmd,
   sayCmd,
   demissionCmd,
+  verifpseudoCmd,
   { data: noteCmd.contextData },
   { data: casierCmd.contextData },
   { data: sanctionCmd.contextData },
