@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
   import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
   import InlineFeedback from '../lib/components/InlineFeedback.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
+  import { authStore } from '../lib/stores/auth.svelte';
   import {
     fetchNicknameModerationConfig,
     updateNicknameModerationConfig,
@@ -79,6 +80,26 @@
     } finally {
       loading = false;
     }
+
+    // Écoute les événements WebSocket pour les mots bannis personnalisés du serveur courant
+    // Un autre admin a peut-être ajouté/supprimé/modifié un mot en temps réel sur ce serveur
+    async function handleWsMessage(event: Event) {
+      const { detail } = event as CustomEvent;
+      if (detail?.type !== 'banned_words_changed') return;
+      if (detail?.guildId !== authStore.selectedGuildId) return;
+      try {
+        const words = await fetchBannedWords();
+        if (words) {
+          globalWords = words.global ?? [];
+          customWords = words.custom ?? [];
+        }
+      } catch {
+        // Silencieux — la liste sera mise à jour au prochain chargement
+      }
+    }
+
+    window.addEventListener('kotbo-ws-message', handleWsMessage);
+    return () => window.removeEventListener('kotbo-ws-message', handleWsMessage);
   });
 
   // ---------------------------------------------------------------------------
@@ -108,7 +129,7 @@
       async () => {
         const res = await addBannedWord(trimmed, newCategory);
         if (!res?.id) throw new Error('Erreur lors de l\'ajout');
-        customWords = [...customWords, { id: res.id, word: trimmed, category: newCategory, enabled: true, guildId: null }];
+        customWords = [...customWords, { id: res.id, word: trimmed, category: newCategory, enabled: true, guildId: authStore.selectedGuildId }];
         newWord = '';
         return true;
       },
@@ -209,9 +230,9 @@
       <div class="flex flex-col gap-1">
         <h2 class="text-base font-black tracking-tight text-on-surface">Mots bannis</h2>
         <p class="text-sm text-on-surface-variant/70">
-          Gérez les mots déclenchant un renommage automatique. Les mots <strong>globaux</strong> sont partagés
-          entre tous les serveurs et sont en lecture seule. Vos mots <strong>personnalisés</strong> sont
-          spécifiques à ce serveur.
+          Gérez les mots déclenchant un renommage automatique. Les mots <strong>globaux</strong> sont gérés
+          par les administrateurs du bot et sont en lecture seule. Les mots <strong>personnalisés</strong> sont
+          propres à ce serveur et partagés en temps réel entre tous les modérateurs de ce serveur.
         </p>
       </div>
 
@@ -301,7 +322,9 @@
               </tbody>
             </table>
           </div>
-          <p class="text-xs text-on-surface-variant/40 text-right">{customWords.length} mot(s) personnalisé(s)</p>
+          <p class="text-xs text-on-surface-variant/40 text-right">
+            {customWords.length} mot(s) personnalisé(s)
+          </p>
         {:else}
           <div class="flex flex-col items-center gap-3 py-10 text-on-surface-variant/30">
             <Papicon icon="filter" size={36} class="opacity-20" />

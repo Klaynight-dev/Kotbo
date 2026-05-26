@@ -2635,6 +2635,22 @@ export const startDashboardApi = (client: Client) => {
     });
   };
 
+  /** Diffuse un événement de modification de mots bannis avec filtrage par serveur. */
+  const broadcastBannedWordsChange = (guildId: string, action: 'added' | 'updated' | 'deleted', word: string) => {
+    const payload = JSON.stringify({
+      type: 'banned_words_changed',
+      guildId,
+      action,
+      word,
+      at: new Date().toISOString(),
+    });
+    wsServer.clients.forEach((socket) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(payload);
+      }
+    });
+  };
+
   dashboardStateBroadcaster = broadcastDashboardStateChange;
 
   const server = createServer(async (req, res) => {
@@ -7755,8 +7771,12 @@ export const startDashboardApi = (client: Client) => {
                 data: { guildId, word: cleanWord, category },
               });
 
+              // Invalider le cache pour ce serveur
               const { invalidateBannedWordsCache } = await import('../services/bannedWordsService.js');
               invalidateBannedWordsCache(guildId);
+
+              // Notifier tous les dashboards connectés en temps réel
+              broadcastBannedWordsChange(guildId, 'added', cleanWord);
 
               await pushAudit(guildId, {
                 user: auditUser,
@@ -7790,7 +7810,9 @@ export const startDashboardApi = (client: Client) => {
             }
 
             try {
-              const existing = await prisma.bannedWord.findFirst({ where: { id: wordId, guildId } });
+              const existing = await prisma.bannedWord.findFirst({
+                where: { id: wordId, guildId },
+              });
               if (!existing) {
                 json(res, 404, { error: 'Mot introuvable' });
                 return;
@@ -7798,8 +7820,12 @@ export const startDashboardApi = (client: Client) => {
 
               await prisma.bannedWord.update({ where: { id: wordId }, data: { enabled: body.enabled } });
 
+              // Invalider le cache pour ce serveur
               const { invalidateBannedWordsCache } = await import('../services/bannedWordsService.js');
               invalidateBannedWordsCache(guildId);
+
+              // Notifier tous les dashboards connectés
+              broadcastBannedWordsChange(guildId, 'updated', existing.word);
 
               json(res, 200, { ok: true });
             } catch (err) {
@@ -7813,7 +7839,9 @@ export const startDashboardApi = (client: Client) => {
           if (parts.length === 6 && parts[4] === 'banned-words' && req.method === 'DELETE') {
             const wordId = parts[5];
             try {
-              const existing = await prisma.bannedWord.findFirst({ where: { id: wordId, guildId } });
+              const existing = await prisma.bannedWord.findFirst({
+                where: { id: wordId, guildId },
+              });
               if (!existing) {
                 json(res, 404, { error: 'Mot introuvable ou non modifiable' });
                 return;
@@ -7821,8 +7849,12 @@ export const startDashboardApi = (client: Client) => {
 
               await prisma.bannedWord.delete({ where: { id: wordId } });
 
+              // Invalider le cache pour ce serveur
               const { invalidateBannedWordsCache } = await import('../services/bannedWordsService.js');
               invalidateBannedWordsCache(guildId);
+
+              // Notifier tous les dashboards connectés
+              broadcastBannedWordsChange(guildId, 'deleted', existing.word);
 
               await pushAudit(guildId, {
                 user: auditUser,
