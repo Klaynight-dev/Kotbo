@@ -399,13 +399,13 @@ export async function registerCrons(client: Client): Promise<void> {
     }, 3000);
   }, { timezone: 'Europe/Paris' });
 
-  // 🛡️ Clan Seasons: Vérification quotidienne à 0h05
-  cron.schedule('5 0 * * *', async () => {
+  // 🛡️ Clan Seasons: Vérification toutes les 15 minutes
+  cron.schedule('*/15 * * * *', async () => {
     await runCronJob('clan-season-check', async () => {
       const { checkAndProgressClanSeasons } = await import('../services/community/clanService.js');
       await checkAndProgressClanSeasons(client);
     }, 3000);
-  }, { timezone: 'Europe/Paris' });
+  });
 
   // 🏪 Marketplace: Expiration des annonces toutes les 10 minutes
   cron.schedule('*/10 * * * *', async () => {

@@ -191,6 +191,7 @@ export async function loadApplicationEmojis(client: Client): Promise<void> {
         loaded++;
       } else {
         logger.warn('Emojis', `Emoji d'application "${discordName}" introuvable, fallback: ${UNICODE_FALLBACKS[key] || '?'}`);
+        emojiStore[key] = UNICODE_FALLBACKS[key] || '';
       }
     }
 

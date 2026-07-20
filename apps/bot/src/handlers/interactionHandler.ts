@@ -994,6 +994,14 @@ export async function handleSelectMenu(interaction: AnySelectMenuInteraction, cl
 
   if (!guildId) return;
 
+  // Menu déroulant pour l'historique des saisons de clans
+  if (customId.startsWith('clan_history_select:') && interaction.isStringSelectMenu()) {
+    const selectedSeason = parseInt(interaction.values[0], 10);
+    const { handleClanHistoryInteraction } = await import('../commands/community/clan.js');
+    await handleClanHistoryInteraction(interaction, selectedSeason);
+    return;
+  }
+
   // Menu déroulant des pages de présentation du thread d'accueil
   if (customId === 'wpage_select' && interaction.isStringSelectMenu()) {
     const { handleWelcomeMenuInteraction } = await import('../services/features/welcomeThreadService.js');

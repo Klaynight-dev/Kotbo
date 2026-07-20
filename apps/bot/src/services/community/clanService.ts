@@ -441,6 +441,12 @@ export async function handleEndSeason(
         leaderUserId = topWinnerContributor.userId;
         leaderXp = topWinnerContributor.xp;
       }
+    } else {
+      // Pas de vainqueur cette saison, reset lastWinningClanId
+      await prisma.guild.update({
+        where: { id: guildId },
+        data: { lastWinningClanId: null },
+      });
     }
 
     // 4. Attribuer le rôle de chef de clan pour chaque clan si activé

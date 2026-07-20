@@ -234,12 +234,16 @@ async function processLevelUp(guildId: string, userId: string, newLevel: number,
           if (memberClanRole) {
             const clan = clans.find(c => c.roleId === memberClanRole.id);
             if (clan) {
+              const { getAllLinkedUserIds } = await import('../moderation/altAccountService.js');
+              const linkedIds = await getAllLinkedUserIds(guildId, userId).catch(() => [userId]);
+              const canonicalUserId = linkedIds.sort()[0];
+
               await prisma.clanMemberContribution.upsert({
                 where: {
                   guildId_clanId_userId_season: {
                     guildId,
                     clanId: clan.id,
-                    userId,
+                    userId: canonicalUserId,
                     season: guildConfig.currentClanSeason
                   }
                 },
@@ -249,7 +253,7 @@ async function processLevelUp(guildId: string, userId: string, newLevel: number,
                 create: {
                   guildId,
                   clanId: clan.id,
-                  userId,
+                  userId: canonicalUserId,
                   season: guildConfig.currentClanSeason,
                   xp: guildConfig.clanXpPerLevelUp
                 }

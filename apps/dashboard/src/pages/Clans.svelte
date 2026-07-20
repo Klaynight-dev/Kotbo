@@ -21,6 +21,8 @@
     distributeClans,
     clearClans,
     resetClanSeason,
+    resetAllClans,
+    rollbackClanSeason,
     addClanPoints,
     type ClanEntry,
     type ClansDataResult
@@ -65,7 +67,7 @@
   let savedClanSeasonEndsAt = $state<string | null>(null);
 
   // Tab routing
-  let activeTab = $state<'clans' | 'seasons' | 'points'>('clans');
+  let activeTab = $state<'clans' | 'seasons' | 'points' | 'admin'>('clans');
 
   // Form states
   let formName = $state('');
@@ -79,7 +81,6 @@
   // Points Management tab states & handlers
   let selectedClanIdForPoints = $state('');
   let manualPointsAmountClan = $state(100);
-  let selectedClanIdForMemberPoints = $state('');
   let manualPointsMemberUserId = $state('');
   let manualPointsAmountMember = $state(100);
 
@@ -98,10 +99,10 @@
   }
 
   async function handleAddMemberPoints() {
-    if (!canManageSettings || !selectedClanIdForMemberPoints || !manualPointsMemberUserId || !manualPointsAmountMember) return;
+    if (!canManageSettings || !manualPointsMemberUserId || !manualPointsAmountMember) return;
     await actionState.run(async () => {
       const res = await addClanPoints({
-        clanId: selectedClanIdForMemberPoints,
+        clanId: null,
         userId: manualPointsMemberUserId,
         amount: manualPointsAmountMember,
       });
@@ -113,9 +114,9 @@
     }, { successMessage: 'Points du membre ajustés avec succès !' });
   }
 
-  // Confirmation state for reset/clear/distribute
+  // Confirmation state for reset/clear/distribute/reset-all/rollback
   let confirmInput = $state('');
-  let confirmActionType = $state<'clear' | 'reset' | 'distribute' | null>(null);
+  let confirmActionType = $state<'clear' | 'reset' | 'distribute' | 'reset-all' | 'rollback' | null>(null);
   let showConfirmModal = $state(false);
 
   const canManageSettings = $derived(
@@ -472,7 +473,7 @@
     }, { successMessage: 'Clan supprimé.' });
   }
 
-  function openConfirmation(type: 'clear' | 'reset' | 'distribute') {
+  function openConfirmation(type: 'clear' | 'reset' | 'distribute' | 'reset-all' | 'rollback') {
     confirmActionType = type;
     confirmInput = '';
     showConfirmModal = true;
@@ -485,9 +486,13 @@
       ? 'RETIRER' 
       : confirmActionType === 'reset' 
       ? 'RESET' 
-      : 'DISTRIBUER';
+      : confirmActionType === 'distribute'
+      ? 'DISTRIBUER'
+      : confirmActionType === 'reset-all'
+      ? 'RESET ALL'
+      : 'ANNULER';
 
-    if (confirmInput.toUpperCase() !== expected) {
+    if (confirmInput.toUpperCase() !== expected.toUpperCase()) {
       alert('Veuillez saisir le mot de confirmation correct.');
       return;
     }
@@ -508,6 +513,17 @@
         const res = await distributeClans();
         if (!res) throw new Error('Erreur lors du lancement');
         await refreshData(true);
+      } else if (confirmActionType === 'reset-all') {
+        const res = await resetAllClans();
+        if (!res) throw new Error('Erreur lors de la réinitialisation complète');
+        clansEnabled = false;
+        currentClanSeason = 1;
+        await refreshData(true);
+      } else if (confirmActionType === 'rollback') {
+        const res = await rollbackClanSeason();
+        if (!res) throw new Error('Erreur lors de l\'annulation');
+        currentClanSeason = res.currentClanSeason;
+        await refreshData(true);
       }
       return true;
     }, {
@@ -515,7 +531,11 @@
         ? 'Retrait de tous les rôles démarré en arrière-plan.'
         : confirmActionType === 'reset'
         ? 'Nouvelle saison de clans démarrée !'
-        : 'Distribution aléatoire lancée en arrière-plan.'
+        : confirmActionType === 'distribute'
+        ? 'Distribution aléatoire lancée en arrière-plan.'
+        : confirmActionType === 'reset-all'
+        ? 'Toutes les données de clans ont été réinitialisées !'
+        : 'La clôture de la saison a bien été annulée.'
     });
   }
 
@@ -556,6 +576,12 @@
       onclick={() => activeTab = 'points'}
     >
       ⚡ Gestion des Points
+    </button>
+    <button
+      class="px-5 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer {activeTab === 'admin' ? 'border-primary text-primary font-bold bg-primary/5 rounded-t-lg' : 'border-transparent text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-low/30'}"
+      onclick={() => activeTab = 'admin'}
+    >
+      ⚙️ Administration
     </button>
   </div>
 
@@ -1016,17 +1042,6 @@
 
             <div class="space-y-4">
               <div class="space-y-1.5">
-                <label for="manual-points-member-clan-select" class="text-[10px] font-bold text-on-surface-variant/60 uppercase tracking-widest block ml-1">Sélectionner son Clan</label>
-                <SearchableSelect
-                  id="manual-points-member-clan-select"
-                  bind:value={selectedClanIdForMemberPoints}
-                  options={clans.map(c => ({ id: c.id, name: c.name }))}
-                  placeholder="Choisir un clan"
-                  disabled={!canManageSettings}
-                />
-              </div>
-
-              <div class="space-y-1.5">
                 <label for="manual-points-member-user-id" class="text-[10px] font-bold text-on-surface-variant/60 uppercase tracking-widest block ml-1">ID Discord du Membre</label>
                 <input
                   id="manual-points-member-user-id"
@@ -1054,7 +1069,7 @@
                   type="button"
                   onclick={handleAddMemberPoints}
                   class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-secondary hover:bg-secondary/80 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-                  disabled={!selectedClanIdForMemberPoints || !manualPointsMemberUserId}
+                  disabled={!manualPointsMemberUserId}
                 >
                   ⚡ Ajuster les points du Membre
                 </button>
@@ -1063,8 +1078,69 @@
           </section>
 
         </div>
+      {:else if activeTab === 'admin'}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6" transition:fade={{ duration: 150 }}>
+          
+          <!-- Card 1: Recommencer à la Saison 1 (Reset All) -->
+          <section class="bg-surface-container-low/40 border border-rose-500/20 p-6 rounded-xl space-y-6 flex flex-col justify-between">
+            <div class="space-y-4">
+              <h3 class="text-lg font-semibold border-b border-rose-500/10 pb-2 flex items-center gap-2 text-rose-500">
+                <Papicon icon="AlertTriangle" size={16} />
+                Réinitialisation Totale
+              </h3>
+              
+              <p class="text-xs text-on-surface-variant/80 leading-relaxed">
+                Ce bouton permet de <strong>réinitialiser complètement toutes les données liées aux clans</strong>. Tous les clans configurés, les rôles Discord associés (dans la base de données) et l'ensemble de l'historique d'XP de toutes les saisons seront effacés définitivement.
+              </p>
+              
+              <div class="p-3 bg-rose-500/10 rounded-lg border border-rose-500/10 text-rose-500 text-xs flex gap-2">
+                <Papicon icon="Info" size={16} class="shrink-0 mt-0.5" />
+                <span><strong>IMPORTANT :</strong> Si vous souhaitez simplement clore la saison active et passer à la saison suivante sans perdre vos clans, utilisez l'onglet <strong>📅 Gestion des Saisons</strong>.</span>
+              </div>
+            </div>
 
-      </div>
+            {#if canManageSettings}
+              <button
+                type="button"
+                onclick={() => openConfirmation('reset-all')}
+                class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer mt-4"
+              >
+                💥 Réinitialiser toutes les données de Clans
+              </button>
+            {/if}
+          </section>
+
+          <!-- Card 2: Annuler la dernière saison (Rollback) -->
+          <section class="bg-surface-container-low/40 border border-orange-500/20 p-6 rounded-xl space-y-6 flex flex-col justify-between">
+            <div class="space-y-4">
+              <h3 class="text-lg font-semibold border-b border-orange-500/10 pb-2 flex items-center gap-2 text-orange-500">
+                <Papicon icon="RotateCcw" size={16} />
+                Annuler la dernière saison
+              </h3>
+              
+              <p class="text-xs text-on-surface-variant/80 leading-relaxed">
+                Ce bouton permet d'<strong>annuler la dernière clôture de saison</strong>. Si vous êtes actuellement à la Saison {currentClanSeason}, vous retournerez à la Saison {currentClanSeason - 1}.
+              </p>
+              
+              <p class="text-xs text-on-surface-variant/80 leading-relaxed">
+                Toutes les contributions d'XP enregistrées pour la saison active (Saison {currentClanSeason}) seront supprimées. Le vainqueur de la saison précédente (Saison {currentClanSeason - 2}) ainsi que ses chefs de clans associés seront rétablis.
+              </p>
+            </div>
+
+            {#if canManageSettings}
+              <button
+                type="button"
+                onclick={() => openConfirmation('rollback')}
+                class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer mt-4"
+                disabled={currentClanSeason <= 1}
+              >
+                🔄 Annuler la dernière saison
+              </button>
+            {/if}
+          </section>
+
+        </div>
+      {/if}
     {/if}
   {/if}
 </ModulePage>
@@ -1184,12 +1260,14 @@
         <p class="text-xs text-on-surface-variant/80 mt-1">
           {#if confirmActionType === 'clear'}
             Vous vous apprêtez à <strong>retirer tous les rôles de clan</strong> de tous les membres du serveur. Cette action s'exécute progressivement en arrière-plan.
-          {:else}
-            {#if confirmActionType === 'reset'}
-              Vous vous apprêtez à <strong>clore la saison active</strong> de clans et à passer à la suivante. Les scores d'XP des clans repartiront à 0.
-            {:else if confirmActionType === 'distribute'}
-              Vous vous apprêtez à <strong>distribuer aléatoirement un clan</strong> à tous les membres sans clan. Cette action s'exécute progressivement en arrière-plan.
-            {/if}
+          {:else if confirmActionType === 'reset'}
+            Vous vous apprêtez à <strong>clore la saison active</strong> de clans et à passer à la suivante. Les scores d'XP des clans repartiront à 0.
+          {:else if confirmActionType === 'distribute'}
+            Vous vous apprêtez à <strong>distribuer aléatoirement un clan</strong> à tous les membres sans clan. Cette action s'exécute progressivement en arrière-plan.
+          {:else if confirmActionType === 'reset-all'}
+            <span class="text-rose-500 font-bold">⚠️ ATTENTION :</span> Vous vous apprêtez à <strong>réinitialiser toutes les données de clans</strong> (suppression définitive de tous les clans configurés, de toutes les contributions de saison et retour à la saison 1). Cette action est totalement irréversible.
+          {:else if confirmActionType === 'rollback'}
+            Vous vous apprêtez à <strong>annuler la dernière clôture de saison</strong>. Vous retournerez à la saison {currentClanSeason - 1}. Les contributions de la saison active (Saison {currentClanSeason}) seront supprimées, et le vainqueur de la saison {currentClanSeason - 2} ainsi que ses chefs de clan associés seront rétablis.
           {/if}
         </p>
       </div>
@@ -1197,13 +1275,13 @@
       <div class="space-y-4">
         <div class="space-y-1.5">
           <label for="confirm-word" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">
-            Saisissez <strong>{confirmActionType === 'clear' ? 'RETIRER' : confirmActionType === 'reset' ? 'RESET' : 'DISTRIBUER'}</strong> pour confirmer
+            Saisissez <strong>{#if confirmActionType === 'clear'}RETIRER{:else if confirmActionType === 'reset'}RESET{:else if confirmActionType === 'distribute'}DISTRIBUER{:else if confirmActionType === 'reset-all'}RESET ALL{:else}ANNULER{/if}</strong> pour confirmer
           </label>
           <input
             id="confirm-word"
             type="text"
             bind:value={confirmInput}
-            placeholder={confirmActionType === 'clear' ? 'RETIRER' : confirmActionType === 'reset' ? 'RESET' : 'DISTRIBUER'}
+            placeholder={confirmActionType === 'clear' ? 'RETIRER' : confirmActionType === 'reset' ? 'RESET' : confirmActionType === 'distribute' ? 'DISTRIBUER' : confirmActionType === 'reset-all' ? 'RESET ALL' : 'ANNULER'}
             class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/30 transition-all text-on-surface focus:outline-none font-bold uppercase tracking-wider"
           />
         </div>

@@ -3283,8 +3283,24 @@ export async function resetClanSeason(guildId = authStore.selectedGuildId): Prom
   });
 }
 
+export async function resetAllClans(guildId = authStore.selectedGuildId): Promise<{ success: boolean } | null> {
+  return dashboardRequest('/clans/reset-all', {
+    method: 'POST',
+    guildId,
+    errorContext: 'API Error (Reset All Clans):',
+  });
+}
+
+export async function rollbackClanSeason(guildId = authStore.selectedGuildId): Promise<{ currentClanSeason: number } | null> {
+  return dashboardRequest('/clans/rollback-season', {
+    method: 'POST',
+    guildId,
+    errorContext: 'API Error (Rollback Clan Season):',
+  });
+}
+
 export async function addClanPoints(
-  payload: { clanId: string; userId?: string | null; amount: number },
+  payload: { clanId?: string | null; userId?: string | null; amount: number },
   guildId = authStore.selectedGuildId
 ): Promise<{ success: boolean; contribution?: any } | null> {
   return dashboardRequest('/clans/points', {

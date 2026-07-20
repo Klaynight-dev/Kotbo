@@ -383,7 +383,7 @@ export async function handleClansRoutes(
     try {
       const guild = await prisma.guild.findUnique({
         where: { id: guildId },
-        select: { currentClanSeason: true },
+        select: { currentClanSeason: true, clanSeasonStartsAt: true, clanSeasonEndsAt: true },
       });
 
       if (!guild) {
@@ -393,13 +393,26 @@ export async function handleClansRoutes(
 
       const nextSeason = guild.currentClanSeason + 1;
 
+      let nextStartsAt: Date | null = null;
+      let nextEndsAt: Date | null = null;
+
+      if (guild.clanSeasonStartsAt && guild.clanSeasonEndsAt) {
+        const durationMs = guild.clanSeasonEndsAt.getTime() - guild.clanSeasonStartsAt.getTime();
+        nextStartsAt = new Date();
+        nextEndsAt = new Date(nextStartsAt.getTime() + durationMs);
+      }
+
       // 1. Décerner les bonus, renommer les QG et publier les annonces de fin de saison
       await handleEndSeason(guildId, client, auditUser, guild.currentClanSeason, nextSeason);
 
       // 2. Mettre à jour la saison en base de données
       await prisma.guild.update({
         where: { id: guildId },
-        data: { currentClanSeason: nextSeason },
+        data: { 
+          currentClanSeason: nextSeason,
+          clanSeasonStartsAt: nextStartsAt,
+          clanSeasonEndsAt: nextEndsAt,
+        },
       });
 
       await pushAudit(guildId, {
@@ -422,30 +435,195 @@ export async function handleClansRoutes(
     return true;
   }
 
+  // POST /api/dashboard/guilds/:guildId/clans/reset-all (Reset All Data)
+  if (subAction === 'reset-all' && method === 'POST') {
+    try {
+      // 1. Supprimer toutes les contributions
+      await prisma.clanMemberContribution.deleteMany({
+        where: { guildId }
+      });
+
+      // 2. Supprimer tous les clans du serveur
+      await prisma.clan.deleteMany({
+        where: { guildId }
+      });
+
+      // 3. Réinitialiser la guilde
+      await prisma.guild.update({
+        where: { id: guildId },
+        data: {
+          currentClanSeason: 1,
+          lastWinningClanId: null,
+          clanSeasonStartsAt: null,
+          clanSeasonEndsAt: null,
+          clansEnabled: false,
+        }
+      });
+
+      // 4. Audit
+      await pushAudit(guildId, {
+        user: auditUser,
+        action: 'Réinitialisation Totale des Clans',
+        context: getGuildName(client, guildId),
+        module: 'Clans',
+        eventType: 'Manuel',
+        details: 'Réinitialisation totale des clans, contributions et retour à la saison 1.',
+        channelId: null,
+      });
+
+      broadcastDashboardStateChange(guildId, 'clans_updated');
+
+      json(res, 200, { success: true });
+    } catch (err: any) {
+      logger.error('ClansAPI', 'Error resetting all clan data:', err);
+      json(res, 500, { error: 'Erreur lors de la réinitialisation des données de clans.' });
+    }
+    return true;
+  }
+
+  // POST /api/dashboard/guilds/:guildId/clans/rollback-season (Rollback Last Season)
+  if (subAction === 'rollback-season' && method === 'POST') {
+    try {
+      const guild = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: { currentClanSeason: true, clanRewardLeaderRole: true }
+      });
+
+      if (!guild) {
+        json(res, 404, { error: 'Serveur introuvable.' });
+        return true;
+      }
+
+      const currentSeason = guild.currentClanSeason;
+      if (currentSeason <= 1) {
+        json(res, 400, { error: 'Impossible de retourner en arrière de la saison 1.' });
+        return true;
+      }
+
+      const targetSeason = currentSeason - 1;
+      const restoredSeason = targetSeason - 1; // La saison qui a déterminé le vainqueur de targetSeason
+
+      // 1. Trouver le vainqueur de la saison restoredSeason (si >= 1)
+      let restoredWinningClanId: string | null = null;
+      if (restoredSeason >= 1) {
+        const clans = await prisma.clan.findMany({ where: { guildId } });
+        let maxXp = 0;
+        for (const clan of clans) {
+          const aggregate = await prisma.clanMemberContribution.aggregate({
+            where: { guildId, clanId: clan.id, season: restoredSeason },
+            _sum: { xp: true }
+          });
+          const xp = aggregate._sum.xp ?? 0;
+          if (xp > maxXp) {
+            maxXp = xp;
+            restoredWinningClanId = clan.id;
+          }
+        }
+      }
+
+      // 2. Mettre à jour la guilde
+      await prisma.guild.update({
+        where: { id: guildId },
+        data: {
+          currentClanSeason: targetSeason,
+          lastWinningClanId: restoredWinningClanId,
+          clanSeasonStartsAt: null,
+          clanSeasonEndsAt: null,
+        }
+      });
+
+      // 3. Supprimer toutes les contributions de la saison "annulée" (currentSeason)
+      await prisma.clanMemberContribution.deleteMany({
+        where: { guildId, season: currentSeason }
+      });
+
+      // 4. Rétablir les rôles de chefs de clan
+      const clans = await prisma.clan.findMany({ where: { guildId } });
+      const discordGuild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+      if (discordGuild) {
+        // Retirer les chefs actuels
+        for (const clan of clans) {
+          if (clan.leaderRoleId) {
+            const role = discordGuild.roles.cache.get(clan.leaderRoleId) || await discordGuild.roles.fetch(clan.leaderRoleId).catch(() => null);
+            if (role) {
+              for (const [, m] of role.members) {
+                await m.roles.remove(clan.leaderRoleId, "Annulation clôture saison").catch(() => null);
+              }
+            }
+          }
+        }
+
+        // Rétablir les chefs de restoredSeason
+        if (guild.clanRewardLeaderRole && restoredSeason >= 1) {
+          for (const clan of clans) {
+            if (clan.leaderRoleId) {
+              const top = await prisma.clanMemberContribution.findFirst({
+                where: { guildId, clanId: clan.id, season: restoredSeason, userId: { not: 'system_manual_points' } },
+                orderBy: { xp: 'desc' }
+              });
+              if (top && top.xp > 0) {
+                const member = discordGuild.members.cache.get(top.userId) || await discordGuild.members.fetch(top.userId).catch(() => null);
+                if (member) {
+                  await member.roles.add(clan.leaderRoleId, `Rétablissement chef saison ${restoredSeason}`).catch(() => null);
+                }
+              }
+            }
+          }
+        }
+
+        // 5. Renommer les catégories QG pour le vainqueur rétabli
+        const { ChannelType } = await import('discord.js');
+        for (const clan of clans) {
+          if (clan.generalChannelId) {
+            const channel = discordGuild.channels.cache.get(clan.generalChannelId) || await discordGuild.channels.fetch(clan.generalChannelId).catch(() => null);
+            if (channel && channel.type === ChannelType.GuildCategory) {
+              const isWinner = restoredWinningClanId && clan.id === restoredWinningClanId;
+              const cleanName = channel.name.replace(/^\[🏆\s*.*?\]\s*/, '');
+              const targetName = isWinner ? `[🏆 ${clan.name}] ${cleanName}` : cleanName;
+              if (channel.name !== targetName) {
+                await channel.setName(targetName, "Annulation clôture saison").catch(() => null);
+              }
+            }
+          }
+        }
+      }
+
+      // 6. Audit
+      await pushAudit(guildId, {
+        user: auditUser,
+        action: 'Annulation Clôture de Saison',
+        context: getGuildName(client, guildId),
+        module: 'Clans',
+        eventType: 'Manuel',
+        details: `Retour à la saison ${targetSeason} depuis la saison ${currentSeason}. Données de la saison ${currentSeason} supprimées.`,
+        channelId: null,
+      });
+
+      broadcastDashboardStateChange(guildId, 'clans_updated');
+
+      json(res, 200, { currentClanSeason: targetSeason });
+    } catch (err: any) {
+      logger.error('ClansAPI', 'Error rolling back clan season:', err);
+      json(res, 500, { error: 'Erreur lors de l\'annulation de la saison.' });
+    }
+    return true;
+  }
+
   // POST /api/dashboard/guilds/:guildId/clans/points (Add points manually to a clan or a member)
   if (subAction === 'points' && method === 'POST') {
     try {
       const body = await readJsonBody<{
-        clanId: string;
+        clanId?: string | null;
         userId?: string | null;
         amount: number;
       }>(req);
 
-      if (!body?.clanId || typeof body.amount !== 'number') {
-        json(res, 400, { error: 'Paramètres clanId et amount (nombre) requis.' });
+      if (typeof body.amount !== 'number') {
+        json(res, 400, { error: 'Le paramètre amount (nombre) est requis.' });
         return true;
       }
 
-      // 1. Vérifier si le clan existe
-      const clan = await prisma.clan.findUnique({
-        where: { id: body.clanId }
-      });
-      if (!clan || clan.guildId !== guildId) {
-        json(res, 404, { error: 'Clan introuvable pour ce serveur.' });
-        return true;
-      }
-
-      // 2. Récupérer la saison en cours
+      // 1. Récupérer la saison en cours
       const guild = await prisma.guild.findUnique({
         where: { id: guildId },
         select: { currentClanSeason: true }
@@ -454,16 +632,76 @@ export async function handleClansRoutes(
         json(res, 404, { error: 'Serveur introuvable.' });
         return true;
       }
-
       const season = guild.currentClanSeason;
-      const targetUserId = body.userId?.trim() || 'system_manual_points';
 
-      // 3. Upsert la contribution
+      let resolvedClanId: string;
+      let resolvedClanName: string;
+      let targetUserId: string;
+
+      if (body.userId?.trim()) {
+        const userId = body.userId.trim();
+        // Vérifier si l'utilisateur existe dans la base de données
+        const dbMember = await prisma.member.findUnique({
+          where: { id: userId }
+        });
+        if (!dbMember) {
+          json(res, 404, { error: "L'utilisateur n'existe pas dans la base de données de Kotbo (il doit interagir sur Discord d'abord)." });
+          return true;
+        }
+
+        // Récupérer le membre Discord et ses rôles
+        const discordGuild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+        if (!discordGuild) {
+          json(res, 500, { error: "Impossible d'accéder au serveur Discord." });
+          return true;
+        }
+
+        const member = discordGuild.members.cache.get(userId) || await discordGuild.members.fetch(userId).catch(() => null);
+        if (!member) {
+          json(res, 404, { error: "L'utilisateur est introuvable sur le serveur Discord." });
+          return true;
+        }
+
+        const clans = await prisma.clan.findMany({ where: { guildId } });
+        const memberClan = clans.find(c => member.roles.cache.has(c.roleId));
+        if (!memberClan) {
+          json(res, 400, { error: "Ce membre n'appartient à aucun clan configuré sur Discord." });
+          return true;
+        }
+
+        resolvedClanId = memberClan.id;
+        resolvedClanName = memberClan.name;
+
+        // Résoudre l'identifiant Double Compte (DC) canonique
+        const { getAllLinkedUserIds } = await import('../../../services/moderation/altAccountService.js');
+        const linkedIds = await getAllLinkedUserIds(guildId, userId).catch(() => [userId]);
+        targetUserId = linkedIds.sort()[0];
+      } else {
+        if (!body.clanId) {
+          json(res, 400, { error: 'Le paramètre clanId est requis si aucun utilisateur n\'est spécifié.' });
+          return true;
+        }
+
+        // Vérifier si le clan existe
+        const clan = await prisma.clan.findUnique({
+          where: { id: body.clanId }
+        });
+        if (!clan || clan.guildId !== guildId) {
+          json(res, 404, { error: 'Clan introuvable pour ce serveur.' });
+          return true;
+        }
+
+        resolvedClanId = clan.id;
+        resolvedClanName = clan.name;
+        targetUserId = 'system_manual_points';
+      }
+
+      // 2. Upsert la contribution
       const contribution = await prisma.clanMemberContribution.upsert({
         where: {
           guildId_clanId_userId_season: {
             guildId,
-            clanId: body.clanId,
+            clanId: resolvedClanId,
             userId: targetUserId,
             season,
           }
@@ -473,7 +711,7 @@ export async function handleClansRoutes(
         },
         create: {
           guildId,
-          clanId: body.clanId,
+          clanId: resolvedClanId,
           userId: targetUserId,
           season,
           xp: body.amount
@@ -486,7 +724,7 @@ export async function handleClansRoutes(
         context: getGuildName(client, guildId),
         module: 'Clans',
         eventType: 'Manuel',
-        details: `Ajout manuel de ${body.amount} XP au clan "${clan.name}"` + (body.userId ? ` pour l'utilisateur ${body.userId}` : ' (global)'),
+        details: `Ajout manuel de ${body.amount} XP au clan "${resolvedClanName}"` + (body.userId ? ` pour l'utilisateur ${body.userId}` : ' (global)'),
         channelId: null,
       });
 

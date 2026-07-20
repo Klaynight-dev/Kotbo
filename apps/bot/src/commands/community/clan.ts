@@ -5,6 +5,9 @@ import {
   PermissionFlagsBits,
   EmbedBuilder,
   MessageFlags,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
 } from 'discord.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import prisma from '../../utils/db.js';
@@ -36,6 +39,11 @@ export const data = new SlashCommandBuilder()
           .setRequired(true)
           .setAutocomplete(true)
       )
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName('historique')
+      .setDescription('📜 Affiche l\'historique des saisons passées')
   )
   .addSubcommand((sub) =>
     sub
@@ -220,7 +228,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         .setTitle(`🛡️ Clan ${clan.name}`)
         .setDescription(clan.description || '*Aucune description.*')
         .addFields(
-          { name: 'Rôle Discord', value: role ? `<@&${role.id}>` : `ID: ${clan.roleId}`, inline: true },
+          { name: 'Rôle Discord', value: role ? `@${role.name}` : `ID: ${clan.roleId}`, inline: true },
           { name: 'Membres actifs', value: `\`${memberCount}\``, inline: true },
           { name: 'XP de Saison', value: `\`${totalXp.toLocaleString('fr-FR')} XP\``, inline: true }
         )
@@ -241,6 +249,31 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       });
 
       await interaction.editReply({ embeds: [embed] });
+    }
+
+    // ── SUBCOMMAND: historique ────────────────────────────────────────────────
+    if (sub === 'historique') {
+      await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+      const guildSettings = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: { currentClanSeason: true }
+      });
+
+      const currentSeason = guildSettings?.currentClanSeason ?? 1;
+      if (currentSeason <= 1) {
+        await interaction.editReply('❌ Aucun historique de saison n\'est disponible pour le moment. La Saison 1 est toujours en cours !');
+        return;
+      }
+
+      const targetSeason = currentSeason - 1;
+      const embed = await renderSeasonHistoryEmbed(guildId, targetSeason, interaction.guild!);
+      const selectRow = buildSeasonHistorySelect(guildId, currentSeason, targetSeason);
+
+      await interaction.editReply({
+        embeds: [embed],
+        components: [selectRow]
+      });
       return;
     }
 
@@ -292,3 +325,125 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 }
 
 export const clanCommand = { data, autocomplete, execute } satisfies SlashCommandDefinition;
+
+// ── HELPER: Rendu de l'historique d'une saison ────────────────────────────────
+export async function renderSeasonHistoryEmbed(guildId: string, season: number, discordGuild: any) {
+  // 1. Récupérer les clans
+  const clans = await prisma.clan.findMany({ where: { guildId } });
+
+  // 2. Calculer l'XP totale par clan pour cette saison
+  const clansWithXp = await Promise.all(
+    clans.map(async (clan) => {
+      const aggregate = await prisma.clanMemberContribution.aggregate({
+        where: { guildId, clanId: clan.id, season },
+        _sum: { xp: true },
+      });
+      const totalXp = aggregate._sum.xp ?? 0;
+      return { clan, totalXp };
+    })
+  );
+
+  // Trier les clans par XP décroissante
+  clansWithXp.sort((a, b) => b.totalXp - a.totalXp);
+
+  // Trouver le vainqueur (XP > 0)
+  let winningClan = null;
+  if (clansWithXp.length > 0 && clansWithXp[0].totalXp > 0) {
+    winningClan = clansWithXp[0].clan;
+  }
+
+  // 3. Trouver le meilleur contributeur pour chaque clan
+  const leaders: { clanName: string; userName: string; xp: number }[] = [];
+  for (const clan of clans) {
+    const top = await prisma.clanMemberContribution.findFirst({
+      where: { guildId, clanId: clan.id, season, userId: { not: 'system_manual_points' } },
+      orderBy: { xp: 'desc' },
+    });
+    if (top) {
+      const member = await discordGuild.members.fetch(top.userId).catch(() => null);
+      const name = member ? member.displayName : `Utilisateur ${top.userId}`;
+      leaders.push({ clanName: clan.name, userName: name, xp: top.xp });
+    }
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xF59E0B) // Amber/Gold color
+    .setTitle(`📜 Historique de la Saison de Clans ${season}`)
+    .setTimestamp();
+
+  let desc = '';
+  if (winningClan) {
+    desc += `🏆 **Clan Vainqueur** : **${winningClan.name}** (\`${clansWithXp[0].totalXp.toLocaleString('fr-FR')} XP\`)\n\n`;
+  } else {
+    desc += `🏆 **Clan Vainqueur** : *Aucun vainqueur* (aucun point marqué)\n\n`;
+  }
+
+  // Classement des clans
+  desc += `**📊 Classement des Clans :**\n`;
+  if (clansWithXp.length > 0 && clansWithXp.some(c => c.totalXp > 0)) {
+    for (let i = 0; i < clansWithXp.length; i++) {
+      const c = clansWithXp[i];
+      desc += `${rankEmoji(i + 1)} **${c.clan.name}** : \`${c.totalXp.toLocaleString('fr-FR')} XP\`\n`;
+    }
+  } else {
+    desc += `*Aucun point enregistré.*\n`;
+  }
+
+  desc += `\n**👑 Meilleurs Contributeurs par Clan :**\n`;
+  if (leaders.length > 0) {
+    for (const leader of leaders) {
+      desc += `▸ **${leader.clanName}** : **${leader.userName}** (\`${leader.xp.toLocaleString('fr-FR')} XP\`)\n`;
+    }
+  } else {
+    desc += `*Aucun contributeur.*`;
+  }
+
+  embed.setDescription(desc);
+  return embed;
+}
+
+// ── HELPER: Génération du menu déroulant ──────────────────────────────────────
+export function buildSeasonHistorySelect(guildId: string, currentSeason: number, selectedSeason: number) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`clan_history_select:${guildId}`)
+    .setPlaceholder('Sélectionnez une saison à consulter...');
+
+  const maxSeason = currentSeason - 1;
+  const options = [];
+  const startSeason = Math.max(1, maxSeason - 24); // 25 options max pour Discord SelectMenu
+
+  for (let s = maxSeason; s >= startSeason; s--) {
+    const isDefault = s === selectedSeason;
+    options.push(
+      new StringSelectMenuOptionBuilder()
+        .setLabel(`Saison ${s}`)
+        .setValue(s.toString())
+        .setDescription(`Consulter les résultats de la Saison ${s}`)
+        .setDefault(isDefault)
+    );
+  }
+
+  select.addOptions(options);
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+// ── INTERACTION HANDLER: Changement de saison dans le menu déroulant ──────────
+export async function handleClanHistoryInteraction(interaction: any, selectedSeason: number) {
+  const guildId = interaction.guildId;
+  if (!guildId) return;
+
+  const guildSettings = await prisma.guild.findUnique({
+    where: { id: guildId },
+    select: { currentClanSeason: true }
+  });
+
+  const currentSeason = guildSettings?.currentClanSeason ?? 1;
+  const embed = await renderSeasonHistoryEmbed(guildId, selectedSeason, interaction.guild!);
+  const selectRow = buildSeasonHistorySelect(guildId, currentSeason, selectedSeason);
+
+  await interaction.update({
+    embeds: [embed],
+    components: [selectRow]
+  });
+}
