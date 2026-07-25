@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, type Message, Em
 import prisma from '../../utils/db.js';
 import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('guess')
@@ -12,12 +14,13 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const config = await getOrCreateEconomyConfig(guildId);
     if (!config.enabled) {
       await interaction.reply({
-        embeds: [errorEmbed('Module Désactivé', "Le système d'économie est désactivé sur ce serveur.")],
+        embeds: [errorEmbed(m.b3_module_disabled_title({}, { locale }), m.b3_economy_disabled_desc({}, { locale }))],
         flags: [MessageFlags.Ephemeral]
       });
       return;
@@ -28,15 +31,10 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     const maxAttempts = 7;
 
     const initialEmbed = new EmbedBuilder()
-      .setTitle('🤔 Jeu du Nombre Mystère')
-      .setDescription(
-        `J'ai choisi un nombre secret entre **1 et 100**.\n` +
-        `Envoyez vos propositions sous forme de message direct dans ce salon !\n\n` +
-        `Vous disposez de **${maxAttempts} essais**. Moins vous utilisez d'essais, plus le gain est élevé !\n` +
-        `*Envoyez simplement le nombre dans le chat.*`
-      )
+      .setTitle(m.b3_guess_title({}, { locale }))
+      .setDescription(m.b3_guess_intro({ maxAttempts }, { locale }))
       .setColor(COLORS.primary)
-      .setFooter({ text: 'Écrivez votre première proposition...' });
+      .setFooter({ text: m.b3_guess_footer({}, { locale }) });
 
     await interaction.reply({ embeds: [initialEmbed] });
 
@@ -50,7 +48,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       : null;
 
     if (!collector) {
-      await interaction.followUp({ content: "Impossible de lancer le jeu de capture de messages.", flags: [MessageFlags.Ephemeral] });
+      await interaction.followUp({ content: m.b3_guess_no_collector({}, { locale }), flags: [MessageFlags.Ephemeral] });
       return;
     }
 
@@ -70,9 +68,9 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       } else if (attempts >= maxAttempts) {
         collector.stop('loss');
       } else {
-        const hint = guess < secret ? 'plus GRAND 📈' : 'plus PETIT 📉';
+        const hint = guess < secret ? m.b3_guess_hint_higher({}, { locale }) : m.b3_guess_hint_lower({}, { locale });
         await interaction.followUp({
-          content: `<@${userId}>, **${guess}** est incorrect ! C'est **${hint}**. *(Essai ${attempts}/${maxAttempts})*`
+          content: m.b3_guess_incorrect({ userId, guess, hint, attempts, maxAttempts }, { locale })
         });
       }
     });
@@ -92,20 +90,16 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
           });
 
           const winEmbed = new EmbedBuilder()
-            .setTitle('🎉 Félicitations !')
-            .setDescription(
-              `Vous avez trouvé le nombre mystère **${secret}** en **${attempts} essais** !\n\n` +
-              `**Gain :** +**${reward}** ${config.currencyEmoji}\n` +
-              `**Nouveau solde :** **${newBalance}** ${config.currencyEmoji}`
-            )
+            .setTitle(m.b3_guess_win_title({}, { locale }))
+            .setDescription(m.b3_guess_win_desc({ secret, attempts, reward, currency: config.currencyEmoji, newBalance }, { locale }))
             .setColor(COLORS.success)
             .setTimestamp();
 
           await interaction.followUp({ embeds: [winEmbed] });
         } else if (reason === 'loss') {
           const lossEmbed = new EmbedBuilder()
-            .setTitle('😢 Partie terminée')
-            .setDescription(`Vous avez épuisé vos **${maxAttempts} essais** !\nLe nombre secret était **${secret}**. Retentez votre chance !`)
+            .setTitle(m.b3_guess_loss_title({}, { locale }))
+            .setDescription(m.b3_guess_loss_desc({ maxAttempts, secret }, { locale }))
             .setColor(COLORS.danger)
             .setTimestamp();
 
@@ -113,8 +107,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         } else {
           // Timeout
           const timeoutEmbed = new EmbedBuilder()
-            .setTitle('⏱️ Temps écoulé')
-            .setDescription(`Vous avez mis trop de temps à répondre. La partie est annulée.\nLe nombre secret était **${secret}**.`)
+            .setTitle(m.b3_guess_timeout_title({}, { locale }))
+            .setDescription(m.b3_guess_timeout_desc({ secret }, { locale }))
             .setColor(COLORS.warning)
             .setTimestamp();
 
@@ -126,7 +120,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || 'Impossible de démarrer le jeu.')],
+      embeds: [errorEmbed(m.b3_error_title({}, { locale }), errorMessage(err) || m.b3_guess_start_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

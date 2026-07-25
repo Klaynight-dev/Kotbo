@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { m } from '../i18n';
+
   type HintSet = { delay: number; messages: string[] };
 
   let {
@@ -12,102 +14,102 @@
   const hintSets: Record<string, HintSet[]> = {
     data: [
       { delay: 3000, messages: [
-        'Récupération des données en cours...',
-        'Synchronisation avec le serveur...',
-        'Préparation des informations...',
+        m.d6_hint_data_3s_1(),
+        m.d6_hint_data_3s_2(),
+        m.d6_hint_data_3s_3(),
       ]},
       { delay: 8000, messages: [
-        'Beaucoup de données à traiter, merci de patienter',
-        'Le volume de données est important, on y est presque',
-        'Traitement d\'un grand nombre d\'entrées...',
+        m.d6_hint_data_8s_1(),
+        m.d6_hint_data_8s_2(),
+        m.d6_hint_data_8s_3(),
       ]},
       { delay: 15000, messages: [
-        'La connexion semble un peu lente aujourd\'hui',
-        'Le serveur met plus de temps que d\'habitude à répondre',
-        'Patience, le réseau est un peu chargé',
+        m.d6_hint_data_15s_1(),
+        m.d6_hint_data_15s_2(),
+        m.d6_hint_data_15s_3(),
       ]},
       { delay: 25000, messages: [
-        'Toujours en cours... vérifiez votre connexion si ça persiste',
-        'Le chargement est anormalement long, tentez de rafraîchir si besoin',
+        m.d6_hint_data_25s_1(),
+        m.d6_hint_data_25s_2(),
       ]},
     ],
     analytics: [
       { delay: 3000, messages: [
-        'Calcul des statistiques en cours...',
-        'Analyse des métriques du serveur...',
-        'Agrégation des données analytiques...',
+        m.d6_hint_analytics_3s_1(),
+        m.d6_hint_analytics_3s_2(),
+        m.d6_hint_analytics_3s_3(),
       ]},
       { delay: 8000, messages: [
-        'Les calculs prennent un moment, le serveur a beaucoup à analyser',
-        'Analyse d\'un gros volume de données, merci de patienter',
-        'Première analyse ? La mise en cache accélèrera les prochains chargements',
+        m.d6_hint_analytics_8s_1(),
+        m.d6_hint_analytics_8s_2(),
+        m.d6_hint_analytics_8s_3(),
       ]},
       { delay: 15000, messages: [
-        'Les analytics demandent plus de ressources que d\'habitude',
-        'Le serveur traite beaucoup de métriques, ça arrive bientôt',
+        m.d6_hint_analytics_15s_1(),
+        m.d6_hint_analytics_15s_2(),
       ]},
       { delay: 25000, messages: [
-        'Chargement inhabituellement long... le serveur est peut-être surchargé',
+        m.d6_hint_analytics_25s_1(),
       ]},
     ],
     network: [
       { delay: 3000, messages: [
-        'Cartographie des interactions en cours...',
-        'Construction du réseau de communication...',
+        m.d6_hint_network_3s_1(),
+        m.d6_hint_network_3s_2(),
       ]},
       { delay: 8000, messages: [
-        'Le réseau est dense, l\'analyse prend un peu plus de temps',
-        'Beaucoup de connexions à tracer, merci de patienter',
+        m.d6_hint_network_8s_1(),
+        m.d6_hint_network_8s_2(),
       ]},
       { delay: 15000, messages: [
-        'Le graphe est particulièrement complexe, on y arrive',
-        'Connexion lente ? Le réseau nécessite beaucoup de données',
+        m.d6_hint_network_15s_1(),
+        m.d6_hint_network_15s_2(),
       ]},
     ],
     config: [
       { delay: 3000, messages: [
-        'Chargement de la configuration...',
-        'Récupération des paramètres...',
+        m.d6_hint_config_3s_1(),
+        m.d6_hint_config_3s_2(),
       ]},
       { delay: 8000, messages: [
-        'La configuration met plus de temps que prévu',
-        'Synchronisation avec le bot en cours...',
+        m.d6_hint_config_8s_1(),
+        m.d6_hint_config_8s_2(),
       ]},
       { delay: 15000, messages: [
-        'Le bot met du temps à répondre, vérifiez qu\'il est bien en ligne',
+        m.d6_hint_config_15s_1(),
       ]},
     ],
     members: [
       { delay: 3000, messages: [
-        'Chargement de la liste des membres...',
-        'Récupération des profils...',
+        m.d6_hint_members_3s_1(),
+        m.d6_hint_members_3s_2(),
       ]},
       { delay: 8000, messages: [
-        'Votre serveur a beaucoup de membres, ça prend un moment',
-        'Chargement d\'un grand nombre de profils...',
+        m.d6_hint_members_8s_1(),
+        m.d6_hint_members_8s_2(),
       ]},
       { delay: 15000, messages: [
-        'La synchronisation des membres est plus lente que d\'habitude',
-        'Le cache est en cours de construction, les prochains chargements seront plus rapides',
+        m.d6_hint_members_15s_1(),
+        m.d6_hint_members_15s_2(),
       ]},
     ],
     default: [
       { delay: 3000, messages: [
-        'Chargement en cours...',
-        'Récupération des données...',
-        'Un instant...',
+        m.d6_hint_default_3s_1(),
+        m.d6_hint_default_3s_2(),
+        m.d6_hint_default_3s_3(),
       ]},
       { delay: 8000, messages: [
-        'C\'est un peu plus long que d\'habitude, merci de patienter',
-        'Premier chargement ? Les suivants seront plus rapides',
-        'Le serveur traite votre demande...',
+        m.d6_hint_default_8s_1(),
+        m.d6_hint_default_8s_2(),
+        m.d6_hint_default_8s_3(),
       ]},
       { delay: 15000, messages: [
-        'La connexion semble lente, on y est presque',
-        'Le serveur met du temps à répondre...',
+        m.d6_hint_default_15s_1(),
+        m.d6_hint_default_15s_2(),
       ]},
       { delay: 25000, messages: [
-        'Toujours en attente... vérifiez votre connexion',
+        m.d6_hint_default_25s_1(),
       ]},
     ],
   };

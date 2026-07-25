@@ -3,6 +3,7 @@
   import { fetchGdprPreview, downloadGdprExport, type GdprPreview } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
   import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import { m } from '../../lib/i18n';
 
   let userId = $state('');
   let loading = $state(false);
@@ -15,7 +16,7 @@
 
   async function runPreview() {
     if (!canSearch) {
-      error = 'Entrez un identifiant Discord valide (uniquement des chiffres).';
+      error = m.d7_gdpr_invalid_id();
       return;
     }
     loading = true;
@@ -24,10 +25,10 @@
     try {
       preview = await fetchGdprPreview(userId.trim());
       if (preview.meta.totalRecords === 0) {
-        toast.info('Aucune donnée trouvée pour cet utilisateur.');
+        toast.info(m.d7_gdpr_no_data_found());
       }
     } catch (err: any) {
-      error = err?.message ?? 'Erreur lors de la collecte.';
+      error = err?.message ?? m.d7_gdpr_collect_error();
     } finally {
       loading = false;
     }
@@ -38,9 +39,9 @@
     downloading = true;
     try {
       await downloadGdprExport(preview.meta.userId);
-      toast.success('Archive RGPD téléchargée.');
+      toast.success(m.d7_gdpr_download_success());
     } catch (err: any) {
-      toast.error(err?.message ?? "Erreur lors du téléchargement.");
+      toast.error(err?.message ?? m.d7_gdpr_download_error());
     } finally {
       downloading = false;
     }
@@ -64,21 +65,21 @@
           <Papicon icon="ShieldCheck" size={20} class="text-primary" />
         </div>
         <div>
-          <h1 class="text-xl font-bold text-on-surface leading-tight">Export RGPD</h1>
-          <p class="text-sm text-on-surface-variant/60">Droit d'accès — rassemble toutes les données conservées sur un utilisateur.</p>
+          <h1 class="text-xl font-bold text-on-surface leading-tight">{m.d7_gdpr_export_title()}</h1>
+          <p class="text-sm text-on-surface-variant/60">{m.d7_gdpr_export_subtitle()}</p>
         </div>
       </div>
     </div>
 
     <!-- Search card -->
     <div class="bg-surface-container-low/50 border border-outline-variant/10 rounded-2xl p-6 space-y-4">
-      <label for="gdpr-user-id" class="block text-sm font-semibold text-on-surface">Identifiant Discord de l'utilisateur</label>
+      <label for="gdpr-user-id" class="block text-sm font-semibold text-on-surface">{m.d7_gdpr_user_id_label()}</label>
       <div class="flex flex-col sm:flex-row gap-3">
         <input
           id="gdpr-user-id"
           bind:value={userId}
           onkeydown={onKeydown}
-          placeholder="Ex. 457275321171968000"
+          placeholder={m.d7_gdpr_id_placeholder()}
           inputmode="numeric"
           class="flex-1 px-4 py-2.5 rounded-xl bg-surface-container border border-outline-variant/20 text-on-surface text-sm focus:outline-none focus:border-primary/50 transition-colors"
         />
@@ -89,15 +90,15 @@
         >
           {#if loading}
             <span class="w-4 h-4 border-2 border-on-primary/30 border-t-on-primary rounded-full animate-spin"></span>
-            Collecte...
+            {m.d7_gdpr_collecting()}
           {:else}
             <Papicon icon="Search" size={15} />
-            Rechercher
+            {m.d7_search()}
           {/if}
         </button>
       </div>
       <p class="text-xs text-on-surface-variant/40">
-        Collecte l'ensemble des données Kotbo liées à cet identifiant, tous serveurs confondus.
+        {m.d7_gdpr_collect_hint()}
       </p>
     </div>
 
@@ -124,7 +125,7 @@
               {/if}
               <div>
                 <p class="font-bold text-on-surface">
-                  {preview.meta.username ?? 'Utilisateur inconnu'}
+                  {preview.meta.username ?? m.d7_gdpr_unknown_user()}
                   {#if preview.meta.globalName}<span class="text-on-surface-variant/50 font-normal"> · {preview.meta.globalName}</span>{/if}
                 </p>
                 <p class="text-xs text-on-surface-variant/50 font-mono">{preview.meta.userId}</p>
@@ -137,10 +138,10 @@
             >
               {#if downloading}
                 <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                Génération...
+                {m.d7_gdpr_generating()}
               {:else}
                 <Papicon icon="Download" size={15} />
-                Télécharger le ZIP
+                {m.d7_gdpr_download_zip()}
               {/if}
             </button>
           </div>
@@ -148,15 +149,15 @@
           <div class="grid grid-cols-3 gap-3 mt-5">
             <div class="rounded-xl bg-on-surface/3 border border-outline-variant/10 px-4 py-3">
               <p class="text-2xl font-bold text-on-surface">{preview.meta.totalRecords}</p>
-              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">Enregistrements</p>
+              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">{m.d7_gdpr_records()}</p>
             </div>
             <div class="rounded-xl bg-on-surface/3 border border-outline-variant/10 px-4 py-3">
               <p class="text-2xl font-bold text-on-surface">{preview.categories.length}</p>
-              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">Catégories</p>
+              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">{m.d7_gdpr_categories()}</p>
             </div>
             <div class="rounded-xl bg-on-surface/3 border border-outline-variant/10 px-4 py-3">
               <p class="text-2xl font-bold text-on-surface">{preview.meta.guildCount}</p>
-              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">Serveurs</p>
+              <p class="text-[11px] uppercase tracking-wider text-on-surface-variant/40 font-semibold">{m.d7_gdpr_servers()}</p>
             </div>
           </div>
 
@@ -170,7 +171,7 @@
 
           {#if preview.meta.errors.length}
             <div class="mt-4 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
-              <p class="font-semibold mb-1">{preview.meta.errors.length} avertissement(s) de collecte</p>
+              <p class="font-semibold mb-1">{m.d7_gdpr_collect_warnings({ count: preview.meta.errors.length })}</p>
               <ul class="list-disc list-inside space-y-0.5 opacity-80">
                 {#each preview.meta.errors as e}<li>{e}</li>{/each}
               </ul>
@@ -212,7 +213,7 @@
         {:else}
           <div class="text-center py-10 text-on-surface-variant/40 text-sm">
             <Papicon icon="Inbox" size={28} class="mx-auto mb-2 opacity-50" />
-            Aucune donnée conservée pour cet utilisateur.
+            {m.d7_gdpr_no_data_retained()}
           </div>
         {/if}
       </div>

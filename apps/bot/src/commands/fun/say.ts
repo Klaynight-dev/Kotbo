@@ -9,6 +9,8 @@ import {
 } from 'discord.js';
 import { errorEmbed, successEmbed, COLORS } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const COLOR_CHOICES = [
   { name: '🔵 Bleu (défaut)', value: 'blue' },
@@ -69,9 +71,11 @@ const data = new SlashCommandBuilder()
   );
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
+
   if (!interaction.guildId) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Cette commande ne peut être utilisée que dans un serveur.')],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_guild_only({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -85,7 +89,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   if (!targetChannel || !(targetChannel instanceof TextChannel)) {
     await interaction.reply({
-      embeds: [errorEmbed('Salon invalide', 'Le salon sélectionné doit être un salon textuel.')],
+      embeds: [errorEmbed(m.b2_say_invalid_channel_title({}, { locale }), m.b2_say_invalid_channel_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -107,7 +111,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
       if (!anonyme) {
         embed.setFooter({
-          text: `Envoyé par ${interaction.user.displayName}`,
+          text: m.b2_say_footer({ user: interaction.user.displayName }, { locale }),
           iconURL: interaction.user.displayAvatarURL(),
         });
       }
@@ -119,7 +123,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     }
 
     await interaction.reply({
-      embeds: [successEmbed('Message envoyé', `Votre message a bien été posté dans <#${targetChannel.id}>.`)],
+      embeds: [successEmbed(m.b2_say_sent_title({}, { locale }), m.b2_say_sent_desc({ channel: `<#${targetChannel.id}>` }, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
 
@@ -127,7 +131,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
   } catch (error) {
     logger.error('Say', "Impossible d'envoyer le message :", error);
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', "Impossible d'envoyer le message. Vérifiez les permissions du bot dans ce salon.")],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_say_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   }

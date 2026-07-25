@@ -13,6 +13,8 @@ import {
 import type { SlashCommandDefinition, ContextCommandDefinition } from '../../commands.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { createMemberReport, type CreateReportResult } from '../../services/moderation/reportService.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('report')
@@ -26,16 +28,16 @@ const contextData = new ContextMenuCommandBuilder()
   .setName('Signaler ce message')
   .setType(ApplicationCommandType.Message);
 
-export function describeReportError(result: Extract<CreateReportResult, { ok: false }>): string {
+export function describeReportError(result: Extract<CreateReportResult, { ok: false }>, locale: 'fr' | 'en' = 'fr'): string {
   switch (result.error) {
     case 'DISABLED':
-      return 'Les signalements ne sont pas activés sur ce serveur.';
+      return m.b2_report_err_disabled({}, { locale });
     case 'NO_CHANNEL':
-      return 'Aucun salon de signalements configuré. Contacte un administrateur.';
+      return m.b2_report_err_no_channel({}, { locale });
     case 'SELF_REPORT':
-      return 'Tu ne peux pas te signaler toi-même. 🙃';
+      return m.b2_report_err_self({}, { locale });
     case 'COOLDOWN':
-      return `Merci d'attendre encore **${result.retryInSec}s** avant un nouveau signalement.`;
+      return m.b2_report_err_cooldown({ sec: result.retryInSec ?? 0 }, { locale });
   }
 }
 
@@ -43,6 +45,7 @@ async function executeSlash(interaction: ChatInputCommandInteraction): Promise<v
   if (!interaction.guild) return;
   const target = interaction.options.getUser('membre', true);
   const reason = interaction.options.getString('raison', true);
+  const locale = await getEffectiveLocale(interaction);
 
   await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -55,12 +58,12 @@ async function executeSlash(interaction: ChatInputCommandInteraction): Promise<v
   });
 
   if (!result.ok) {
-    await interaction.editReply({ embeds: [errorEmbed('Signalement impossible', describeReportError(result))] });
+    await interaction.editReply({ embeds: [errorEmbed(m.b2_report_impossible_title({}, { locale }), describeReportError(result, locale))] });
     return;
   }
 
   await interaction.editReply({
-    embeds: [successEmbed('Signalement envoyé', 'Le staff a été notifié et examinera ton signalement. Merci de contribuer à la sécurité du serveur. 🙏')],
+    embeds: [successEmbed(m.b2_report_sent_title({}, { locale }), m.b2_report_sent_desc({}, { locale }))],
   });
 }
 
@@ -69,19 +72,20 @@ async function executeSlash(interaction: ChatInputCommandInteraction): Promise<v
 async function executeContext(interaction: MessageContextMenuCommandInteraction): Promise<void> {
   if (!interaction.guild) return;
   const message = interaction.targetMessage;
+  const locale = await getEffectiveLocale(interaction);
 
   const modal = new ModalBuilder()
     .setCustomId(`report_modal:${message.author.id}:${message.channelId}:${message.id}`)
-    .setTitle('Signaler ce message')
+    .setTitle(m.b2_report_modal_title({}, { locale }))
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('reason')
-          .setLabel('Raison du signalement')
+          .setLabel(m.b2_report_modal_label({}, { locale }))
           .setStyle(TextInputStyle.Paragraph)
           .setMaxLength(1000)
           .setRequired(true)
-          .setPlaceholder('Décris le problème (spam, insulte, arnaque…)')
+          .setPlaceholder(m.b2_report_modal_placeholder({}, { locale }))
       )
     );
 

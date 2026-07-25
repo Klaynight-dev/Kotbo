@@ -4,6 +4,7 @@
   import ExportDropdown from './ExportDropdown.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { downloadSingleSheetXlsx } from '../../xlsxExport';
+  import { m } from '../../i18n';
 
   let { data, chartLabels } = $props<{ data: any; chartLabels: any[] }>();
 
@@ -22,21 +23,21 @@
   }
 
   function exportChartCSV(name: string, rows: Record<string, unknown>[]) {
-    if (!rows.length) { toast.error('Aucune donnée.'); return; }
+    if (!rows.length) { toast.error(m.d1_so_no_data()); return; }
     const headers = Object.keys(rows[0]);
     const csv = [headers.join(','), ...rows.map(r => headers.map(h => String(r[h] ?? '')).join(','))].join('\n');
     triggerDownload(csv, `${name}.csv`, 'text/csv;charset=utf-8');
   }
 
   async function exportChartXLSX(name: string, rows: Record<string, unknown>[]) {
-    if (!rows.length) { toast.error('Aucune donnée.'); return; }
+    if (!rows.length) { toast.error(m.d1_so_no_data()); return; }
     await downloadSingleSheetXlsx(name, name, rows);
   }
 
   function exportChartImage(cardSelector: string, name: string) {
     const card = document.querySelector(cardSelector);
     const canvas = card?.querySelector('canvas');
-    if (!canvas) { toast.error('Graphique introuvable.'); return; }
+    if (!canvas) { toast.error(m.d1_so_chart_not_found()); return; }
     canvas.toBlob((blob) => {
       if (blob) triggerDownload(blob, `${name}.png`, 'image/png');
     }, 'image/png');
@@ -47,10 +48,10 @@
   }
 
   const stats = $derived([
-    { label: 'Messages', value: fmt(data?.totals?.messages), icon: 'ChatCircleDots', color: '#6366f1' },
-    { label: 'Vocal (min)', value: fmt(Math.round(data?.totals?.voiceMinutes || 0)), icon: 'Microphone', color: '#ec4899' },
-    { label: 'Activité', value: `${fmt(data?.totals?.activeDays || 0)}j`, icon: 'Calendar', color: '#10b981' },
-    { label: 'Sanctions', value: fmt(data?.totals?.sanctions), icon: 'ShieldWarning', color: '#f43f5e' }
+    { label: m.d1_so_messages(), value: fmt(data?.totals?.messages), icon: 'ChatCircleDots', color: '#6366f1' },
+    { label: m.d1_so_voice_min(), value: fmt(Math.round(data?.totals?.voiceMinutes || 0)), icon: 'Microphone', color: '#ec4899' },
+    { label: m.d1_so_activity(), value: `${fmt(data?.totals?.activeDays || 0)}j`, icon: 'Calendar', color: '#10b981' },
+    { label: m.d1_so_sanctions(), value: fmt(data?.totals?.sanctions), icon: 'ShieldWarning', color: '#f43f5e' }
   ]);
 </script>
 
@@ -66,7 +67,7 @@
           <div class="p-3 rounded-lg transition-transform group-hover:rotate-12" style="background: {stat.color}15; color: {stat.color}">
             <Papicon icon={stat.icon} size={24} />
           </div>
-          <span class="text-xs font-medium text-on-surface-variant/40">Total</span>
+          <span class="text-xs font-medium text-on-surface-variant/40">{m.d1_so_total()}</span>
         </div>
         <div class="space-y-1 relative z-10">
           <h4 class="text-lg font-semibold text-on-surface">{stat.value}</h4>
@@ -85,8 +86,8 @@
             <Papicon icon="ChartLineUp" size={24} />
           </div>
           <div>
-            <h3 class="text-xl font-semibold text-on-surface">Tendance Globale</h3>
-            <p class="text-xs font-bold text-on-surface-variant/40">Messages & Sessions Vocales</p>
+            <h3 class="text-xl font-semibold text-on-surface">{m.d1_so_global_trend()}</h3>
+            <p class="text-xs font-bold text-on-surface-variant/40">{m.d1_so_messages_voice()}</p>
           </div>
         </div>
         <ExportDropdown
@@ -102,7 +103,7 @@
             labels: chartLabels.map(l => l.label),
             datasets: [
               {
-                label: 'Messages',
+                label: m.d1_so_messages(),
                 data: chartLabels.map(l => l.messages),
                 borderColor: '#6366f1',
                 borderWidth: 3,
@@ -121,7 +122,7 @@
                 }
               },
               {
-                label: 'Vocal',
+                label: m.d1_so_voice(),
                 data: chartLabels.map(l => l.voiceMinutes),
                 borderColor: '#ec4899',
                 borderWidth: 3,
@@ -152,26 +153,26 @@
         <div class="p-2 rounded-lg bg-amber-500/10 text-amber-500">
           <Papicon icon="Lightning" size={20} />
         </div>
-        <h3 class="text-lg font-semibold text-on-surface">En Direct</h3>
+        <h3 class="text-lg font-semibold text-on-surface">{m.d1_so_live()}</h3>
       </div>
       
       <div class="space-y-4 flex-grow">
         <div class="p-6 rounded-xl bg-surface-container-high/30 border border-outline-variant/10 hover:border-primary/20 transition-all group">
-          <p class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/40 mb-3">Salon le plus actif</p>
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/40 mb-3">{m.d1_so_most_active_channel()}</p>
           <div class="flex items-center justify-between">
             <span class="text-base font-semibold text-primary group-hover:translate-x-1 transition-transform">
-              #{data?.topChannels?.[0]?.channelName || 'général'}
+              #{data?.topChannels?.[0]?.channelName || m.d1_so_general()}
             </span>
           </div>
         </div>
         
         <div class="p-6 rounded-xl bg-surface-container-high/30 border border-outline-variant/10 hover:border-secondary/20 transition-all group">
-          <p class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/40 mb-3">Pic d'activité (Période)</p>
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/40 mb-3">{m.d1_so_activity_peak()}</p>
           <div class="flex items-center justify-between">
             <span class="text-base font-semibold text-on-surface group-hover:translate-x-1 transition-transform">
               {(() => {
                 const max = [...(data?.dailyTrend || [])].sort((a, b) => b.peakOnline - a.peakOnline)[0];
-                return max ? max.dateKey : 'Aujourd\'hui';
+                return max ? max.dateKey : m.d1_so_today();
               })()}
             </span>
             <span class="text-[10px] font-semibold {data?.summary?.messagesTrend >= 0 ? 'text-emerald-500 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10'} px-2 py-1 rounded-lg">
@@ -191,7 +192,7 @@
                {/each}
             </div>
             <p class="text-[10px] font-bold text-on-surface-variant/50">
-              {fmt(data?.live?.onlineMembers || 0)} membres en ligne actuellement
+              {m.d1_so_members_online({ count: fmt(data?.live?.onlineMembers || 0) })}
             </p>
          </div>
       </div>

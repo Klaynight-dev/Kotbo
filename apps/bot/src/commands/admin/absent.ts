@@ -19,83 +19,101 @@ import { successContainer, errorContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c1_absent');
 
 const data = new SlashCommandBuilder()
-  .setName('absent')
-  .setDescription('Gère vos absences staff (déclaration et clôture).')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((subcommand) =>
     subcommand
       .setName('declarer')
-      .setDescription('Déclare une absence staff.')
+      .setDescription(m.c1_absent_declarer_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c1_absent_declarer_desc({}, { locale: 'fr' }) })
       .addStringOption((option) =>
         option
           .setName('type')
-          .setDescription("Type d'absence")
+          .setDescription(m.c1_absent_type_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_type_opt({}, { locale: 'fr' }) })
           .setRequired(true)
           .addChoices(
-            { name: 'Congé', value: 'Conge' },
-            { name: 'Maladie', value: 'Maladie' },
-            { name: 'Personnel', value: 'Personnel' },
-            { name: 'Autre', value: 'Autre' },
+            { name: m.c1_absent_type_conge({}, { locale: 'en' }), value: 'Conge', name_localizations: { fr: m.c1_absent_type_conge({}, { locale: 'fr' }) } },
+            { name: m.c1_absent_type_maladie({}, { locale: 'en' }), value: 'Maladie', name_localizations: { fr: m.c1_absent_type_maladie({}, { locale: 'fr' }) } },
+            { name: m.c1_absent_type_personnel({}, { locale: 'en' }), value: 'Personnel', name_localizations: { fr: m.c1_absent_type_personnel({}, { locale: 'fr' }) } },
+            { name: m.c1_absent_type_autre({}, { locale: 'en' }), value: 'Autre', name_localizations: { fr: m.c1_absent_type_autre({}, { locale: 'fr' }) } },
           ),
       )
       .addStringOption((option) =>
         option
           .setName('debut')
-          .setDescription('Date de début (YYYY-MM-DD)')
+          .setDescription(m.c1_absent_debut_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_debut_opt({}, { locale: 'fr' }) })
           .setRequired(true),
       )
       .addStringOption((option) =>
         option
           .setName('raison')
-          .setDescription("Motif de l'absence")
+          .setDescription(m.c1_absent_raison_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_raison_opt({}, { locale: 'fr' }) })
           .setRequired(true),
       )
       .addUserOption((option) =>
         option
           .setName('superieur')
-          .setDescription('Supérieur à notifier')
+          .setDescription(m.c1_absent_superieur_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_superieur_opt({}, { locale: 'fr' }) })
           .setRequired(true),
       )
       .addStringOption((option) =>
         option
           .setName('fin')
-          .setDescription('Date de fin (YYYY-MM-DD, optionnelle)')
+          .setDescription(m.c1_absent_fin_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_fin_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       )
       .addStringOption((option) =>
         option
           .setName('message')
-          .setDescription('Message complémentaire (optionnel)')
+          .setDescription(m.c1_absent_message_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_message_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       )
       .addBooleanOption((option) =>
         option
           .setName('notifier_mention')
-          .setDescription('Notifier automatiquement quand quelqu\'un vous mentionne pendant l\'absence')
+          .setDescription(m.c1_absent_notifier_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_notifier_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       ),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('terminer')
-      .setDescription('Clôture une absence active (vous-même ou en tant que supérieur).')
+      .setDescription(m.c1_absent_terminer_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c1_absent_terminer_desc({}, { locale: 'fr' }) })
       .addStringOption((option) =>
         option
           .setName('absence_id')
-          .setDescription("ID de l'absence à clôturer (optionnel)")
+          .setDescription(m.c1_absent_absence_id_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_absence_id_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       )
       .addUserOption((option) =>
         option
           .setName('staff')
-          .setDescription('Staff concerné (optionnel)')
+          .setDescription(m.c1_absent_staff_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_staff_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       )
       .addStringOption((option) =>
         option
           .setName('note')
-          .setDescription('Note de clôture (optionnelle)')
+          .setDescription(m.c1_absent_note_opt({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c1_absent_note_opt({}, { locale: 'fr' }) })
           .setRequired(false),
       ),
   );
@@ -116,11 +134,12 @@ const parseDateInput = (value: string): Date | null => {
 
 const askIndefiniteConfirmation = async (
   interaction: ChatInputCommandInteraction,
+  locale: 'fr' | 'en',
 ): Promise<ModalSubmitInteraction | null> => {
   const modalCustomId = `absence-indeterminee-${interaction.id}`;
   const modal = new ModalBuilder()
     .setCustomId(modalCustomId)
-    .setTitle('Confirmation absence indéterminée');
+    .setTitle(m.c1_absent_modal_title({}, { locale }));
 
   const confirmationInput = new TextInputBuilder()
     .setCustomId('confirmation')
@@ -131,7 +150,7 @@ const askIndefiniteConfirmation = async (
     .setMaxLength(11);
 
   const confirmationInputLabel = new LabelBuilder()
-    .setLabel('Tapez INDETERMINE pour confirmer')
+    .setLabel(m.c1_absent_modal_label({}, { locale }))
     .setTextInputComponent(confirmationInput)
 
   modal.addLabelComponents(confirmationInputLabel)
@@ -147,7 +166,7 @@ const askIndefiniteConfirmation = async (
     if (value !== 'INDETERMINE') {
       await submit.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Confirmation invalide', "La déclaration d'absence a été annulée."),
+        errorContainer(m.c1_absent_confirm_invalid_title({}, { locale }), m.c1_absent_confirm_invalid_desc({}, { locale })),
       ));
       return null;
     }
@@ -157,7 +176,7 @@ const askIndefiniteConfirmation = async (
   } catch {
     await interaction.followUp(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Confirmation expirée', 'Relancez `/absent declarer` si besoin.'),
+      errorContainer(m.c1_absent_confirm_expired_title({}, { locale }), m.c1_absent_confirm_expired_desc({}, { locale })),
     ));
     return null;
   }
@@ -165,12 +184,13 @@ const askIndefiniteConfirmation = async (
 
 async function execute(interaction: ChatInputCommandInteraction) {
   if (!interaction.guildId) return;
+  const locale = await getEffectiveLocale(interaction);
 
   const staff = await getStaffMember(interaction.guildId, interaction.user.id);
   if (!staff) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Accès refusé', "Vous ne faites pas partie de l'équipe Staff.")
+      errorContainer(m.c1_absent_access_denied_title({}, { locale }), m.c1_absent_access_denied_desc({}, { locale }))
     ));
     return;
   }
@@ -189,7 +209,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (superior.bot) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Supérieur invalide', 'Le supérieur indiqué doit être un membre humain.')
+        errorContainer(m.c1_absent_superior_invalid_title({}, { locale }), m.c1_absent_superior_invalid_desc({}, { locale }))
       ));
       return;
     }
@@ -198,7 +218,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (!superiorStaff) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Supérieur invalide', 'Le supérieur indiqué ne fait pas partie du staff.')
+        errorContainer(m.c1_absent_superior_notstaff_title({}, { locale }), m.c1_absent_superior_notstaff_desc({}, { locale }))
       ));
       return;
     }
@@ -209,7 +229,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (!startDate || (finRaw && !endDate)) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Format invalide', 'Format de date invalide. Utilisez YYYY-MM-DD.')
+        errorContainer(m.c1_absent_date_format_title({}, { locale }), m.c1_absent_date_format_desc({}, { locale }))
       ));
       return;
     }
@@ -217,7 +237,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (endDate && endDate < startDate) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Dates incohérentes', 'La date de fin doit être postérieure ou égale à la date de début.')
+        errorContainer(m.c1_absent_date_order_title({}, { locale }), m.c1_absent_date_order_desc({}, { locale }))
       ));
       return;
     }
@@ -225,7 +245,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     let replyInteraction: ChatInputCommandInteraction | ModalSubmitInteraction = interaction;
 
     if (!endDate) {
-      const confirmedModal = await askIndefiniteConfirmation(interaction);
+      const confirmedModal = await askIndefiniteConfirmation(interaction, locale);
       if (!confirmedModal) {
         return;
       }
@@ -250,23 +270,31 @@ async function execute(interaction: ChatInputCommandInteraction) {
       const isIndefinite = !endDate;
       await replyInteraction.editReply(v2Message(
         successContainer(
-          'Absence déclarée',
+          m.c1_absent_declared_title({}, { locale }),
           isIndefinite
-            ? `Absence déclarée en **indéterminé**. Supérieur notifié: <@${superior.id}>. ID: \`${absence.id}\`.`
-            : `Absence déclarée du **${debutRaw}** au **${finRaw}**. Supérieur notifié: <@${superior.id}>. ID: \`${absence.id}\`.`,
+            ? m.c1_absent_declared_indefinite({ superiorId: superior.id, id: absence.id }, { locale })
+            : m.c1_absent_declared_dated({ start: debutRaw, end: finRaw ?? '', superiorId: superior.id, id: absence.id }, { locale }),
         )
       ));
 
       try {
-        await superior.send(
-          `${E.news} Nouvelle absence staff\n${E.arrow} Staff: ${interaction.user.tag} (${interaction.user.id})\n${E.arrow} Type: ${type}\n${E.arrow} Début: ${debutRaw}\n${E.arrow} Fin: ${finRaw ?? 'Indéterminée'}\n${E.arrow} Motif: ${reason}${message ? `\n${E.arrow} Message: ${message}` : ''}\n${E.arrow} ID: ${absence.id}`,
-        );
+        const lines = [
+          `${E.news} ${m.c1_absent_dm_title({}, { locale })}`,
+          `${E.arrow} ${m.c1_absent_dm_label_staff({}, { locale })}: ${interaction.user.tag} (${interaction.user.id})`,
+          `${E.arrow} ${m.c1_absent_dm_label_type({}, { locale })}: ${type}`,
+          `${E.arrow} ${m.c1_absent_dm_label_start({}, { locale })}: ${debutRaw}`,
+          `${E.arrow} ${m.c1_absent_dm_label_end({}, { locale })}: ${finRaw ?? m.c1_absent_dm_indefinite({}, { locale })}`,
+          `${E.arrow} ${m.c1_absent_dm_label_reason({}, { locale })}: ${reason}`,
+        ];
+        if (message) lines.push(`${E.arrow} ${m.c1_absent_dm_label_message({}, { locale })}: ${message}`);
+        lines.push(`${E.arrow} ID: ${absence.id}`);
+        await superior.send(lines.join('\n'));
       } catch {
         // Le DM peut échouer selon les préférences utilisateur, ce n'est pas bloquant.
       }
     } catch (err) {
       await replyInteraction.editReply(v2Message(
-        errorContainer('Erreur', err instanceof Error ? err.message : 'Une erreur est survenue lors de la création de l\'absence.')
+        errorContainer(m.c1_absent_generic_error_title({}, { locale }), err instanceof Error ? err.message : m.c1_absent_generic_error_desc({}, { locale }))
       ));
     }
     return;
@@ -281,7 +309,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (!targetStaff) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Membre introuvable', 'Le membre ciblé ne fait pas partie du staff.')
+        errorContainer(m.c1_absent_notfound_title({}, { locale }), m.c1_absent_notfound_desc({}, { locale }))
       ));
       return;
     }
@@ -293,7 +321,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (!absence) {
       await interaction.reply(v2Message(
         {flags: MessageFlags.Ephemeral},
-        errorContainer('Aucune absence', 'Aucune absence active trouvée à clôturer.')
+        errorContainer(m.c1_absent_none_title({}, { locale }), m.c1_absent_none_desc({}, { locale }))
       ));
       return;
     }
@@ -304,7 +332,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (!isTargetStaff && !isAssignedSuperior) {
       await interaction.reply(v2Message(
         {flags: MessageFlags.Ephemeral},
-        errorContainer('Permission refusée', "Vous ne pouvez clôturer que votre absence ou celle d'un staff dont vous êtes le supérieur notifié.")
+        errorContainer(m.c1_absent_permission_denied_title({}, { locale }), m.c1_absent_permission_denied_desc({}, { locale }))
       ));
       return;
     }
@@ -313,7 +341,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     await interaction.reply(v2Message(
       {flags: MessageFlags.Ephemeral},
-      successContainer('Absence clôturée', `Absence clôturée pour <@${absence.staffMember.userId}> (ID: \`${absence.id}\`).`)
+      successContainer(m.c1_absent_closed_title({}, { locale }), m.c1_absent_closed_desc({ userId: absence.staffMember.userId, id: absence.id }, { locale }))
     ));
   }
 }

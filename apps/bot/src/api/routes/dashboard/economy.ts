@@ -2,7 +2,7 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { Client } from 'discord.js';
 import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
-import { getOrCreateEconomyConfig } from '../../../services/features/economyService.js';
+import { getOrCreateEconomyConfig, adminDeleteShopItem } from '../../../services/features/economyService.js';
 import { json, readJsonBody, getGuildName, pushAudit, type AuthClaims, type DashboardAccess } from '../../shared.js';
 
 interface LocalPlayerProfile {
@@ -66,6 +66,10 @@ export async function handleEconomyRoutes(
           adventureCooldownMin?: number;
           maxEnergy?: number;
           energyRecoveryPerHour?: number;
+          maxBetAmount?: number;
+          maxDailyBets?: number;
+          maxTransferAmount?: number;
+          transferCooldownMin?: number;
         }>(req);
 
         if (!body) {
@@ -88,7 +92,11 @@ export async function handleEconomyRoutes(
             dailyCooldownHour: body.dailyCooldownHour,
             adventureCooldownMin: body.adventureCooldownMin,
             maxEnergy: body.maxEnergy,
-            energyRecoveryPerHour: body.energyRecoveryPerHour
+            energyRecoveryPerHour: body.energyRecoveryPerHour,
+            maxBetAmount: body.maxBetAmount,
+            maxDailyBets: body.maxDailyBets,
+            maxTransferAmount: body.maxTransferAmount,
+            transferCooldownMin: body.transferCooldownMin
           }
         });
 
@@ -225,18 +233,7 @@ export async function handleEconomyRoutes(
     if (parts.length === 7 && method === 'DELETE') {
       const itemId = parts[6];
       try {
-        const item = await prisma.rpgItem.findUnique({ where: { id: itemId } });
-        if (!item) {
-          json(res, 404, { error: 'Objet introuvable.' });
-          return true;
-        }
-
-        if (item.guildId !== guildId) {
-          json(res, 403, { error: 'Vous ne pouvez supprimer que les objets spécifiques à votre serveur.' });
-          return true;
-        }
-
-        await prisma.rpgItem.delete({ where: { id: itemId } });
+        const { item, unequippedCount } = await adminDeleteShopItem(guildId, itemId);
 
         await pushAudit(guildId, {
           user: auditUser,
@@ -244,12 +241,20 @@ export async function handleEconomyRoutes(
           context: getGuildName(client, guildId),
           module: 'Économie',
           eventType: 'Manuel',
-          details: `Objet ${item.name} supprimé.`,
+          details: `Objet ${item.name} supprimé.${unequippedCount > 0 ? ` Déséquipé de ${unequippedCount} profil(s).` : ''}`,
           channelId: null
         });
 
         json(res, 200, { success: true });
       } catch (err) {
+        if (err instanceof Error && err.message === 'Objet introuvable.') {
+          json(res, 404, { error: err.message });
+          return true;
+        }
+        if (err instanceof Error && err.message.startsWith('Vous ne pouvez supprimer')) {
+          json(res, 403, { error: err.message });
+          return true;
+        }
         logger.error('EconomyAPI', 'Error deleting shop item:', err);
         json(res, 500, { error: "Erreur lors de la suppression de l'objet." });
       }

@@ -1,6 +1,8 @@
 import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import { infoEmbed, errorEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('epoch')
@@ -14,6 +16,7 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const input = interaction.options.getString('value');
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     let timestamp: number;
@@ -28,7 +31,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       timestamp = parseInt(input, 10);
       if (timestamp < 0 || timestamp > 9999999999) {
         await interaction.reply({
-          embeds: [errorEmbed('Timestamp invalide', 'Le timestamp doit être entre 0 et 9999999999')],
+          embeds: [errorEmbed(m.b1_epoch_invalid_ts_title({}, { locale }), m.b1_epoch_invalid_ts_desc({}, { locale }))],
           flags: 64, // ephemeral
         });
         return;
@@ -39,7 +42,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       const date = new Date(`${input}T00:00:00Z`);
       if (Number.isNaN(date.getTime())) {
         await interaction.reply({
-          embeds: [errorEmbed('Date invalide', 'Format attendu: YYYY-MM-DD (ex: 2024-04-04)')],
+          embeds: [errorEmbed(m.b1_epoch_invalid_date_title({}, { locale }), m.b1_epoch_invalid_date_desc({}, { locale }))],
           flags: 64,
         });
         return;
@@ -50,8 +53,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.reply({
         embeds: [
           errorEmbed(
-            'Format non reconnu',
-            'Fournis un timestamp Unix (ex: 1712155663) ou une date au format YYYY-MM-DD'
+            m.b1_epoch_unrecognized_title({}, { locale }),
+            m.b1_epoch_unrecognized_desc({}, { locale })
           ),
         ],
         flags: 64,
@@ -65,10 +68,10 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         infoEmbed(
-          'Conversion Epoch',
+          m.b1_epoch_conversion_title({}, { locale }),
           isConversion
-            ? `**Timestamp Unix:** \`${timestamp}\`\n**Date et heure:** ${discordTimeFormat}`
-            : `**Timestamp actuel:** \`${timestamp}\`\n**Date et heure:** ${discordTimeFormat}`,
+            ? m.b1_epoch_result_converted({ ts: `${timestamp}`, date: discordTimeFormat }, { locale })
+            : m.b1_epoch_result_current({ ts: `${timestamp}`, date: discordTimeFormat }, { locale }),
           [
             {
               name: 'ISO 8601',
@@ -76,7 +79,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
               inline: false,
             },
             {
-              name: 'Format Discord',
+              name: m.b1_epoch_field_discord({}, { locale }),
               value: `${discordTimeFormat}`,
               inline: false,
             },
@@ -86,7 +89,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     });
   } catch (error) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Une erreur est survenue lors de la conversion')],
+      embeds: [errorEmbed(m.b1_error({}, { locale }), m.b1_epoch_error_desc({}, { locale }))],
       flags: 64,
     });
   }

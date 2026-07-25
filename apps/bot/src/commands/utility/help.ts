@@ -2,7 +2,7 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { ApplicationCommandOptionType, MessageFlags, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, PermissionsBitField, ModalBuilder, TextInputBuilder, TextInputStyle, type AutocompleteInteraction, type ChatInputCommandInteraction, type ButtonInteraction, type AnySelectMenuInteraction, type ModalSubmitInteraction } from 'discord.js';
 import { COLORS_RAW, kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
-import { getLocale, getCommandMetadata } from '../../utils/i18n.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
 import { ContainerChild, separator, v2Message } from '@arcscord/components';
 import * as m from '../../lib/paraglide/messages.js';
 
@@ -314,7 +314,7 @@ export async function handleHelpInteraction(
 ) {
   const commands = await getCommands();
   const customId = interaction.customId;
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
 
   if (interaction.isButton()) {
     if (customId === 'help_home') {
@@ -389,7 +389,7 @@ async function autocomplete(interaction: AutocompleteInteraction) {
 async function execute(interaction: ChatInputCommandInteraction) {
   const requestedCmd = interaction.options.getString('cmd', false)?.trim().toLowerCase();
   const commands = await getCommands();
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
 
   let state = 'home';
   if (requestedCmd) {

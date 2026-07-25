@@ -6,55 +6,66 @@ import { COLORS_RAW, kotboContainer } from '../../utils/embeds.js';
 import { E, rankEmoji, buildProgressBar } from '../../utils/emojis.js';
 import { getXpForLevel, getLevelFromXp } from '../../services/progression/levelingService.js';
 import { mediaGallery, separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c5_leaderboard');
 
 const data = new SlashCommandBuilder()
-  .setName('leaderboard')
-  .setDescription('🏆 Affiche le classement du serveur')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addStringOption((option) =>
     option
       .setName('type')
-      .setDescription('Type de classement')
+      .setDescription(m.c5_leaderboard_opt_type({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c5_leaderboard_opt_type({}, { locale: 'fr' }) })
       .setRequired(true)
       .addChoices(
-        { name: 'Messages', value: 'messages' },
-        { name: 'Vocal', value: 'voice' },
-        { name: 'Mixte (Messages + Vocal)', value: 'mixed' },
-        { name: 'XP / Niveaux', value: 'xp' },
+        { name: m.c5_leaderboard_opt_type_choice_messages({}, { locale: 'en' }), value: 'messages' },
+        { name: m.c5_leaderboard_opt_type_choice_voice({}, { locale: 'en' }), value: 'voice' },
+        { name: m.c5_leaderboard_opt_type_choice_mixed({}, { locale: 'en' }), value: 'mixed' },
+        { name: m.c5_leaderboard_opt_type_choice_xp({}, { locale: 'en' }), value: 'xp' },
       ),
   )
   .addStringOption((option) =>
     option
       .setName('style')
-      .setDescription("Style d'affichage du classement")
+      .setDescription(m.c5_leaderboard_opt_style({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c5_leaderboard_opt_style({}, { locale: 'fr' }) })
       .setRequired(false)
       .addChoices(
-        { name: 'Image (Modern)', value: 'image' },
-        { name: 'Texte (V2)', value: 'embed' },
+        { name: m.c5_leaderboard_opt_style_choice_image({}, { locale: 'en' }), value: 'image' },
+        { name: m.c5_leaderboard_opt_style_choice_embed({}, { locale: 'en' }), value: 'embed' },
       ),
   )
   .addIntegerOption((option) =>
     option
       .setName('periode')
-      .setDescription('Période en jours (Ignoré pour XP, défaut: 30)')
+      .setDescription(m.c5_leaderboard_opt_periode({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c5_leaderboard_opt_periode({}, { locale: 'fr' }) })
       .setRequired(false)
       .addChoices(
-        { name: '7 jours', value: 7 },
-        { name: '30 jours', value: 30 },
-        { name: 'Tout les temps (90j max)', value: 90 },
+        { name: m.c5_leaderboard_opt_periode_choice_7({}, { locale: 'en' }), value: 7 },
+        { name: m.c5_leaderboard_opt_periode_choice_30({}, { locale: 'en' }), value: 30 },
+        { name: m.c5_leaderboard_opt_periode_choice_90({}, { locale: 'en' }), value: 90 },
       ),
   )
   .addBooleanOption((option) =>
     option
       .setName('auto_refresh')
-      .setDescription('Actualiser automatiquement toutes les heures dans ce salon')
+      .setDescription(m.c5_leaderboard_opt_autorefresh({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c5_leaderboard_opt_autorefresh({}, { locale: 'fr' }) })
       .setRequired(false),
   );
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: `${E.error} Cette commande doit être utilisée dans un serveur.`,
+      content: `${E.error} ${m.c5_guild_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -115,25 +126,33 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   const discordGuild = interaction.client.guilds.cache.get(guildId);
 
-  const formattedTopMembers = await Promise.all(topMembers.map(async (m) => {
-    let name = `Utilisateur ${m.userId}`;
+  const formattedTopMembers = await Promise.all(topMembers.map(async (entry) => {
+    let name: string = m.c5_leaderboard_unknown_user({ userId: entry.userId }, { locale });
     let avatarUrl: string | null = null;
     try {
-      const member = await discordGuild?.members.fetch(m.userId).catch(() => null);
+      const member = await discordGuild?.members.fetch(entry.userId).catch(() => null);
       if (member) {
         name = member.displayName;
         avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 64 });
       }
     } catch { /* ignore */ }
-    return { name, score: m.score, avatarUrl, level: m.level };
+    return { name, score: entry.score, avatarUrl, level: entry.level };
   }));
 
   const themeColor = type === 'messages' ? COLORS_RAW.primary : type === 'voice' ? COLORS_RAW.success : type === 'xp' ? COLORS_RAW.pink : COLORS_RAW.warning;
-  const typeLabel = type === 'messages' ? 'Messages' : type === 'voice' ? 'Vocal' : type === 'xp' ? 'XP & Niveaux' : 'Activité Mixte';
-  const subTitle = type === 'xp' ? "Classement global d'expérience" : `Les ${periodDays} derniers jours`;
+  const typeLabel = type === 'messages'
+    ? m.c5_leaderboard_type_messages({}, { locale })
+    : type === 'voice'
+      ? m.c5_leaderboard_type_voice({}, { locale })
+      : type === 'xp'
+        ? m.c5_leaderboard_type_xp({}, { locale })
+        : m.c5_leaderboard_type_mixed({}, { locale });
+  const subTitle = type === 'xp'
+    ? m.c5_leaderboard_subtitle_xp({}, { locale })
+    : m.c5_leaderboard_subtitle_period({ days: periodDays }, { locale });
 
   if (style === 'embed') {
-    const serverName = discordGuild?.name ?? 'Serveur';
+    const serverName = discordGuild?.name ?? m.c5_leaderboard_guild_fallback({}, { locale });
 
     let description = `**${serverName}**\n`;
 
@@ -149,7 +168,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         const xpRequiredForNextLevel = nextXpNeeded - prevXpNeeded || 300;
         const percent = Math.min(100, Math.max(0, Math.round((xpInCurrentLevel / xpRequiredForNextLevel) * 100)));
         const bar = buildProgressBar(percent, 8);
-        description += `\n${rankEmoji(rank)} **[Niv. ${userLevel}]** ${member.name}\n${bar} \`${percent}%\``;
+        description += `\n${rankEmoji(rank)} **[${m.c5_leaderboard_level_tag({ level: userLevel }, { locale })}]** ${member.name}\n${bar} \`${percent}%\``;
       } else {
         const maxScore = formattedTopMembers[0].score || 1;
         const percent = Math.min(100, Math.max(0, Math.round((member.score / maxScore) * 100)));
@@ -162,13 +181,13 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.editReply(v2Message(
       kotboContainer({
         color: themeColor,
-        title: `${E.trophy} Top 10 — ${typeLabel}`,
+        title: `${E.trophy} ${m.c5_leaderboard_top10_title({ type: typeLabel }, { locale })}`,
         fields: [
           `-# ${subTitle}`,
           separator({ divider: true, spacing: 'small' }),
           description,
         ],
-        footerOverwrite: `-# Kotbo Analytics · Requis par ${interaction.user.username}`,
+        footerOverwrite: `-# ${m.c5_leaderboard_footer({ user: interaction.user.username }, { locale })}`,
       }),
     ));
   } else {
@@ -181,7 +200,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
           color: themeColor,
           fields: [
             mediaGallery({ items: [{ media: { url: 'attachment://leaderboard.png' } }] }),
-            `-# Kotbo Analytics · Requis par ${interaction.user.username}`,
+            `-# ${m.c5_leaderboard_footer({ user: interaction.user.username }, { locale })}`,
           ],
         }),
       ),
@@ -193,7 +212,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     const memberPerms = interaction.memberPermissions;
     if (!memberPerms?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.followUp({
-        content: `${E.error} Tu dois avoir la permission **Gérer le serveur** pour configurer l'actualisation automatique.`,
+        content: `${E.error} ${m.c5_leaderboard_perm_denied({}, { locale })}`,
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -220,7 +239,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         },
       });
       await interaction.followUp({
-        content: `${E.success} Le classement **${type}** sera actualisé automatiquement toutes les heures dans ce salon. S'il est dépassé par plus de 5 messages, il sera renvoyé.`,
+        content: `${E.success} ${m.c5_leaderboard_autorefresh_enabled({ type }, { locale })}`,
         flags: [MessageFlags.Ephemeral],
       });
     } else {
@@ -228,7 +247,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         where: { guildId, channelId: interaction.channelId, type },
       });
       await interaction.followUp({
-        content: `${E.success} L'actualisation automatique du classement **${type}** a été désactivée pour ce salon.`,
+        content: `${E.success} ${m.c5_leaderboard_autorefresh_disabled({ type }, { locale })}`,
         flags: [MessageFlags.Ephemeral],
       });
     }

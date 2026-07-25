@@ -1,6 +1,7 @@
 <script lang="ts">
   import Papicon from '../Papicon.svelte';
   import DetailedAnalyticsModal from './DetailedAnalyticsModal.svelte';
+  import { m } from '../../i18n';
 
   let { data, onOpenMember, fmt, fmtH } = $props<{ 
     data: any; 
@@ -17,10 +18,10 @@
 <div class="space-y-6">
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
     {#each [
-      { l: 'Effectif', v: fmt(data.staff?.totalStaff), icon: 'Users', color: 'primary' },
-      { l: 'Absences', v: fmt(data.staff?.activeAbsences), icon: 'CalendarSlash', color: 'rose-500' },
-      { l: 'Réunions', v: fmt(data.staff?.meetings), icon: 'UsersThree', color: 'amber-500' },
-      { l: 'Présence moy.', v: `${data.staff?.avgMeetingAttendance ?? 0}%`, icon: 'CheckCircle', color: 'emerald-500' },
+      { l: m.d1_sa_headcount(), v: fmt(data.staff?.totalStaff), icon: 'Users', color: 'primary' },
+      { l: m.d1_sa_absences(), v: fmt(data.staff?.activeAbsences), icon: 'CalendarSlash', color: 'rose-500' },
+      { l: m.d1_sa_meetings(), v: fmt(data.staff?.meetings), icon: 'UsersThree', color: 'amber-500' },
+      { l: m.d1_sa_avg_attendance(), v: `${data.staff?.avgMeetingAttendance ?? 0}%`, icon: 'CheckCircle', color: 'emerald-500' },
     ] as s}
       <div class="premium-card p-6 rounded-xl group">
         <div class="flex justify-between items-start mb-4">
@@ -41,15 +42,15 @@
           <Papicon icon="Crown" size={24} />
         </div>
         <div>
-          <h3 class="text-xl font-semibold text-on-surface">Leaderboard Staff</h3>
-          <p class="text-xs font-bold text-on-surface-variant/40">Activité globale de l'équipe</p>
+          <h3 class="text-xl font-semibold text-on-surface">{m.d1_sa_leaderboard()}</h3>
+          <p class="text-xs font-bold text-on-surface-variant/40">{m.d1_sa_team_activity()}</p>
         </div>
       </div>
       <button 
         onclick={() => showStaffModal = true}
         class="px-4 py-2 rounded-xl bg-surface-container-high/40 hover:bg-surface-container-high text-xs font-bold text-on-surface transition-colors"
       >
-        Voir plus
+        {m.d1_sa_see_more()}
       </button>
     </div>
 
@@ -68,20 +69,20 @@
           </div>
           <div class="flex-1 min-w-0">
             <span class="text-base font-semibold text-on-surface block truncate">{s.name}</span>
-            <span class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{s.grade || 'Staff'}</span>
+            <span class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{s.grade || m.d1_sa_staff()}</span>
           </div>
           <div class="hidden md:flex items-center gap-6 mr-4">
             <div class="text-right">
-              <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">Messages</p>
+              <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">{m.d1_sa_messages()}</p>
               <p class="text-xs font-bold text-on-surface">{fmt(s.messages)}</p>
             </div>
             <div class="text-right">
-              <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">Vocal</p>
+              <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">{m.d1_sa_voice()}</p>
               <p class="text-xs font-bold text-on-surface">{fmtH(s.voiceMinutes)}</p>
             </div>
           </div>
           <div class="text-right pl-4 border-l border-outline-variant/10">
-            <p class="text-[11px] font-semibold text-primary uppercase tracking-widest">Score</p>
+            <p class="text-[11px] font-semibold text-primary uppercase tracking-widest">{m.d1_sa_score()}</p>
             <p class="text-lg font-semibold text-primary">{fmt(s.score)}</p>
           </div>
         </button>
@@ -89,7 +90,7 @@
       {#if staffList.length === 0}
         <div class="py-20 text-center opacity-40">
           <Papicon icon="Users" size={48} class="mx-auto mb-4" />
-          <p class="text-sm font-bold">Aucune activité enregistrée</p>
+          <p class="text-sm font-bold">{m.d1_sa_no_activity()}</p>
         </div>
       {/if}
     </div>
@@ -99,8 +100,8 @@
 <DetailedAnalyticsModal
   open={showStaffModal}
   onClose={() => showStaffModal = false}
-  title="Leaderboard Staff"
-  subtitle="Classement détaillé de l'équipe"
+  title={m.d1_sa_leaderboard()}
+  subtitle={m.d1_sa_detailed_ranking()}
   icon="Crown"
   iconBgClass="bg-primary/10"
   iconColorClass="text-primary"

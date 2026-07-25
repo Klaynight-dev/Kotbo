@@ -2,7 +2,7 @@ import { errorMessage } from '../../utils/errors.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, EmbedBuilder, MessageFlags } from 'discord.js';
 import prisma from '../../utils/db.js';
-import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
+import { getOrCreateRpgProfile, getOrCreateEconomyConfig, registerGambleAttempt } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
 
 const data = new SlashCommandBuilder()
@@ -47,6 +47,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       });
       return;
     }
+
+    await registerGambleAttempt(guildId, userId, bet);
 
     // Roll chamber (1 to 6)
     const firedChamber = 1;

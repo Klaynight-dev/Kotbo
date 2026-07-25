@@ -2,10 +2,11 @@
   import { parseDiscordEmojisAndMarkdown } from '../emojiParser';
   import { confirmDialog } from '../stores/confirmDialog.svelte';
   import Papicon from './Papicon.svelte';
+  import { m } from '../i18n';
 
   let {
     value = $bindable(''),
-    placeholder = 'Rédigez votre message Discord...',
+    placeholder = m.d1_dme_placeholder(),
     rows = 8,
     disabled = false,
     showPreview = true,
@@ -31,10 +32,10 @@
   let emojiCategory = $state('smileys');
 
   const emojiCategories = [
-    { id: 'smileys', icon: '😀', name: 'Smileys' },
-    { id: 'objects', icon: '💡', name: 'Objets' },
-    { id: 'symbols', icon: '❤️', name: 'Symboles' },
-    { id: 'flags', icon: '🏁', name: 'Drapeaux' },
+    { id: 'smileys', icon: '😀', name: m.d1_emoji_cat_smileys() },
+    { id: 'objects', icon: '💡', name: m.d1_emoji_cat_objects() },
+    { id: 'symbols', icon: '❤️', name: m.d1_emoji_cat_symbols() },
+    { id: 'flags', icon: '🏁', name: m.d1_emoji_cat_flags() },
   ];
 
   const emojiMap: Record<string, string[]> = {
@@ -56,67 +57,19 @@
 
   const agendaTemplates = [
     {
-      name: 'Ordre du jour',
+      name: m.d1_dme_tpl_agenda_name(),
       icon: '📋',
-      content: `# 📋 Ordre du Jour
-
-## 1. Accueil & Tour de table
-- Bienvenue et vérification des présences
-- Tour rapide des nouvelles
-
-## 2. Points à aborder
-- **Point 1** — Description du sujet
-- **Point 2** — Description du sujet
-- **Point 3** — Description du sujet
-
-## 3. Discussions ouvertes
-> Espace libre pour les sujets non prévus
-
-## 4. Prochaines étapes
-- [ ] Action 1 — *Responsable*
-- [ ] Action 2 — *Responsable*
-
----
-*Merci pour votre participation !* ⭐`,
+      content: m.d1_dme_tpl_agenda_content(),
     },
     {
-      name: 'Bilan rapide',
+      name: m.d1_dme_tpl_summary_name(),
       icon: '📊',
-      content: `# 📊 Bilan de Réunion
-
-## ✅ Réalisé
-- Point accompli 1
-- Point accompli 2
-
-## ⚠️ En cours
-- Sujet en discussion
-- Décision en attente
-
-## ❌ Reporté
-- Sujet reporté à la prochaine réunion
-
-## 📌 Actions
-- **Action** — Responsable — *Deadline*`,
+      content: m.d1_dme_tpl_summary_content(),
     },
     {
-      name: 'Annonce staff',
+      name: m.d1_dme_tpl_announce_name(),
       icon: '📢',
-      content: `# 📢 Annonce Staff
-
-> **Important** — Merci de lire attentivement
-
-## 📝 Résumé
-Description de l'annonce...
-
-## 🔔 Points clés
-- **Point 1** — Détails
-- **Point 2** — Détails
-
-## ⏰ Dates importantes
-- 📅 **Date** — Événement
-
----
-*En cas de questions, contactez la direction.* 💬`,
+      content: m.d1_dme_tpl_announce_content(),
     },
   ];
 
@@ -127,24 +80,25 @@ Description de l'annonce...
     suffix: string;
     block?: boolean;
     linePrefix?: string;
+    heading?: string;
   };
 
   const formatActions: FormatAction[] = [
-    { icon: 'bold', label: 'Gras', prefix: '**', suffix: '**' },
-    { icon: 'italic', label: 'Italique', prefix: '*', suffix: '*' },
-    { icon: 'underline', label: 'Souligné', prefix: '__', suffix: '__' },
-    { icon: 'strikethrough', label: 'Barré', prefix: '~~', suffix: '~~' },
-    { icon: 'code', label: 'Code inline', prefix: '`', suffix: '`' },
-    { icon: 'terminal', label: 'Bloc de code', prefix: '```\n', suffix: '\n```', block: true },
-    { icon: 'minus', label: 'Séparateur', prefix: '\n---\n', suffix: '' },
+    { icon: 'bold', label: m.d1_dme_bold(), prefix: '**', suffix: '**' },
+    { icon: 'italic', label: m.d1_dme_italic(), prefix: '*', suffix: '*' },
+    { icon: 'underline', label: m.d1_dme_underline(), prefix: '__', suffix: '__' },
+    { icon: 'strikethrough', label: m.d1_dme_strike(), prefix: '~~', suffix: '~~' },
+    { icon: 'code', label: m.d1_dme_inline_code(), prefix: '`', suffix: '`' },
+    { icon: 'terminal', label: m.d1_dme_code_block(), prefix: '```\n', suffix: '\n```', block: true },
+    { icon: 'minus', label: m.d1_dme_separator(), prefix: '\n---\n', suffix: '' },
   ];
 
   const blockActions: FormatAction[] = [
-    { icon: 'hash', label: 'Titre 1', prefix: '', suffix: '', linePrefix: '# ' },
-    { icon: 'hash', label: 'Titre 2', prefix: '', suffix: '', linePrefix: '## ' },
-    { icon: 'hash', label: 'Titre 3', prefix: '', suffix: '', linePrefix: '### ' },
-    { icon: 'list', label: 'Liste', prefix: '', suffix: '', linePrefix: '- ' },
-    { icon: 'message-square', label: 'Citation', prefix: '', suffix: '', linePrefix: '> ' },
+    { icon: 'hash', label: m.d1_dme_heading1(), prefix: '', suffix: '', linePrefix: '# ', heading: 'H1' },
+    { icon: 'hash', label: m.d1_dme_heading2(), prefix: '', suffix: '', linePrefix: '## ', heading: 'H2' },
+    { icon: 'hash', label: m.d1_dme_heading3(), prefix: '', suffix: '', linePrefix: '### ', heading: 'H3' },
+    { icon: 'list', label: m.d1_dme_list(), prefix: '', suffix: '', linePrefix: '- ' },
+    { icon: 'message-square', label: m.d1_dme_quote(), prefix: '', suffix: '', linePrefix: '> ' },
   ];
 
   function insertFormat(action: FormatAction) {
@@ -174,7 +128,8 @@ Description de l'annonce...
       return;
     }
 
-    const newText = action.prefix + (selected || 'texte') + action.suffix;
+    const sampleWord = m.d1_dme_sample_text();
+    const newText = action.prefix + (selected || sampleWord) + action.suffix;
     value = value.slice(0, start) + newText + value.slice(end);
 
     tick().then(() => {
@@ -183,7 +138,7 @@ Description de l'annonce...
         textareaEl!.selectionEnd = start + newText.length;
       } else {
         textareaEl!.selectionStart = start + action.prefix.length;
-        textareaEl!.selectionEnd = start + action.prefix.length + 'texte'.length;
+        textareaEl!.selectionEnd = start + action.prefix.length + sampleWord.length;
       }
       textareaEl!.focus();
     });
@@ -204,7 +159,7 @@ Description de l'annonce...
 
   async function applyTemplate(template: typeof agendaTemplates[0]) {
     if (disabled) return;
-    if (value.trim() && !(await confirmDialog.ask({ title: 'Appliquer ce modèle ?', description: 'Le contenu actuel sera remplacé.', confirmLabel: 'Remplacer', variant: 'warning' }))) return;
+    if (value.trim() && !(await confirmDialog.ask({ title: m.d1_dme_apply_tpl_title(), description: m.d1_dme_apply_tpl_desc(), confirmLabel: m.d1_dme_replace(), variant: 'warning' }))) return;
     value = template.content;
     activeTab = 'editor';
     tick().then(() => textareaEl?.focus());
@@ -298,9 +253,7 @@ Description de l'annonce...
           class="h-7 px-1.5 flex items-center justify-center rounded-md text-on-surface-variant/70 hover:bg-surface-container-high/60 hover:text-on-surface transition-all text-xs font-medium disabled:opacity-30 disabled:pointer-events-none"
           title={action.label}
         >
-          {#if action.label === 'Titre 1'}H1
-          {:else if action.label === 'Titre 2'}H2
-          {:else if action.label === 'Titre 3'}H3
+          {#if action.heading}{action.heading}
           {:else}
             <Papicon icon={action.icon} size={14} />
           {/if}
@@ -317,14 +270,14 @@ Description de l'annonce...
         {disabled}
         onclick={() => showEmojiPicker = !showEmojiPicker}
         class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-surface-container-high/60 transition-all text-base disabled:opacity-30 disabled:pointer-events-none"
-        title="Émojis"
+        title={m.d1_dme_emojis()}
       >😀</button>
 
       {#if showEmojiPicker}
         <div class="absolute left-0 top-full mt-1 z-50 w-64 bg-surface-container-lowest border border-outline-variant/20 rounded-xl p-3 shadow-xl flex flex-col gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
           <input
             type="text"
-            placeholder="Rechercher..."
+            placeholder={m.d1_emoji_search()}
             bind:value={emojiSearch}
             class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30 text-on-surface"
           />
@@ -363,12 +316,12 @@ Description de l'annonce...
           type="button"
           onclick={() => activeTab = 'editor'}
           class="px-3 py-1 rounded-md text-xs font-medium transition-all {activeTab === 'editor' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant/60 hover:text-on-surface-variant'}"
-        >Éditeur</button>
+        >{m.d1_dme_editor()}</button>
         <button
           type="button"
           onclick={() => activeTab = 'preview'}
           class="px-3 py-1 rounded-md text-xs font-medium transition-all {activeTab === 'preview' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant/60 hover:text-on-surface-variant'}"
-        >Aperçu</button>
+        >{m.d1_dme_preview()}</button>
       </div>
     {/if}
 
@@ -379,7 +332,7 @@ Description de l'annonce...
   <!-- Agenda templates -->
   {#if agendaMode}
     <div class="flex items-center gap-2 px-3 py-2 border-b border-outline-variant/10 bg-surface-container-high/10 overflow-x-auto">
-      <span class="text-[10px] font-bold text-on-surface-variant/50 uppercase tracking-widest shrink-0">Modèles</span>
+      <span class="text-[10px] font-bold text-on-surface-variant/50 uppercase tracking-widest shrink-0">{m.d1_dme_templates()}</span>
       {#each agendaTemplates as template}
         <button
           type="button"
@@ -420,7 +373,7 @@ Description de l'annonce...
               <div class="flex items-center gap-2 mb-1">
                 <span class="font-bold text-primary text-sm">Kotbo</span>
                 <span class="bg-primary/20 text-primary text-[9px] font-semibold px-1.5 py-0.5 rounded uppercase leading-none">BOT</span>
-                <span class="text-[11px] text-on-surface-variant/40">Aujourd'hui</span>
+                <span class="text-[11px] text-on-surface-variant/40">{m.d1_dme_today()}</span>
               </div>
               <div class="text-sm text-[#dcddde] leading-relaxed whitespace-pre-wrap break-words discord-preview">
                 {@html previewHtml}
@@ -430,7 +383,7 @@ Description de l'annonce...
         {:else}
           <div class="flex flex-col items-center justify-center py-10 text-on-surface-variant/30">
             <Papicon icon="eye" size={28} class="mb-2" />
-            <p class="text-xs font-medium">L'aperçu apparaîtra ici...</p>
+            <p class="text-xs font-medium">{m.d1_dme_preview_placeholder()}</p>
           </div>
         {/if}
       </div>
@@ -441,16 +394,16 @@ Description de l'annonce...
   <div class="flex items-center justify-between px-3 py-1.5 border-t border-outline-variant/10 bg-surface-container-high/10">
     <div class="flex items-center gap-3 text-[10px] text-on-surface-variant/40 font-medium">
       <span class="flex items-center gap-1">
-        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Ctrl+B</kbd> Gras
+        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Ctrl+B</kbd> {m.d1_dme_bold()}
       </span>
       <span class="flex items-center gap-1">
-        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Ctrl+I</kbd> Italique
+        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Ctrl+I</kbd> {m.d1_dme_italic()}
       </span>
       <span class="flex items-center gap-1">
-        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Tab</kbd> Indent
+        <kbd class="px-1 py-0.5 rounded bg-surface-container-high/40 text-[9px] font-mono">Tab</kbd> {m.d1_dme_indent()}
       </span>
     </div>
-    <span class="text-[10px] text-on-surface-variant/30 font-medium">Markdown Discord</span>
+    <span class="text-[10px] text-on-surface-variant/30 font-medium">{m.d1_dme_markdown_discord()}</span>
   </div>
 </div>
 

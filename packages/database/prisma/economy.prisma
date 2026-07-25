@@ -15,7 +15,13 @@ model EconomyConfig {
   adventureCooldownMin Int   @default(30)  // Temps entre chaque aventure (en minutes)
   maxEnergy            Int   @default(100)
   energyRecoveryPerHour Int  @default(10)
-  
+
+  // Garde-fous anti-abus (gambling / transferts)
+  maxBetAmount         Int   @default(1000) // Mise maximale autorisée pour dice/roulette/rps
+  maxDailyBets         Int   @default(20)   // Nombre maximal de parties de jeux d'argent par jour et par membre
+  maxTransferAmount    Int   @default(5000) // Montant maximal transférable en une fois via /rpg-pay
+  transferCooldownMin  Int   @default(15)   // Temps minimum entre deux transferts (en minutes)
+
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   @@map("economy_configs")
@@ -59,6 +65,19 @@ model RpgProfile {
   travelDurationMin  Int      @default(0)
   travelStartedAt DateTime?
   lastEventAt     DateTime?
+  lastTravelEndedAt DateTime? // Fin du dernier voyage résolu, sert de base au cooldown d'aventure
+
+  // Régénération d'énergie : horodatage dédié, distinct de `updatedAt`, pour que
+  // les actions qui ne touchent pas l'énergie (pay, gambling, etc.) ne remettent
+  // pas à zéro la fenêtre de calcul de la régénération.
+  lastEnergyTick DateTime? @default(now())
+
+  // Anti-abus jeux d'argent (dice/roulette/rps) : fenêtre glissante de 24h
+  dailyBetCount       Int       @default(0)
+  dailyBetWindowStart DateTime?
+
+  // Anti-abus transferts (/rpg-pay)
+  lastTransferAt DateTime?
 
   // Relations
   rpgGuildId String?

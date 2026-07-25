@@ -572,19 +572,19 @@ async function checkAndNotifyLive(
   _discordGuild: unknown
 ): Promise<void> {
   const liveStatus = await checkYoutubeLiveStatus(channelId);
-  
+
   if (liveStatus.isLive && liveStatus.videoId && liveStatus.videoId !== follow.lastLiveId) {
-    const targetChannelId = follow.liveChannelId || follow.videoChannelId || follow.guild.publicChannelId;
-    
+    const targetChannelId = follow.discordChannelId || follow.guild.publicChannelId;
+
     if (targetChannelId) {
       // Use custom message if provided, otherwise use default
       const message = follow.liveMessage || `🔴 **${follow.channelName}** est en direct sur YouTube !`;
-      
+
       // Use custom embed title if message contains {title}, otherwise use default
-      const embedTitle = follow.liveMessage?.includes('{title}') 
+      const embedTitle = follow.liveMessage?.includes('{title}')
         ? follow.liveMessage.replace('{title}', (liveStatus.title ?? ''))
         : `🔴 En Live : ${(liveStatus.title ?? '')}`;
-      
+
       const embed = buildYouTubeEmbed({
         title: embedTitle,
         videoId: liveStatus.videoId,
@@ -598,7 +598,7 @@ async function checkAndNotifyLive(
         targetChannelId,
         message.replace('{title}', (liveStatus.title ?? '')).replace('{channel}', follow.channelName),
         embed,
-        follow.liveMention ?? undefined
+        follow.mention ?? undefined
       );
     }
 
@@ -623,18 +623,18 @@ async function checkAndNotifyVideos(
     return;
   }
 
+  const targetChannelId = follow.discordChannelId || follow.guild.publicChannelId;
+
   if (latestVideo.isShort) {
-    const targetChannelId = follow.shortChannelId || follow.videoChannelId || follow.guild.publicChannelId;
-    
     if (targetChannelId) {
       // Use custom message if provided, otherwise use default
       const message = follow.shortMessage || `⚡ Nouveau Short de **${follow.channelName}** !`;
-      
+
       // Use custom embed title if message contains {title}, otherwise use default
-      const embedTitle = follow.shortMessage?.includes('{title}') 
+      const embedTitle = follow.shortMessage?.includes('{title}')
         ? follow.shortMessage.replace('{title}', latestVideo.title)
         : `⚡ Short : ${latestVideo.title}`;
-      
+
       const embed = buildYouTubeEmbed({
         title: embedTitle,
         videoId: latestVideo.videoId,
@@ -648,23 +648,21 @@ async function checkAndNotifyVideos(
         targetChannelId,
         message.replace('{title}', latestVideo.title).replace('{channel}', follow.channelName),
         embed,
-        follow.shortMention ?? undefined
+        follow.mention ?? undefined
       );
     }
 
     await updateFollowRecord(follow.id, { lastShortId: latestVideo.videoId });
   } else {
-    const targetChannelId = follow.videoChannelId || follow.guild.publicChannelId;
-    
     if (targetChannelId) {
       // Use custom message if provided, otherwise use default
       const message = follow.videoMessage || `🎥 Nouvelle vidéo de **${follow.channelName}** !`;
-      
+
       // Use custom embed title if message contains {title}, otherwise use default
-      const embedTitle = follow.videoMessage?.includes('{title}') 
+      const embedTitle = follow.videoMessage?.includes('{title}')
         ? follow.videoMessage.replace('{title}', latestVideo.title)
         : latestVideo.title;
-      
+
       const embed = buildYouTubeEmbed({
         title: embedTitle,
         videoId: latestVideo.videoId,
@@ -678,7 +676,7 @@ async function checkAndNotifyVideos(
         targetChannelId,
         message.replace('{title}', latestVideo.title).replace('{channel}', follow.channelName),
         embed,
-        follow.videoMention ?? undefined
+        follow.mention ?? undefined
       );
     }
 

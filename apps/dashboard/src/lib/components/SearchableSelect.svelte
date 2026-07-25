@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { m } from '../i18n';
 
   export let id: string = '';
   export let value: string | null = null;
@@ -93,7 +94,7 @@
   {#if open}
     <div class="absolute left-0 right-0 mt-2 z-20 rounded-lg border border-outline-variant/20 bg-surface-container-high text-on-surface p-2 shadow-sm max-h-56 overflow-auto">
       {#if filtered.length === 0}
-        <div class="px-4 py-2 text-xs text-on-surface-variant">Aucun résultat</div>
+        <div class="px-4 py-2 text-xs text-on-surface-variant">{m.e6_searchable_select_no_results()}</div>
       {/if}
       {#each filtered as opt, i (opt.id)}
         <button

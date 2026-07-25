@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, type Autocomplet
 import prisma from '../../utils/db.js';
 import { adminRemoveItem } from '../../services/features/economyService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -17,26 +19,33 @@ interface LocalInventoryEntry {
   item: LocalRpgItem;
 }
 
+const meta = getCommandMetadata('b5_removeitem');
+
 const data = new SlashCommandBuilder()
-  .setName('remove-item')
-  .setDescription("⚙️ Retirer un objet de l'inventaire de quelqu'un")
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addUserOption(option =>
     option
       .setName('membre')
-      .setDescription('Le membre cible')
+      .setDescription(m.b5_removeitem_opt_member({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_removeitem_opt_member({}, { locale: 'fr' }) })
       .setRequired(true)
   )
   .addStringOption(option =>
     option
       .setName('objet')
-      .setDescription("L'objet à retirer")
+      .setDescription(m.b5_removeitem_opt_item({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_removeitem_opt_item({}, { locale: 'fr' }) })
       .setRequired(true)
       .setAutocomplete(true)
   )
   .addIntegerOption(option =>
     option
       .setName('quantite')
-      .setDescription("La quantité d'objets à retirer (défaut : 1)")
+      .setDescription(m.b5_removeitem_opt_qty({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_removeitem_opt_qty({}, { locale: 'fr' }) })
       .setRequired(false)
       .setMinValue(1)
   )
@@ -93,10 +102,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const targetUser = interaction.options.getUser('membre', true);
   const itemId = interaction.options.getString('objet', true);
   const quantity = interaction.options.getInteger('quantite') ?? 1;
+  const locale = await getEffectiveLocale(interaction);
 
   if (targetUser.bot) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', "Impossible de modifier l'inventaire d'un bot.")],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), m.b5_removeitem_bot_target({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -108,15 +118,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         successEmbed(
-          'Objet retiré !',
-          `Vous avez retiré **${result.removedQuantity}x** ${result.itemEmoji} **${result.itemName}** de l'inventaire de <@${targetUser.id}>.\n` +
-          `*(Quantité restante : ${result.remainingQuantity})*`
+          m.b5_removeitem_success_title({}, { locale }),
+          m.b5_removeitem_success_desc({ quantity: result.removedQuantity, emoji: result.itemEmoji, name: result.itemName, user: `<@${targetUser.id}>`, remaining: result.remainingQuantity }, { locale })
         )
       ]
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || "Impossible de retirer l'objet.")],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), errorMessage(err) || m.b5_removeitem_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

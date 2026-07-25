@@ -10,14 +10,21 @@ import { extractTrackingInfo, resolveModuleFromCommand, wrapModuleTracking } fro
 import { kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { mediaGallery, v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_rank');
 
 const data = new SlashCommandBuilder()
-  .setName('rank')
-  .setDescription("⭐ Affiche votre carte de niveau et d'expérience")
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addUserOption((option) =>
     option
       .setName('membre')
-      .setDescription('Membre à afficher (par défaut: vous)')
+      .setDescription(m.b5_rank_opt_member({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_rank_opt_member({}, { locale: 'fr' }) })
       .setRequired(false),
   );
 
@@ -35,9 +42,10 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
 async function executeInternal(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: `${E.error} Cette commande doit être utilisée sur un serveur.`,
+      content: `${E.error} ${m.b5_guild_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -48,7 +56,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction): Promis
   const targetUser = interaction.options.getUser('membre') || interaction.user;
   const member = await interaction.guild?.members.fetch(targetUser.id).catch(() => null);
   if (!member) {
-    await interaction.editReply({ content: `${E.error} Impossible de trouver ce membre sur le serveur.` });
+    await interaction.editReply({ content: `${E.error} ${m.b5_rank_member_not_found({}, { locale })}` });
     return;
   }
 
@@ -69,7 +77,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction): Promis
       files: [attachment],
     });
   } catch {
-    await interaction.editReply({ content: `${E.error} Une erreur est survenue lors de la génération de la carte de niveau.` });
+    await interaction.editReply({ content: `${E.error} ${m.b5_rank_gen_error({}, { locale })}` });
   }
 }
 

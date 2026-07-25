@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, type Autocomplet
 
 import { getOrCreateRpgProfile, consumePotionItem, equipInventoryItem } from '../../services/features/economyService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -17,13 +19,18 @@ interface LocalInventoryEntry {
   item: LocalRpgItem;
 }
 
+const meta = getCommandMetadata('b5_use');
+
 const data = new SlashCommandBuilder()
-  .setName('use')
-  .setDescription('🎒 Utilise un objet de ton inventaire (potion ou équipement)')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addStringOption(option =>
     option
       .setName('objet')
-      .setDescription("L'objet à utiliser (choisis dans la liste)")
+      .setDescription(m.b5_use_opt_item({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_use_opt_item({}, { locale: 'fr' }) })
       .setRequired(true)
       .setAutocomplete(true)
   );
@@ -56,6 +63,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
   const itemId = interaction.options.getString('objet', true);
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const profile = await getOrCreateRpgProfile(guildId, userId);
@@ -65,7 +73,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (!selectedEntry) {
       await interaction.reply({
-        embeds: [errorEmbed('Objet introuvable', "Vous ne possédez pas cet objet dans votre inventaire.")],
+        embeds: [errorEmbed(m.b5_use_not_found_title({}, { locale }), m.b5_use_not_found_desc({}, { locale }))],
         flags: [MessageFlags.Ephemeral]
       });
       return;
@@ -78,8 +86,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.reply({
         embeds: [
           successEmbed(
-            'Potion consommée',
-            `Vous buvez **${result.itemName}**.\n❤️ PV restaurés: +${result.restoredHp} (Total: ${result.newHp} PV)\n⚡ Énergie restaurée: +${result.restoredEnergy} (Total: ${result.newEnergy} Énergie)`
+            m.b5_use_potion_title({}, { locale }),
+            m.b5_use_potion_desc({ name: result.itemName, hp: result.restoredHp, newHp: result.newHp, energy: result.restoredEnergy, newEnergy: result.newEnergy }, { locale })
           )
         ]
       });
@@ -88,20 +96,20 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.reply({
         embeds: [
           successEmbed(
-            'Objet équipé',
-            `Vous avez équipé **${result.itemName}** en tant que **${result.type === 'WEAPON' ? 'Arme 🗡️' : 'Armure 🦺'}** !`
+            m.b5_use_equip_title({}, { locale }),
+            m.b5_use_equip_desc({ name: result.itemName, type: result.type === 'WEAPON' ? m.b5_use_type_weapon({}, { locale }) : m.b5_use_type_armor({}, { locale }) }, { locale })
           )
         ]
       });
     } else {
       await interaction.reply({
-        embeds: [errorEmbed("Impossible d'utiliser", `L'objet **${item.name}** ne peut pas être utilisé directement.`)],
+        embeds: [errorEmbed(m.b5_use_cannot_title({}, { locale }), m.b5_use_cannot_desc({ name: item.name }, { locale }))],
         flags: [MessageFlags.Ephemeral]
       });
     }
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || "Impossible d'utiliser l'objet.")],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), errorMessage(err) || m.b5_use_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

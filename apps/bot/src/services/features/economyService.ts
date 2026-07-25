@@ -29,7 +29,11 @@ export async function getOrCreateEconomyConfig(guildId: string) {
         dailyCooldownHour: 20,
         adventureCooldownMin: 30,
         maxEnergy: 100,
-        energyRecoveryPerHour: 10
+        energyRecoveryPerHour: 10,
+        maxBetAmount: 1000,
+        maxDailyBets: 20,
+        maxTransferAmount: 5000,
+        transferCooldownMin: 15
       }
     });
   }
@@ -163,26 +167,35 @@ export async function getOrCreateRpgProfile(guildId: string, userId: string) {
     });
   }
 
-  // Auto recovery of health and energy based on time since last update
+  // Auto recovery of health and energy based on time elapsed since the last energy tick.
+  // NB: this uses a dedicated `lastEnergyTick` timestamp rather than `updatedAt`, because
+  // `updatedAt` is bumped by any write to the row (pay, gambling, shop...) which would
+  // otherwise silently reset the regen window and make energy appear to never recover.
   const now = Date.now();
-  const diffHours = (now - profile.updatedAt.getTime()) / (1000 * 60 * 60);
+  const lastTick = (profile.lastEnergyTick ?? profile.updatedAt).getTime();
+  const diffHours = (now - lastTick) / (1000 * 60 * 60);
+
+  // Defensive clamp: energy should never be negative (guarded atomically at the source now),
+  // but repair any pre-existing corrupted rows so regen math behaves.
+  const safeEnergy = Math.max(0, profile.energy);
 
   if (diffHours >= 0.1) {
     const config = await getOrCreateEconomyConfig(guildId);
-    
+
     // Recover health (e.g. 5 HP per hour) and energy
     const hpToRecover = Math.floor(diffHours * 5);
     const energyToRecover = Math.floor(diffHours * config.energyRecoveryPerHour);
 
-    if (hpToRecover > 0 || energyToRecover > 0) {
+    if (hpToRecover > 0 || energyToRecover > 0 || safeEnergy !== profile.energy) {
       const newHp = Math.min(profile.maxHealth, profile.health + hpToRecover);
-      const newEnergy = Math.min(config.maxEnergy, profile.energy + energyToRecover);
+      const newEnergy = Math.min(config.maxEnergy, safeEnergy + energyToRecover);
 
       profile = await prisma.rpgProfile.update({
         where: { id: profile.id },
         data: {
           health: newHp,
-          energy: newEnergy
+          energy: newEnergy,
+          lastEnergyTick: new Date(now)
         },
         include: {
           rpgGuild: true,
@@ -327,8 +340,20 @@ export async function startTravel(guildId: string, userId: string, destination: 
   if (profile.health <= 0) throw new Error("Vous n'avez plus de PV (0 PV). Prenez des potions ou attendez de vous reposer pour regagner des forces.");
   if (profile.energy < 20) throw new Error("Vous n'avez pas assez d'énergie (requis: 20 énergie). Restez inactif pour regagner de l'énergie.");
 
-  await prisma.rpgProfile.update({
-    where: { id: profile.id },
+  if (profile.lastTravelEndedAt) {
+    const cooldownMs = config.adventureCooldownMin * 60 * 1000;
+    const diff = Date.now() - profile.lastTravelEndedAt.getTime();
+    if (diff < cooldownMs) {
+      const remainingMin = Math.ceil((cooldownMs - diff) / (1000 * 60));
+      throw new Error(`Vous devez attendre encore ${remainingMin} minute(s) avant de repartir à l'aventure.`);
+    }
+  }
+
+  // Atomic guard: only decrement energy if the row still has enough at write time,
+  // so two near-simultaneous energy-consuming actions can't both pass a stale check
+  // and push energy below zero.
+  const result = await prisma.rpgProfile.updateMany({
+    where: { id: profile.id, energy: { gte: 20 }, isTraveling: false },
     data: {
       isTraveling: true,
       travelDestination: destination,
@@ -337,6 +362,10 @@ export async function startTravel(guildId: string, userId: string, destination: 
       energy: { decrement: 20 }
     }
   });
+
+  if (result.count === 0) {
+    throw new Error("Vous n'avez pas assez d'énergie ou un voyage est déjà en cours.");
+  }
 
   return {
     destination,
@@ -384,7 +413,8 @@ export async function resolveTravel(guildId: string, userId: string) {
         isTraveling: false,
         travelDestination: null,
         travelDurationMin: 0,
-        travelStartedAt: null
+        travelStartedAt: null,
+        lastTravelEndedAt: new Date()
       }
     });
 
@@ -477,7 +507,8 @@ export async function chooseAdventureOutcome(guildId: string, userId: string, ev
       travelDestination: null,
       travelDurationMin: 0,
       travelStartedAt: null,
-      lastEventAt: null
+      lastEventAt: null,
+      lastTravelEndedAt: new Date()
     }
   });
 
@@ -1016,28 +1047,80 @@ export async function transferCoins(guildId: string, senderId: string, receiverI
   if (amount <= 0) throw new Error("Le montant doit être supérieur à 0.");
   if (senderId === receiverId) throw new Error("Vous ne pouvez pas vous envoyer des pièces à vous-même.");
 
+  const config = await getOrCreateEconomyConfig(guildId);
+  if (amount > config.maxTransferAmount) {
+    throw new Error(`Le montant maximal autorisé par transfert est de **${config.maxTransferAmount}** ${config.currencyEmoji}.`);
+  }
+
   const senderProfile = await getOrCreateRpgProfile(guildId, senderId);
   if (senderProfile.balance < amount) {
     throw new Error(`Solde insuffisant. Vous possédez actuellement **${senderProfile.balance}** pièces.`);
   }
 
+  if (senderProfile.lastTransferAt) {
+    const cooldownMs = config.transferCooldownMin * 60 * 1000;
+    const diff = Date.now() - senderProfile.lastTransferAt.getTime();
+    if (diff < cooldownMs) {
+      const remainingMin = Math.ceil((cooldownMs - diff) / (1000 * 60));
+      throw new Error(`Vous devez attendre encore ${remainingMin} minute(s) avant de faire un nouveau transfert.`);
+    }
+  }
+
   const receiverProfile = await getOrCreateRpgProfile(guildId, receiverId);
 
-  await prisma.$transaction([
-    prisma.rpgProfile.update({
-      where: { id: senderProfile.id },
-      data: { balance: { decrement: amount } }
-    }),
-    prisma.rpgProfile.update({
-      where: { id: receiverProfile.id },
-      data: { balance: { increment: amount } }
-    })
-  ]);
+  // Atomic guard on the balance check to avoid a race between two concurrent transfers
+  // from the same sender both passing the balance check above against a stale value.
+  const now = new Date();
+  const debited = await prisma.rpgProfile.updateMany({
+    where: { id: senderProfile.id, balance: { gte: amount } },
+    data: { balance: { decrement: amount }, lastTransferAt: now }
+  });
+
+  if (debited.count === 0) {
+    throw new Error(`Solde insuffisant. Vous possédez actuellement **${senderProfile.balance}** pièces.`);
+  }
+
+  await prisma.rpgProfile.update({
+    where: { id: receiverProfile.id },
+    data: { balance: { increment: amount } }
+  });
 
   return {
     senderBalance: senderProfile.balance - amount,
     receiverBalance: receiverProfile.balance + amount
   };
+}
+
+/**
+ * Enregistre une tentative de mise à un jeu d'argent (dice/roulette/rps) et applique
+ * les garde-fous anti-abus : plafond de mise et nombre de parties par jour (fenêtre glissante 24h).
+ * Doit être appelé avant de débiter/créditer la mise.
+ */
+export async function registerGambleAttempt(guildId: string, userId: string, betAmount: number) {
+  const config = await getOrCreateEconomyConfig(guildId);
+
+  if (betAmount > config.maxBetAmount) {
+    throw new Error(`La mise maximale autorisée est de **${config.maxBetAmount}** ${config.currencyEmoji}.`);
+  }
+
+  const profile = await getOrCreateRpgProfile(guildId, userId);
+  const now = new Date();
+  const windowExpired = !profile.dailyBetWindowStart || (now.getTime() - profile.dailyBetWindowStart.getTime()) >= 24 * 60 * 60 * 1000;
+  const currentCount = windowExpired ? 0 : profile.dailyBetCount;
+
+  if (currentCount >= config.maxDailyBets) {
+    throw new Error(`Vous avez atteint la limite de **${config.maxDailyBets}** parties de jeux d'argent par jour. Réessayez plus tard.`);
+  }
+
+  await prisma.rpgProfile.update({
+    where: { id: profile.id },
+    data: {
+      dailyBetCount: currentCount + 1,
+      dailyBetWindowStart: windowExpired ? now : profile.dailyBetWindowStart
+    }
+  });
+
+  return profile;
 }
 
 /**
@@ -1114,6 +1197,42 @@ export async function adminRemoveCoins(guildId: string, userId: string, amount: 
   return {
     newBalance
   };
+}
+
+/**
+ * Supprime un objet de la boutique (Admin) en retirant au préalable son équipement et ses
+ * bonus de statistiques de tous les profils qui l'ont actuellement équipé.
+ *
+ * `weaponId`/`armorId` sont de simples champs texte (pas de relation Prisma), donc la
+ * suppression de l'objet ne les nettoie jamais automatiquement : sans ce traitement, un
+ * joueur garde indéfiniment les bonus ATK/DEF/SPD d'un objet qui n'existe plus.
+ */
+export async function adminDeleteShopItem(guildId: string, itemId: string) {
+  const item = await prisma.rpgItem.findUnique({ where: { id: itemId } });
+  if (!item) throw new Error('Objet introuvable.');
+  if (item.guildId !== guildId) {
+    throw new Error('Vous ne pouvez supprimer que les objets spécifiques à votre serveur.');
+  }
+
+  const equippedProfiles = await prisma.rpgProfile.findMany({
+    where: { OR: [{ weaponId: itemId }, { armorId: itemId }] }
+  });
+
+  await prisma.$transaction([
+    ...equippedProfiles.map(p => prisma.rpgProfile.update({
+      where: { id: p.id },
+      data: {
+        weaponId: p.weaponId === itemId ? null : undefined,
+        armorId: p.armorId === itemId ? null : undefined,
+        attack: { decrement: item.atkBonus },
+        defense: { decrement: item.defBonus },
+        speed: { decrement: item.spdBonus }
+      }
+    })),
+    prisma.rpgItem.delete({ where: { id: itemId } })
+  ]);
+
+  return { item, unequippedCount: equippedProfiles.length };
 }
 
 /**
@@ -1195,15 +1314,19 @@ export async function adminRemoveItem(guildId: string, userId: string, itemId: s
       })
     );
 
-    // Unequip if it was equipped and is now completely removed
+    // Unequip if it was equipped and is now completely removed.
+    // Stat bonuses (ATK/DEF/SPD) are all applied together on equip regardless of slot
+    // (see equipInventoryItem), so all three must be reverted together here too.
     if (isEquipped) {
-      const updateData: Record<string, unknown> = {};
+      const updateData: Record<string, unknown> = {
+        attack: { increment: -item.atkBonus },
+        defense: { increment: -item.defBonus },
+        speed: { increment: -item.spdBonus }
+      };
       if (profile.weaponId === itemId) {
         updateData.weaponId = null;
-        updateData.attack = { increment: -item.atkBonus };
       } else if (profile.armorId === itemId) {
         updateData.armorId = null;
-        updateData.defense = { increment: -item.defBonus };
       }
       updates.push(
         prisma.rpgProfile.update({
@@ -1318,8 +1441,9 @@ export async function fish(guildId: string, userId: string) {
 
   const caught = rollFish();
 
-  await prisma.rpgProfile.update({
-    where: { guildId_userId: { guildId, userId } },
+  // Atomic guard: only spend energy if the row still has enough at write time.
+  const spent = await prisma.rpgProfile.updateMany({
+    where: { id: profile.id, energy: { gte: 5 } },
     data: {
       balance: { increment: caught.value },
       xp: { increment: caught.xp },
@@ -1328,6 +1452,10 @@ export async function fish(guildId: string, userId: string) {
       lastFish: new Date()
     }
   });
+
+  if (spent.count === 0) {
+    return { success: false as const, cooldown: false, noEnergy: true };
+  }
 
   await prisma.rpgFishCatch.create({
     data: {

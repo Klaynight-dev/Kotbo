@@ -2,6 +2,7 @@
   import Papicon from '../Papicon.svelte';
   import Chart from '../charts/Chart.svelte';
   import DetailedAnalyticsModal from './DetailedAnalyticsModal.svelte';
+  import { m } from '../../i18n';
 
   let { data, onOpenMember, chartLabels } = $props<{ 
     data: any; 
@@ -13,10 +14,10 @@
   const topModerators = $derived(data?.topModerators || []);
   const topSanctionedMembers = $derived(data?.topSanctionedMembers || []);
   const stats = $derived([
-    { label: 'Avertissements', value: data?.totals?.warns || 0, color: '#f59e0b' },
-    { label: 'Exclusions', value: data?.totals?.kicks || 0, color: '#f97316' },
-    { label: 'Bannissements', value: data?.totals?.bans || 0, color: '#f43f5e' },
-    { label: 'Timeouts', value: data?.totals?.timeouts || 0, color: '#8b5cf6' }
+    { label: m.d4_mod_warnings(), value: data?.totals?.warns || 0, color: '#f59e0b' },
+    { label: m.d4_mod_kicks(), value: data?.totals?.kicks || 0, color: '#f97316' },
+    { label: m.d4_mod_bans(), value: data?.totals?.bans || 0, color: '#f43f5e' },
+    { label: m.d4_mod_timeouts(), value: data?.totals?.timeouts || 0, color: '#8b5cf6' }
   ]);
 
   const distributionData = $derived({
@@ -44,7 +45,7 @@
       return `${parts[2]}/${parts[1]}`;
     }) || [],
     datasets: [{
-      label: 'Sanctions',
+      label: m.d4_mod_sanctions(),
       data: data?.dailyTrend?.map((d: any) => d.sanctions || 0) || [],
       borderColor: '#f43f5e',
       backgroundColor: 'rgba(244, 63, 94, 0.1)',
@@ -104,13 +105,13 @@
         <div class="p-2 rounded-xl bg-amber-500/10 text-amber-500">
           <Papicon icon="ChartPieSlice" size={18} />
         </div>
-        <h4 class="text-sm font-semibold text-on-surface uppercase tracking-widest">Distribution</h4>
+        <h4 class="text-sm font-semibold text-on-surface uppercase tracking-widest">{m.d4_distribution()}</h4>
       </div>
       <div class="h-32 w-32 relative">
         <Chart data={distributionData} type="doughnut" height={128} options={doughnutOptions} />
         <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
            <span class="text-xl font-semibold text-on-surface">{stats.reduce((a, b) => a + b.value, 0)}</span>
-           <span class="text-xs font-medium text-on-surface-variant/40">Total</span>
+           <span class="text-xs font-medium text-on-surface-variant/40">{m.d4_total()}</span>
         </div>
       </div>
     </div>
@@ -121,7 +122,7 @@
         <div class="p-2 rounded-xl bg-rose-500/10 text-rose-500">
           <Papicon icon="ChartLineUp" size={18} />
         </div>
-        <h4 class="text-sm font-semibold text-on-surface uppercase tracking-widest">Tendance</h4>
+        <h4 class="text-sm font-semibold text-on-surface uppercase tracking-widest">{m.d4_trend()}</h4>
       </div>
       <div class="flex-grow h-[140px]">
         <Chart data={trendChartData} type="line" height={140} options={trendOptions} />
@@ -137,13 +138,13 @@
           <div class="p-2 rounded-xl bg-primary/10 text-primary">
             <Papicon icon="ShieldCheck" size={20} />
           </div>
-          <h3 class="text-lg font-semibold text-on-surface">Top Modérateurs</h3>
+          <h3 class="text-lg font-semibold text-on-surface">{m.d4_top_moderators()}</h3>
         </div>
         <button 
           onclick={() => showModsModal = true}
           class="px-4 py-2 rounded-xl bg-surface-container-high/40 hover:bg-surface-container-high text-xs font-bold text-on-surface transition-colors"
         >
-          Voir plus
+          {m.d4_see_more()}
         </button>
       </div>
       <div class="space-y-3 flex-grow pr-2">
@@ -156,14 +157,14 @@
               <img src={getAvatar(mod.avatarUrl)} alt="" class="w-8 h-8 rounded-lg object-cover" />
               <div>
                 <p class="text-sm font-semibold text-on-surface">@{mod.moderatorTag}</p>
-                <p class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">Activité modération</p>
+                <p class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{m.d4_moderation_activity()}</p>
               </div>
             </div>
-            <span class="text-sm font-semibold text-primary">{mod.count} actions</span>
+            <span class="text-sm font-semibold text-primary">{m.d4_count_actions({ count: mod.count })}</span>
           </button>
         {/each}
         {#if topModerators.length === 0}
-          <p class="text-sm text-on-surface-variant/40 text-center py-4">Aucune donnée disponible</p>
+          <p class="text-sm text-on-surface-variant/40 text-center py-4">{m.d4_no_data_available()}</p>
         {/if}
       </div>
     </div>
@@ -175,33 +176,33 @@
           <div class="p-2 rounded-xl bg-rose-500/10 text-rose-500">
             <Papicon icon="UserFocus" size={20} />
           </div>
-          <h3 class="text-lg font-semibold text-on-surface">Membres Sanctionnés</h3>
+          <h3 class="text-lg font-semibold text-on-surface">{m.d4_sanctioned_members()}</h3>
         </div>
         <button 
           onclick={() => showSanctionedModal = true}
           class="px-4 py-2 rounded-xl bg-surface-container-high/40 hover:bg-surface-container-high text-xs font-bold text-on-surface transition-colors"
         >
-          Voir plus
+          {m.d4_see_more()}
         </button>
       </div>
       <div class="space-y-3 flex-grow pr-2">
-        {#each topSanctionedMembers.slice(0, 5) as m}
-          <button 
-            onclick={() => onOpenMember(m.targetUserId, m.targetTag)}
+        {#each topSanctionedMembers.slice(0, 5) as member}
+          <button
+            onclick={() => onOpenMember(member.targetUserId, member.targetTag)}
             class="w-full flex items-center justify-between p-3 rounded-lg bg-surface-container-high/20 hover:bg-surface-container-high/50 transition-all text-left"
           >
             <div class="flex items-center gap-3">
-              <img src={getAvatar(m.avatarUrl)} alt="" class="w-8 h-8 rounded-lg object-cover" />
+              <img src={getAvatar(member.avatarUrl)} alt="" class="w-8 h-8 rounded-lg object-cover" />
               <div>
-                <p class="text-sm font-semibold text-on-surface">@{m.targetTag}</p>
-                <p class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">Récidive</p>
+                <p class="text-sm font-semibold text-on-surface">@{member.targetTag}</p>
+                <p class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{m.d4_recidivism()}</p>
               </div>
             </div>
-            <span class="text-sm font-semibold text-rose-500">{m.count} sanctions</span>
+            <span class="text-sm font-semibold text-rose-500">{m.d4_count_sanctions({ count: member.count })}</span>
           </button>
         {/each}
         {#if topSanctionedMembers.length === 0}
-          <p class="text-sm text-on-surface-variant/40 text-center py-4">Aucun membre sanctionné</p>
+          <p class="text-sm text-on-surface-variant/40 text-center py-4">{m.d4_no_sanctioned_member()}</p>
         {/if}
       </div>
     </div>
@@ -215,8 +216,8 @@
           <Papicon icon="Gavel" size={24} />
         </div>
         <div>
-          <h3 class="text-xl font-semibold text-on-surface">Historique Récent</h3>
-          <p class="text-xs font-bold text-on-surface-variant/40">Dernières actions enregistrées</p>
+          <h3 class="text-xl font-semibold text-on-surface">{m.d4_recent_history()}</h3>
+          <p class="text-xs font-bold text-on-surface-variant/40">{m.d4_latest_recorded_actions()}</p>
         </div>
       </div>
       <button 
@@ -242,12 +243,12 @@
                 <p class="text-sm font-semibold text-on-surface">@{sanction.targetTag}</p>
                 <span class="px-2 py-0.5 rounded-lg text-[11px] font-semibold tracking-widest uppercase" style="background: {getSanctionColor(sanction.type)}20; color: {getSanctionColor(sanction.type)}">{sanction.type}</span>
               </div>
-              <p class="text-xs font-medium text-on-surface-variant/60 mt-0.5 line-clamp-1">{sanction.reason || 'Aucune raison spécifiée'}</p>
+              <p class="text-xs font-medium text-on-surface-variant/60 mt-0.5 line-clamp-1">{sanction.reason || m.d4_no_reason_specified()}</p>
             </div>
           </div>
           <div class="flex items-center justify-between md:justify-end gap-6 border-t md:border-t-0 border-outline-variant/5 pt-3 md:pt-0 shrink-0">
             <div class="text-right">
-              <p class="text-[11px] font-semibold text-on-surface-variant/40 uppercase tracking-widest">Modérateur</p>
+              <p class="text-[11px] font-semibold text-on-surface-variant/40 uppercase tracking-widest">{m.d4_moderator()}</p>
               <div class="flex items-center gap-2 mt-0.5">
                 <img src={getAvatar(sanction.moderatorAvatarUrl)} alt="" class="w-5 h-5 rounded-md object-cover" />
                 <p class="text-xs font-bold text-on-surface">@{sanction.moderatorTag}</p>
@@ -260,7 +261,7 @@
       {#if recentSanctions.length === 0}
         <div class="py-20 text-center opacity-40">
           <Papicon icon="ShieldCheck" size={48} class="mx-auto mb-4" />
-          <p class="text-sm font-bold">Dossier de modération vierge</p>
+          <p class="text-sm font-bold">{m.d4_clean_moderation_record()}</p>
         </div>
       {/if}
     </div>
@@ -270,8 +271,8 @@
 <DetailedAnalyticsModal
   open={showModsModal}
   onClose={() => showModsModal = false}
-  title="Top Modérateurs"
-  subtitle="Classement par nombre d'actions de modération"
+  title={m.d4_top_moderators()}
+  subtitle={m.d4_mod_ranking_by_actions()}
   icon="ShieldCheck"
   iconBgClass="bg-primary/10"
   iconColorClass="text-primary"
@@ -283,8 +284,8 @@
 <DetailedAnalyticsModal
   open={showSanctionedModal}
   onClose={() => showSanctionedModal = false}
-  title="Membres Sanctionnés"
-  subtitle="Classement par récidive"
+  title={m.d4_sanctioned_members()}
+  subtitle={m.d4_mod_ranking_by_recidivism()}
   icon="UserFocus"
   iconBgClass="bg-rose-500/10"
   iconColorClass="text-rose-500"
@@ -296,8 +297,8 @@
 <DetailedAnalyticsModal
   open={showRecentModal}
   onClose={() => showRecentModal = false}
-  title="Historique Récent"
-  subtitle="Dernières actions de modération"
+  title={m.d4_recent_history()}
+  subtitle={m.d4_latest_moderation_actions()}
   icon="Gavel"
   iconBgClass="bg-rose-500/10"
   iconColorClass="text-rose-500"

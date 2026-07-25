@@ -12,6 +12,8 @@ import {
   upsertChannelHealthConfig,
 } from '../../services/analytics/channelHealthService.js';
 import { separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('channelhealth')
@@ -79,12 +81,20 @@ const STATUS_ICONS: Record<string, string> = {
   DEAD: E.offline,
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  HEALTHY: 'Sain',
-  OVERLOADED: 'Surchargé',
-  UNDERUSED: 'Sous-utilisé',
-  DEAD: 'Mort',
-};
+function statusLabel(status: string, locale: 'fr' | 'en'): string {
+  switch (status) {
+    case 'HEALTHY':
+      return m.b4_ch_status_healthy({}, { locale });
+    case 'OVERLOADED':
+      return m.b4_ch_status_overloaded({}, { locale });
+    case 'UNDERUSED':
+      return m.b4_ch_status_underused({}, { locale });
+    case 'DEAD':
+      return m.b4_ch_status_dead({}, { locale });
+    default:
+      return status;
+  }
+}
 
 function trendIcon(trend: string): string {
   if (trend === 'UP') return `${E.success}`;
@@ -93,6 +103,7 @@ function trendIcon(trend: string): string {
 }
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
   const subcommand = interaction.options.getSubcommand();
   const guildId = interaction.guildId;
   if (!guildId) return;
@@ -104,7 +115,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!summary || summary.channels.length === 0) {
       await interaction.editReply(v2Message(
-        successContainer('Analyse', 'Aucune donnée disponible. Activez le moniteur et attendez quelques jours de collecte.'),
+        successContainer(m.b4_ch_analysis_title({}, { locale }), m.b4_ch_no_data({}, { locale })),
       ));
       return;
     }
@@ -118,19 +129,19 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     const fields = [
       separator({ divider: true, spacing: 'small' }),
-      `**Résumé**\n` +
+      `**${m.b4_ch_summary({}, { locale })}**\n` +
         Object.entries(statusCounts)
-          .map(([status, count]) => `${STATUS_ICONS[status]} **${STATUS_LABELS[status]}**: ${count}`)
+          .map(([status, count]) => `${STATUS_ICONS[status]} **${statusLabel(status, locale)}**: ${count}`)
           .join(' · '),
     ];
 
     if (summary.overloaded.length > 0) {
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.dnd} Salons surchargés**\n` +
+        `**${E.dnd} ${m.b4_ch_overloaded_header({}, { locale })}**\n` +
           summary.overloaded
             .slice(0, 5)
-            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(0)} msg/j, ${c.uniqueUsersAvg.toFixed(0)} users (${c.confidence}%)`)
+            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(0)} ${m.b4_ch_unit_msgday({}, { locale })}, ${c.uniqueUsersAvg.toFixed(0)} ${m.b4_ch_unit_users({}, { locale })} (${c.confidence}%)`)
             .join('\n'),
       );
     }
@@ -138,10 +149,10 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (summary.dead.length > 0) {
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.offline} Salons morts**\n` +
+        `**${E.offline} ${m.b4_ch_dead_header({}, { locale })}**\n` +
           summary.dead
             .slice(0, 5)
-            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(2)} msg/j`)
+            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(2)} ${m.b4_ch_unit_msgday({}, { locale })}`)
             .join('\n'),
       );
     }
@@ -149,10 +160,10 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (summary.underused.length > 0) {
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.idle} Salons sous-utilisés**\n` +
+        `**${E.idle} ${m.b4_ch_underused_header({}, { locale })}**\n` +
           summary.underused
             .slice(0, 5)
-            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(1)} msg/j, ${c.uniqueUsersAvg.toFixed(0)} users`)
+            .map(c => `${E.dot} <#${c.channelId}> — ${c.avgMsgPerDay.toFixed(1)} ${m.b4_ch_unit_msgday({}, { locale })}, ${c.uniqueUsersAvg.toFixed(0)} ${m.b4_ch_unit_users({}, { locale })}`)
             .join('\n'),
       );
     }
@@ -160,18 +171,18 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const topChannels = summary.channels.slice(0, 5);
     fields.push(
       separator({ divider: true, spacing: 'small' }),
-      `**${E.trophy} Top 5 salons actifs**\n` +
+      `**${E.trophy} ${m.b4_ch_top_header({}, { locale })}**\n` +
         topChannels
-          .map((c, i) => `${E.dot} **${i + 1}.** <#${c.channelId}> — ${c.totalMessages} msg ${trendIcon(c.trend)}`)
+          .map((c, i) => `${E.dot} **${i + 1}.** <#${c.channelId}> — ${c.totalMessages} ${m.b4_ch_unit_msg({}, { locale })} ${trendIcon(c.trend)}`)
           .join('\n'),
     );
 
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.stats} Santé des Salons`,
+        title: `${E.stats} ${m.b4_ch_main_title({}, { locale })}`,
         fields,
-        footerTitle: `Analyse sur ${summary.periodDays}j — ${summary.channels.length} salon(s)`,
+        footerTitle: m.b4_ch_footer({ days: summary.periodDays, count: summary.channels.length }, { locale }),
       }),
     ));
   } else if (subcommand === 'activer') {

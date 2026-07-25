@@ -23,7 +23,7 @@ import {
   listDiscoveredMonsters,
   simulateBattle,
 } from '../../services/features/combatService.js';
-import { getLocale } from '../../utils/i18n.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
 import * as m from '../../lib/paraglide/messages.js';
 
 type Locale = 'fr' | 'en';
@@ -89,7 +89,7 @@ const rpgProfileData = new SlashCommandBuilder()
   );
 
 async function rpgProfileExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const targetUser = interaction.options.getUser('membre') ?? interaction.user;
@@ -144,7 +144,7 @@ const rpgDailyData = new SlashCommandBuilder()
   .setDescription('🪙 Récupérer vos pièces quotidiennes gratuites');
 
 async function rpgDailyExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const result = await claimDaily(interaction.guildId!, interaction.user.id);
@@ -177,7 +177,7 @@ const rpgTravelData = new SlashCommandBuilder()
   .setDescription("✈️ Démarrer ou résoudre un voyage d'aventure");
 
 async function rpgTravelExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -352,7 +352,7 @@ const rpgShopData = new SlashCommandBuilder()
   .setDescription('🛒 Consulter la boutique et acheter des objets RPG');
 
 async function rpgShopExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -471,7 +471,7 @@ const rpgInventoryData = new SlashCommandBuilder()
   .setDescription('🎒 Gérer votre sac à dos, équiper vos armes et utiliser vos potions');
 
 async function rpgInventoryExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -627,7 +627,7 @@ const rpgGuildData = new SlashCommandBuilder()
   );
 
 async function rpgGuildExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -794,7 +794,7 @@ const rpgPayData = new SlashCommandBuilder()
   );
 
 async function rpgPayExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -859,7 +859,7 @@ const rpgSellData = new SlashCommandBuilder()
   );
 
 async function rpgSellExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const guildId = interaction.guildId!;
@@ -923,7 +923,7 @@ const rpgDropData = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 async function rpgDropExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const type = interaction.options.getString('type', true);
@@ -1016,7 +1016,7 @@ const rpgAdminData = new SlashCommandBuilder()
   );
 
 async function rpgAdminExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
 
   const sub = interaction.options.getSubcommand();
@@ -1102,7 +1102,7 @@ const rpgFightData = new SlashCommandBuilder()
   .setDescription('⚔️ Combattre un monstre aléatoire adapté à votre niveau');
 
 async function rpgFightExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
@@ -1134,12 +1134,20 @@ async function rpgFightExecute(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  await interaction.deferReply();
-
-  await prisma.rpgProfile.update({
-    where: { guildId_userId: { guildId, userId } },
+  // Atomic guard: only spend energy if the row still has enough at write time, so two
+  // near-simultaneous energy-consuming actions can't both pass a stale check and push
+  // energy below zero.
+  const energySpent = await prisma.rpgProfile.updateMany({
+    where: { guildId, userId, energy: { gte: 15 } },
     data: { energy: { decrement: 15 } }
   });
+
+  if (energySpent.count === 0) {
+    await interaction.reply({ embeds: [errorEmbed(m.rpg_fight_low_energy_title({}, { locale }), m.rpg_fight_low_energy_desc({ energy: profile.energy }, { locale }))], flags: [MessageFlags.Ephemeral] });
+    return;
+  }
+
+  await interaction.deferReply();
 
   const monster = await findRandomMonster(guildId, profile.level);
   if (!monster) {
@@ -1482,7 +1490,7 @@ const rpgBossData = new SlashCommandBuilder()
   );
 
 async function rpgBossExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
@@ -1517,12 +1525,20 @@ async function rpgBossExecute(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  await interaction.deferReply();
-
-  await prisma.rpgProfile.update({
-    where: { guildId_userId: { guildId, userId } },
+  // Atomic guard: only spend energy if the row still has enough at write time, so two
+  // near-simultaneous energy-consuming actions can't both pass a stale check and push
+  // energy below zero.
+  const energySpent = await prisma.rpgProfile.updateMany({
+    where: { guildId, userId, energy: { gte: 30 } },
     data: { energy: { decrement: 30 } }
   });
+
+  if (energySpent.count === 0) {
+    await interaction.reply({ embeds: [errorEmbed(m.rpg_boss_low_energy_title({}, { locale }), m.rpg_boss_low_energy_desc({ energy: profile.energy }, { locale }))], flags: [MessageFlags.Ephemeral] });
+    return;
+  }
+
+  await interaction.deferReply();
 
   const result = await simulateBattle(profile, boss);
   const turnSummary = result.turns.slice(-8).map(t => {
@@ -1559,7 +1575,7 @@ async function rpgBossExecute(interaction: ChatInputCommandInteraction) {
 }
 
 async function rpgBossAutocomplete(interaction: AutocompleteInteraction) {
-  const locale = getLocale(interaction as unknown as ChatInputCommandInteraction);
+  const locale = await getEffectiveLocale(interaction as unknown as ChatInputCommandInteraction);
   const guildId = interaction.guildId;
   if (!guildId) return;
   const focused = interaction.options.getFocused().toLowerCase();
@@ -1583,7 +1599,7 @@ const rpgBestiaryData = new SlashCommandBuilder()
   .setDescription('📖 Consulter votre bestiaire de monstres découverts');
 
 async function rpgBestiaryExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
@@ -1627,7 +1643,7 @@ const fishData = new SlashCommandBuilder()
   .setDescription('🎣 Pêcher un poisson et gagner des pièces');
 
 async function fishExecute(interaction: ChatInputCommandInteraction) {
-  const locale = getLocale(interaction);
+  const locale = await getEffectiveLocale(interaction);
   if (!await checkEconomyEnabled(interaction, locale)) return;
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;

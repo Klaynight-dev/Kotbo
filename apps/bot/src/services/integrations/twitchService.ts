@@ -193,7 +193,7 @@ export async function checkTwitchFollows(client: Client) {
         const isNewLive = !follow.isLive || follow.lastStreamId !== streamId;
 
         if (isNewLive) {
-          const targetChannelId = follow.liveChannelId || follow.guild.publicChannelId;
+          const targetChannelId = follow.discordChannelId || follow.guild.publicChannelId;
           if (targetChannelId) {
             const channel = discordGuild.channels.cache.get(targetChannelId) || await discordGuild.channels.fetch(targetChannelId).catch(() => null);
             if (channel?.isTextBased()) {
@@ -205,8 +205,13 @@ export async function checkTwitchFollows(client: Client) {
                 thumbnailUrl: liveInfo.thumbnail_url,
               });
 
+              const message = follow.liveMessage
+                ? follow.liveMessage.replace('{title}', liveInfo.title).replace('{channel}', liveInfo.user_name)
+                : `🎥 **${liveInfo.user_name}** est en live sur Twitch !`;
+              const content = follow.mention ? `${follow.mention} ${message}` : message;
+
               await channel.send({
-                content: `🎥 **${liveInfo.user_name}** est en live sur Twitch !`,
+                content,
                 embeds: [embed],
               }).catch(e => logger.error('TwitchService', 'Failed to send Twitch live alert:', e));
             }
@@ -222,31 +227,12 @@ export async function checkTwitchFollows(client: Client) {
             },
           });
         }
-      } else {
-        // Streamer is offline
-        if (follow.isLive) {
-          // Send offline alert if secondary channel is configured
-          if (follow.otherChannelId) {
-            const channel = discordGuild.channels.cache.get(follow.otherChannelId) || await discordGuild.channels.fetch(follow.otherChannelId).catch(() => null);
-            if (channel?.isTextBased()) {
-              const embed = buildTwitchEmbed({
-                title: 'Stream terminé',
-                streamerName: follow.streamerName,
-                isOffline: true,
-              });
-              await channel.send({
-                content: `❌ **${follow.streamerName}** a éteint son live.`,
-                embeds: [embed],
-              }).catch(e => logger.error('TwitchService', 'Failed to send Twitch offline alert:', e));
-            }
-          }
-
-          // Update DB state
-          await prisma.twitchChannelFollow.update({
-            where: { id: follow.id },
-            data: { isLive: false },
-          });
-        }
+      } else if (follow.isLive) {
+        // Streamer went offline: just reset state, no notification (simplified follow)
+        await prisma.twitchChannelFollow.update({
+          where: { id: follow.id },
+          data: { isLive: false },
+        });
       }
     }
   } catch (error) {

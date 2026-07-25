@@ -5,7 +5,7 @@
 
 import { sidebarStore } from './sidebar.svelte';
 import { themeStore, type ThemeId, type AccentColorId } from './theme.svelte';
-import { applyLocale } from '../i18n';
+import { applyLocale, getLocale } from '../i18n';
 
 type Language = 'fr' | 'en';
 type DateFormat = 'relative' | 'absolute' | 'both';
@@ -56,6 +56,11 @@ function loadPrefs(): UserPrefs {
     if (raw) {
       return { ...DEFAULT_PREFS, ...JSON.parse(raw) };
     }
+
+    // Pas de préférence sauvegardée : on reprend la langue déjà résolue par
+    // Paraglide (stratégie localStorage > langue du navigateur > 'fr') plutôt
+    // que de forcer 'fr' pour un nouveau visiteur.
+    return { ...DEFAULT_PREFS, language: getLocale() as Language };
   } catch {
     // ignore parse errors
   }

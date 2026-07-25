@@ -9,22 +9,31 @@ import { getAvailableQuests, claimQuestReward } from '../../services/community/q
 import type { SlashCommandDefinition } from '../../commands.js';
 import { ContainerChild, separator, v2Message } from '@arcscord/components';
 import { ExtractArrayValue } from '../../utils/types.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c4_quests');
 
 const data = new SlashCommandBuilder()
-  .setName('quests')
-  .setDescription('Système de quêtes')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((sub) =>
     sub.setName('list')
-      .setDescription('Voir les quêtes disponibles'))
+      .setDescription(m.c4_quests_list_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_quests_list_desc({}, { locale: 'fr' }) }))
   .addSubcommand((sub) =>
     sub.setName('claim')
-      .setDescription('Réclamer la récompense d\'une quête terminée')
-      .addStringOption((opt) => opt.setName('quete').setDescription('ID de la quête').setRequired(true)));
+      .setDescription(m.c4_quests_claim_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_quests_claim_desc({}, { locale: 'fr' }) })
+      .addStringOption((opt) => opt.setName('quete').setDescription(m.c4_quests_opt_quete({}, { locale: 'en' })).setDescriptionLocalizations({ fr: m.c4_quests_opt_quete({}, { locale: 'fr' }) }).setRequired(true)));
 
 async function execute(interaction: ChatInputCommandInteraction) {
   const subcommand = interaction.options.getSubcommand();
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
+  const locale = await getEffectiveLocale(interaction);
 
   if (subcommand === 'list') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -35,11 +44,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
       await interaction.editReply(v2Message(
         kotboContainer({
           color: 'dark',
-          title: `${E.fire} Quêtes`,
+          title: `${E.fire} ${m.c4_quests_title({}, { locale })}`,
           fields: [
-            `${E.info} Aucune quête disponible pour le moment.`,
+            `${E.info} ${m.c4_quests_none({}, { locale })}`,
           ],
-          footerTitle: 'Quêtes'
+          footerTitle: m.c4_quests_title({}, { locale })
         })
       ));
       return;
@@ -76,7 +85,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (daily.length > 0) {
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.calendar} Quotidiennes**`,
+        `**${E.calendar} ${m.c4_quests_daily({}, { locale })}**`,
         daily.map(formatQuest).join('\n\n')
       )
     }
@@ -84,7 +93,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     if (weekly.length > 0) {
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.calendar} Hebdomadaires**`,
+        `**${E.calendar} ${m.c4_quests_weekly({}, { locale })}**`,
         weekly.map(formatQuest).join('\n\n')
       )
     }
@@ -93,9 +102,9 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.fire} Quêtes`,
+        title: `${E.fire} ${m.c4_quests_title({}, { locale })}`,
         fields,
-        footerTitle: claimable.length > 0 ? `${claimable.length} récompense(s) à réclamer — /quests claim` : 'Quêtes'
+        footerTitle: claimable.length > 0 ? m.c4_quests_footer_claimable({ count: claimable.length }, { locale }) : m.c4_quests_title({}, { locale })
       })
     ));
   }
@@ -106,7 +115,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!result.success) {
       await interaction.reply({
-        components: [errorContainer('Réclamation impossible', result.error)],
+        components: [errorContainer(m.c4_quests_claim_error_title({}, { locale }), result.error)],
         flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
       });
       return;
@@ -119,11 +128,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.reply(v2Message(
       kotboContainer({
         color: 'success',
-        title: `${E.trophy} Quête terminée !`,
+        title: `${E.trophy} ${m.c4_quests_claim_success_title({}, { locale })}`,
         fields: [
-          `Vous avez reçu ${rewards.join(' et ')}.`
+          m.c4_quests_claim_received({ rewards: rewards.join(m.c4_quests_and({}, { locale })) }, { locale })
         ],
-        footerTitle: 'Quêtes'
+        footerTitle: m.c4_quests_title({}, { locale })
       })
     ));
   }

@@ -12,6 +12,8 @@ import prisma from '../../utils/db.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { generateTranscriptFromMessages } from '../../services/features/transcriptService.js';
 import { logger } from '../../utils/logger.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('transcript')
@@ -194,10 +196,11 @@ function transcriptPublicLink(transcriptId: string): string {
 }
 
 async function executeGenerate(interaction: ChatInputCommandInteraction, _guildId: string) {
+  const locale = await getEffectiveLocale(interaction);
   const channel = interaction.channel;
   if (!channel || !(channel instanceof TextChannel)) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée dans un salon textuel.',
+      content: m.b4_transcript_text_channel_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -217,7 +220,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
 
   if (startOptionsCount > 1) {
     await interaction.reply({
-      content: '❌ Veuillez spécifier une seule option de départ parmi `nombre`, `temps` et `message_id`.',
+      content: m.b4_transcript_one_start_option({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -230,7 +233,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
 
   if (endOptionsCount > 1) {
     await interaction.reply({
-      content: '❌ Veuillez spécifier une seule option de fin parmi `jusqua_message_id` et `jusqua_temps`.',
+      content: m.b4_transcript_one_end_option({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -245,7 +248,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
         await channel.messages.fetch(messageId);
       } catch (err) {
         await interaction.editReply({
-          content: `❌ Impossible de trouver le message de départ avec l'ID \`${messageId}\` dans ce salon.`,
+          content: m.b4_transcript_start_msg_not_found({ messageId }, { locale }),
         });
         return;
       }
@@ -256,7 +259,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
         await channel.messages.fetch(jusquaMessageId);
       } catch (err) {
         await interaction.editReply({
-          content: `❌ Impossible de trouver le message de fin avec l'ID \`${jusquaMessageId}\` dans ce salon.`,
+          content: m.b4_transcript_end_msg_not_found({ jusquaMessageId }, { locale }),
         });
         return;
       }
@@ -272,7 +275,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
       const startTimestamp = parseDateTimeOrDuration(temps);
       if (startTimestamp === null) {
         await interaction.editReply({
-          content: '❌ Format de début invalide. Utilisez par exemple : `2h` (2 heures), `30m` (30 minutes), ou une date/heure `JJ/MM/AAAA-HH:MM`.',
+          content: m.b4_transcript_invalid_start_format({}, { locale }),
         });
         return;
       }
@@ -286,7 +289,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
       const endTimestamp = parseDateTimeOrDuration(jusquaTemps);
       if (endTimestamp === null) {
         await interaction.editReply({
-          content: '❌ Format de fin invalide. Utilisez par exemple : `1h` (1 heure), ou une date/heure `JJ/MM/AAAA-HH:MM`, ou un timestamp.',
+          content: m.b4_transcript_invalid_end_format({}, { locale }),
         });
         return;
       }
@@ -376,7 +379,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
 
     if (fetchedMessages.length === 0) {
       await interaction.editReply({
-        content: '⚠️ Aucun message trouvé pour les critères spécifiés.',
+        content: m.b4_transcript_no_messages({}, { locale }),
       });
       return;
     }
@@ -388,8 +391,8 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
     await interaction.editReply({
       embeds: [
         successEmbed(
-          '📄 Transcription générée',
-          `La transcription de **${transcriptData.count}** message(s) de ce salon a été créée avec succès.\n\n🌐 [Consulter la transcription](${publicLink})`
+          m.b4_transcript_generated_title({}, { locale }),
+          m.b4_transcript_generated_desc({ count: transcriptData.count, publicLink }, { locale })
         ),
       ],
     });
@@ -399,8 +402,8 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
     await interaction.editReply({
       embeds: [
         errorEmbed(
-          'Erreur de transcription',
-          'Une erreur est survenue lors de la transcription des messages de ce salon.'
+          m.b4_transcript_error_title({}, { locale }),
+          m.b4_transcript_error_desc({}, { locale })
         ),
       ],
     });
@@ -408,6 +411,7 @@ async function executeGenerate(interaction: ChatInputCommandInteraction, _guildI
 }
 
 async function executeList(interaction: ChatInputCommandInteraction, guildId: string, searchQuery?: string) {
+  const locale = await getEffectiveLocale(interaction);
   await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
   const channelOption = interaction.options.getChannel('salon', false);
@@ -427,8 +431,8 @@ async function executeList(interaction: ChatInputCommandInteraction, guildId: st
     if (transcripts.length === 0) {
       await interaction.editReply({
         content: searchQuery
-          ? `⚠️ Aucune transcription trouvée pour « ${searchQuery} ».`
-          : '⚠️ Aucune transcription enregistrée pour ce serveur.',
+          ? m.b4_transcript_none_found_query({ searchQuery }, { locale })
+          : m.b4_transcript_none_saved({}, { locale }),
       });
       return;
     }
@@ -436,13 +440,13 @@ async function executeList(interaction: ChatInputCommandInteraction, guildId: st
     const lines = transcripts.map((t) => {
       const ts = Math.floor(t.createdAt.getTime() / 1000);
       const link = transcriptPublicLink(t.id);
-      return `• **#${t.channelName}** — <t:${ts}:R> · [ouvrir](${link})\n\`${t.id}\``;
+      return `• **#${t.channelName}** — <t:${ts}:R> · [${m.b4_transcript_open({}, { locale })}](${link})\n\`${t.id}\``;
     });
 
     await interaction.editReply({
       embeds: [
         successEmbed(
-          searchQuery ? `🔎 Transcriptions « ${searchQuery} »` : '📋 Dernières transcriptions',
+          searchQuery ? m.b4_transcript_list_search_title({ searchQuery }, { locale }) : m.b4_transcript_list_recent_title({}, { locale }),
           lines.join('\n')
         ),
       ],
@@ -450,16 +454,17 @@ async function executeList(interaction: ChatInputCommandInteraction, guildId: st
   } catch (error) {
     logger.error('Transcript', 'Erreur lors de la liste des transcriptions:', error);
     await interaction.editReply({
-      embeds: [errorEmbed('Erreur', 'Impossible de récupérer les transcriptions.')],
+      embeds: [errorEmbed(m.b4_error({}, { locale }), m.b4_transcript_list_fetch_error({}, { locale }))],
     });
   }
 }
 
 async function executeDelete(interaction: ChatInputCommandInteraction, guildId: string) {
+  const locale = await getEffectiveLocale(interaction);
   const member = interaction.member as GuildMember;
   if (!member?.permissions.has(PermissionFlagsBits.Administrator)) {
     await interaction.reply({
-      content: '❌ Seuls les administrateurs peuvent supprimer une transcription.',
+      content: m.b4_transcript_delete_admin_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -475,29 +480,30 @@ async function executeDelete(interaction: ChatInputCommandInteraction, guildId: 
     });
 
     if (!transcript || transcript.guildId !== guildId) {
-      await interaction.editReply({ content: `❌ Aucune transcription trouvée avec l'ID \`${id}\`.` });
+      await interaction.editReply({ content: m.b4_transcript_id_not_found({ id }, { locale }) });
       return;
     }
 
     await prisma.transcript.delete({ where: { id } });
     await interaction.editReply({
       embeds: [
-        successEmbed('🗑️ Transcription supprimée', `La transcription **#${transcript.channelName}** (\`${id}\`) a été supprimée.`),
+        successEmbed(m.b4_transcript_deleted_title({}, { locale }), m.b4_transcript_deleted_desc({ channelName: transcript.channelName, id }, { locale })),
       ],
     });
   } catch (error) {
     logger.error('Transcript', 'Erreur lors de la suppression de la transcription:', error);
     await interaction.editReply({
-      embeds: [errorEmbed('Erreur', 'Impossible de supprimer la transcription.')],
+      embeds: [errorEmbed(m.b4_error({}, { locale }), m.b4_transcript_delete_error({}, { locale }))],
     });
   }
 }
 
 async function execute(interaction: ChatInputCommandInteraction) {
   const { guildId } = interaction;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée sur un serveur.',
+      content: m.b4_transcript_guild_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -505,7 +511,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   if (!(await isStaffMember(interaction, guildId))) {
     await interaction.reply({
-      content: "❌ Vous n'avez pas la permission d'utiliser cette commande.",
+      content: m.b4_transcript_no_permission({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -527,7 +533,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
       break;
     default:
       await interaction.reply({
-        content: '❌ Sous-commande inconnue.',
+        content: m.b4_transcript_unknown_subcommand({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
   }

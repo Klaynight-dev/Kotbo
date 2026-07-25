@@ -11,6 +11,8 @@ import {
 } from 'discord.js';
 import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -49,10 +51,11 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const targetUser = interaction.options.getUser('membre') ?? interaction.user;
+  const locale = await getEffectiveLocale(interaction);
 
   const config = await getOrCreateEconomyConfig(guildId);
   if (!config.enabled) {
-    await interaction.reply({ embeds: [errorEmbed('Module désactivé', "L'économie n'est pas activée.")], flags: [MessageFlags.Ephemeral] });
+    await interaction.reply({ embeds: [errorEmbed(m.b3_inv_disabled_title({}, { locale }), m.b3_inv_disabled_desc({}, { locale }))], flags: [MessageFlags.Ephemeral] });
     return;
   }
 
@@ -63,8 +66,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle(`🎒 Inventaire — ${targetUser.displayName}`)
-          .setDescription('*Votre sac à dos est vide !*\nVisitez la boutique avec `/shop` ou combattez des monstres avec `/rpg-fight` !')
+          .setTitle(m.b3_inv_title({ name: targetUser.displayName }, { locale }))
+          .setDescription(m.b3_inv_empty_desc({}, { locale }))
           .setColor(COLORS.dark)
           .setThumbnail(targetUser.displayAvatarURL({ size: 128 }))
       ]
@@ -88,7 +91,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   function formatItem(entry: LocalInventoryEntry): string {
     const item = entry.item;
     const equipped = entry.itemId === profile.weaponId || entry.itemId === profile.armorId;
-    const equippedTag = equipped ? ' 🟢 *Équipé*' : '';
+    const equippedTag = equipped ? m.b3_inv_equipped_tag({}, { locale }) : '';
     const rarity = RARITY_EMOJI[item.rarity] || '⬜';
     const qty = entry.quantity > 1 ? ` x${entry.quantity}` : '';
 
@@ -106,31 +109,30 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   // Page principale
   const mainEmbed = new EmbedBuilder()
-    .setTitle(`🎒 Inventaire — ${targetUser.displayName}`)
+    .setTitle(m.b3_inv_title({ name: targetUser.displayName }, { locale }))
     .setThumbnail(targetUser.displayAvatarURL({ size: 128 }))
     .setColor(COLORS.primary)
-    .setFooter({ text: `${inventory.reduce((s, e) => s + e.quantity, 0)} objets au total • Utilisez /use pour équiper` })
+    .setFooter({ text: m.b3_inv_footer({ total: inventory.reduce((s, e) => s + e.quantity, 0) }, { locale }) })
     .setTimestamp();
 
   // Stats d'équipement actif
   if (totalAtkBonus > 0 || totalDefBonus > 0 || totalSpdBonus > 0) {
     mainEmbed.setDescription(
-      `**Bonus d'équipement actif**\n` +
-      `⚔️ ATK: +${totalAtkBonus} | 🛡️ DEF: +${totalDefBonus} | 👟 SPD: +${totalSpdBonus}`
+      m.b3_inv_equip_bonus({ atk: totalAtkBonus, def: totalDefBonus, spd: totalSpdBonus }, { locale })
     );
   }
 
   if (weapons.length > 0) {
-    mainEmbed.addFields({ name: `🗡️ Armes (${weapons.length})`, value: weapons.map(formatItem).join('\n') });
+    mainEmbed.addFields({ name: m.b3_inv_field_weapons({ count: weapons.length }, { locale }), value: weapons.map(formatItem).join('\n') });
   }
   if (armors.length > 0) {
-    mainEmbed.addFields({ name: `🦺 Armures (${armors.length})`, value: armors.map(formatItem).join('\n') });
+    mainEmbed.addFields({ name: m.b3_inv_field_armors({ count: armors.length }, { locale }), value: armors.map(formatItem).join('\n') });
   }
   if (potions.length > 0) {
-    mainEmbed.addFields({ name: `🧪 Potions (${potions.length})`, value: potions.map(formatItem).join('\n') });
+    mainEmbed.addFields({ name: m.b3_inv_field_potions({ count: potions.length }, { locale }), value: potions.map(formatItem).join('\n') });
   }
   if (others.length > 0) {
-    mainEmbed.addFields({ name: `📦 Autres (${others.length})`, value: others.map(formatItem).join('\n') });
+    mainEmbed.addFields({ name: m.b3_inv_field_others({ count: others.length }, { locale }), value: others.map(formatItem).join('\n') });
   }
 
   pages.push(mainEmbed);
@@ -139,7 +141,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (inventory.length > 12) {
     const overflowItems = inventory.slice(12);
     const overflowEmbed = new EmbedBuilder()
-      .setTitle(`🎒 Inventaire — ${targetUser.displayName} (suite)`)
+      .setTitle(m.b3_inv_title_more({ name: targetUser.displayName }, { locale }))
       .setColor(COLORS.primary)
       .setDescription(overflowItems.map(formatItem).join('\n'))
       .setTimestamp();

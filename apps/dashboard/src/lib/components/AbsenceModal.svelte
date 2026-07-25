@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '../i18n';
   import Papicon from './Papicon.svelte';
   import FormInput from './FormInput.svelte';
   import FormSelect from './FormSelect.svelte';
@@ -58,23 +59,23 @@
   let confirmIndefinite = $state(false);
 
   const absenceTypes = [
-    { value: 'CONGÉ', label: 'Congé / Vacances' },
-    { value: 'MALADIE', label: 'Maladie' },
-    { value: 'PERSONNEL', label: 'Raison Personnelle' },
-    { value: 'TRAVAIL', label: 'Travail / Études' },
-    { value: 'RÉUNION', label: 'Réunion Staff' },
-    { value: 'AUTRE', label: 'Autre' }
+    { value: 'CONGÉ', label: m.e5_absence_type_conge() },
+    { value: 'MALADIE', label: m.e5_absence_type_maladie() },
+    { value: 'PERSONNEL', label: m.e5_absence_type_personnel() },
+    { value: 'TRAVAIL', label: m.e5_absence_type_travail() },
+    { value: 'RÉUNION', label: m.e5_absence_type_reunion() },
+    { value: 'AUTRE', label: m.e5_absence_type_autre() }
   ];
 
   async function handleSave() {
     const requiresSuperior = type !== 'RÉUNION';
     if (!startDate || (!isIndefinite && !endDate) || !reason.trim() || (requiresSuperior && !superiorUserId)) {
-      errorMsg = 'Veuillez remplir tous les champs obligatoires.';
+      errorMsg = m.e5_absence_error_required();
       return;
     }
 
     if (!isIndefinite && new Date(endDate) < new Date(startDate)) {
-      errorMsg = 'La date de fin doit être postérieure à la date de début.';
+      errorMsg = m.e5_absence_error_end_before_start();
       return;
     }
 
@@ -93,7 +94,7 @@
       });
       onClose();
     } catch (e: any) {
-      errorMsg = e.message || 'Une erreur est survenue.';
+      errorMsg = e.message || m.e5_absence_error_generic();
     } finally {
       saving = false;
     }
@@ -103,8 +104,8 @@
 <Modal
   open={show}
   onClose={onClose}
-  title="Organiser une Absence"
-  subtitle="Planifiez votre indisponibilité comme une réunion Outlook."
+  title={m.e5_absence_modal_title()}
+  subtitle={m.e5_absence_modal_subtitle()}
   size="lg"
   showCloseButton={false}
 >
@@ -122,17 +123,17 @@
     <div class="flex-1 px-8 space-y-8 overflow-y-auto">
       <!-- Time Section -->
       <section class="space-y-4">
-        <h4 class="text-[10px] font-semibold uppercase tracking-wider text-primary">Créneau Horaire</h4>
+        <h4 class="text-[10px] font-semibold uppercase tracking-wider text-primary">{m.e5_absence_section_time()}</h4>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div class="space-y-2">
-            <label for="start-date" class="block text-xs font-bold text-on-surface-variant ml-1">Début</label>
+            <label for="start-date" class="block text-xs font-bold text-on-surface-variant ml-1">{m.e5_absence_label_start()}</label>
             <div class="flex gap-2">
               <FormInput id="start-date" type="date" bind:value={startDate} className="flex-[2]" />
               <FormInput type="time" bind:value={startTime} className="flex-1" disabled={isAllDay} />
             </div>
           </div>
           <div class="space-y-2">
-            <label for="end-date" class="block text-xs font-bold text-on-surface-variant ml-1">Fin</label>
+            <label for="end-date" class="block text-xs font-bold text-on-surface-variant ml-1">{m.e5_absence_label_end()}</label>
             <div class="flex gap-2">
               <FormInput id="end-date" type="date" bind:value={endDate} className="flex-[2]" disabled={isIndefinite} />
               <FormInput type="time" bind:value={endTime} className="flex-1" disabled={isIndefinite || isAllDay} />
@@ -142,21 +143,21 @@
         <div class="flex flex-wrap items-center gap-6 px-2">
           <div class="flex items-center gap-3">
             <input type="checkbox" id="all-day" bind:checked={isAllDay} class="w-4 h-4 rounded border-outline text-primary focus:ring-primary" />
-            <label for="all-day" class="text-sm font-bold text-on-surface">Toute la journée</label>
+            <label for="all-day" class="text-sm font-bold text-on-surface">{m.e5_absence_label_all_day()}</label>
           </div>
           <div class="flex items-center gap-3">
             <input type="checkbox" id="indefinite" bind:checked={isIndefinite} class="w-4 h-4 rounded border-outline text-primary focus:ring-primary" />
-            <label for="indefinite" class="text-sm font-bold text-on-surface">Absence indéterminée</label>
+            <label for="indefinite" class="text-sm font-bold text-on-surface">{m.e5_absence_label_indefinite()}</label>
           </div>
         </div>
       </section>
 
       <!-- Details Section -->
       <section class="space-y-6">
-        <h4 class="text-[10px] font-semibold uppercase tracking-wider text-primary">Détails de l'absence</h4>
+        <h4 class="text-[10px] font-semibold uppercase tracking-wider text-primary">{m.e5_absence_section_details()}</h4>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
            <div class="space-y-2">
-            <label for="type" class="block text-xs font-bold text-on-surface-variant ml-1">Type d'absence</label>
+            <label for="type" class="block text-xs font-bold text-on-surface-variant ml-1">{m.e5_absence_label_type()}</label>
             <FormSelect id="type" bind:value={type} className="w-full">
               {#each absenceTypes as at}
                 <option value={at.value}>{at.label}</option>
@@ -164,9 +165,9 @@
             </FormSelect>
           </div>
           <div class="space-y-2">
-            <label for="superior" class="block text-xs font-bold text-on-surface-variant ml-1">Référent / Approbateur</label>
+            <label for="superior" class="block text-xs font-bold text-on-surface-variant ml-1">{m.e5_absence_label_superior()}</label>
             <FormSelect id="superior" bind:value={superiorUserId} className="w-full">
-              <option value="" disabled>Sélectionner un responsable...</option>
+              <option value="" disabled>{m.e5_absence_superior_placeholder()}</option>
               {#each eligibleSuperiors as superior}
                 <option value={superior.userId}>
                   {superior.displayName || superior.username} ({superior.grade})
@@ -176,11 +177,11 @@
           </div>
         </div>
         <div class="space-y-2">
-          <label for="reason" class="block text-xs font-bold text-on-surface-variant ml-1">Motif / Description</label>
+          <label for="reason" class="block text-xs font-bold text-on-surface-variant ml-1">{m.e5_absence_label_reason()}</label>
           <FormTextarea
             id="reason"
             bind:value={reason}
-            placeholder="Expliquez brièvement la raison de votre absence..."
+            placeholder={m.e5_absence_reason_placeholder()}
             rows={3}
             className="w-full"
           />
@@ -198,7 +199,7 @@
     <!-- Footer -->
     <footer class="p-8 border-t border-outline-variant/30 bg-surface-container-lowest flex items-center justify-end gap-4">
       <button onclick={onClose} class="px-6 py-3 font-bold text-on-surface-variant hover:bg-surface-hover rounded-lg transition-all">
-        Annuler
+        {m.e5_absence_cancel()}
       </button>
       <button
         onclick={handleSave}
@@ -207,10 +208,10 @@
       >
         {#if saving}
           <div class="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin"></div>
-          <span>Enregistrement...</span>
+          <span>{m.e5_absence_saving()}</span>
         {:else}
           <Papicon icon="check-circle" size={12} />
-          <span>Confirmer l'absence</span>
+          <span>{m.e5_absence_confirm()}</span>
         {/if}
       </button>
     </footer>

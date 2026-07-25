@@ -17,6 +17,7 @@
   import NotFound from "./pages/NotFound.svelte";
   import GlobalErrorOverlay from "./lib/components/GlobalErrorOverlay.svelte";
   import LazyRoute from "./lib/components/LazyRoute.svelte";
+  import { m } from "./lib/i18n";
 
   let globalError = $state<{ message: string; stack?: string } | null>(null);
   let showKeyboardShortcuts = $state(false);
@@ -90,7 +91,6 @@
     if (path.startsWith("/triggers")) return "auto_responses";
     if (path.startsWith("/automod")) return "automod";
     if (path.startsWith("/admin-lock")) return "automod";
-    if (path.startsWith("/raid-protection")) return "automod";
     if (path.startsWith("/suggestions")) return "suggestions";
     if (path.startsWith("/embed-builder")) return "embed_builder";
     if (path.startsWith("/staff-management")) {
@@ -296,10 +296,10 @@
           globalError = {
             message:
               message ||
-              "Une erreur inattendue est survenue (Promesse rejetée)",
+              m.d3_err_unexpected_promise(),
             stack: reason?.stack || undefined,
           };
-          toast.error(message || "Une erreur inattendue est survenue");
+          toast.error(message || m.d3_err_unexpected());
           isHandlingRejection = false;
         });
       } catch {
@@ -314,10 +314,10 @@
         !IGNORED_MESSAGES.some((m) => event.message.includes(m))
       ) {
         globalError = {
-          message: event.message || "Une erreur est survenue",
+          message: event.message || m.d3_err_generic(),
           stack: event.error?.stack || undefined,
         };
-        toast.error(event.message || "Une erreur est survenue");
+        toast.error(event.message || m.d3_err_generic());
       }
     };
 

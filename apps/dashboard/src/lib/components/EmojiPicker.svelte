@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { m } from '../i18n';
+
   let {
     value = $bindable(''),
     disabled = false
@@ -13,14 +15,14 @@
   let pickerEl = $state<HTMLDivElement | null>(null);
 
   const categories = [
-    { id: 'smileys', icon: '😀', name: 'Smileys' },
-    { id: 'animals', icon: '🐱', name: 'Animaux' },
-    { id: 'food', icon: '🍏', name: 'Aliments' },
-    { id: 'activities', icon: '⚽', name: 'Activités' },
-    { id: 'travel', icon: '🚗', name: 'Voyages' },
-    { id: 'objects', icon: '💡', name: 'Objets' },
-    { id: 'symbols', icon: '❤️', name: 'Symboles' },
-    { id: 'flags', icon: '🏁', name: 'Drapeaux' }
+    { id: 'smileys', icon: '😀', name: m.d1_emoji_cat_smileys() },
+    { id: 'animals', icon: '🐱', name: m.d1_emoji_cat_animals() },
+    { id: 'food', icon: '🍏', name: m.d1_emoji_cat_food() },
+    { id: 'activities', icon: '⚽', name: m.d1_emoji_cat_activities() },
+    { id: 'travel', icon: '🚗', name: m.d1_emoji_cat_travel() },
+    { id: 'objects', icon: '💡', name: m.d1_emoji_cat_objects() },
+    { id: 'symbols', icon: '❤️', name: m.d1_emoji_cat_symbols() },
+    { id: 'flags', icon: '🏁', name: m.d1_emoji_cat_flags() }
   ];
 
   const emojiMap: Record<string, string[]> = {
@@ -91,7 +93,7 @@
     {disabled}
     onclick={() => isOpen = !isOpen}
     class="flex h-11 w-11 items-center justify-center rounded-lg bg-surface-container-high/60 border border-outline-variant/10 hover:bg-surface-container-high hover:border-outline-variant/35 text-xl transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed select-none active:scale-95"
-    title="Ouvrir le sélecteur d'émojis"
+    title={m.d1_emoji_open_picker()}
   >
     😀
   </button>
@@ -102,7 +104,7 @@
     >
       <input
         type="text"
-        placeholder="Rechercher..."
+        placeholder={m.d1_emoji_search()}
         bind:value={search}
         class="w-full bg-surface-container-low border border-outline-variant/15 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30 text-on-surface"
       />
@@ -136,7 +138,7 @@
         {/each}
         {#if filteredEmojis.filter(e => e.trim()).length === 0}
           <div class="col-span-6 text-center text-[10px] text-on-surface-variant/40 italic py-4">
-            Aucun émoji
+            {m.d1_emoji_none()}
           </div>
         {/if}
       </div>

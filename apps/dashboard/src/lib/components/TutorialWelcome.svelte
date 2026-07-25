@@ -3,6 +3,7 @@
   import { fade, fly, scale } from 'svelte/transition';
   import { cubicOut, backOut } from 'svelte/easing';
   import { Sparkles, ArrowRight, Rocket, Zap, Shield, LayoutGrid, Compass, Wrench } from 'lucide-svelte';
+  import { m } from '../i18n';
 
   let show = $derived(onboardingStore.showWelcome);
   let step = $state(0);
@@ -10,18 +11,18 @@
   const features = [
     {
       icon: LayoutGrid,
-      title: 'Dashboard complet',
-      description: 'Gérez votre serveur depuis une interface moderne et intuitive.',
+      title: m.d1_tw_feature1_title(),
+      description: m.d1_tw_feature1_desc(),
     },
     {
       icon: Shield,
-      title: 'Modération avancée',
-      description: 'Sanctions, AutoMod, logs et détection de doubles comptes.',
+      title: m.d1_tw_feature2_title(),
+      description: m.d1_tw_feature2_desc(),
     },
     {
       icon: Zap,
-      title: 'Communauté vivante',
-      description: 'Leveling, économie, giveaways, et bien plus encore.',
+      title: m.d1_tw_feature3_title(),
+      description: m.d1_tw_feature3_desc(),
     },
   ];
 
@@ -65,10 +66,10 @@
           </div>
 
           <h1 class="text-2xl font-bold text-on-surface mb-2 tracking-tight">
-            Bienvenue sur Kotbo
+            {m.d1_tw_welcome_title()}
           </h1>
           <p class="text-on-surface-variant text-sm leading-relaxed max-w-sm mx-auto mb-8">
-            Votre serveur Discord vient d'être connecté. Découvrez tout ce que vous pouvez accomplir avec le dashboard.
+            {m.d1_tw_welcome_desc()}
           </p>
 
           <!-- Feature cards -->
@@ -93,7 +94,7 @@
             onclick={() => (step = 1)}
             class="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-primary to-secondary text-on-primary font-semibold text-sm hover:opacity-90 transition-opacity shadow-sm"
           >
-            Continuer
+            {m.d1_tw_continue()}
             <ArrowRight class="w-4 h-4" />
           </button>
         </div>
@@ -109,10 +110,10 @@
               <Sparkles class="w-8 h-8 text-primary" />
             </div>
             <h2 class="text-xl font-bold text-on-surface mb-2 tracking-tight">
-              Deux guides pour bien démarrer
+              {m.d1_tw_guides_title()}
             </h2>
             <p class="text-on-surface-variant text-sm leading-relaxed max-w-sm mx-auto">
-              Un panneau de progression vous accompagnera en bas à droite. Chaque page affichera aussi un guide contextuel à votre première visite.
+              {m.d1_tw_guides_desc()}
             </p>
           </div>
 
@@ -126,9 +127,9 @@
                 <Compass class="w-5 h-5 text-primary" />
               </div>
               <div class="min-w-0">
-                <p class="text-sm font-semibold text-on-surface mb-0.5">Découverte</p>
+                <p class="text-sm font-semibold text-on-surface mb-0.5">{m.d1_tw_discovery_title()}</p>
                 <p class="text-xs text-on-surface-variant leading-relaxed">
-                  Explorez le dashboard, les membres, la modération et les raccourcis clavier.
+                  {m.d1_tw_discovery_desc()}
                 </p>
               </div>
             </div>
@@ -141,9 +142,9 @@
                 <Wrench class="w-5 h-5 text-amber-600 dark:text-amber-400" />
               </div>
               <div class="min-w-0">
-                <p class="text-sm font-semibold text-on-surface mb-0.5">Configuration</p>
+                <p class="text-sm font-semibold text-on-surface mb-0.5">{m.d1_tw_config_title()}</p>
                 <p class="text-xs text-on-surface-variant leading-relaxed">
-                  Paramétrez l'essentiel en premier — règlement, hiérarchie, salons, staff — puis personnalisez chaque fonctionnalité à votre rythme.
+                  {m.d1_tw_config_desc()}
                 </p>
               </div>
             </div>
@@ -154,13 +155,13 @@
               onclick={getStarted}
               class="flex-1 px-6 py-3 rounded-xl border border-outline-variant text-on-surface-variant font-medium text-sm hover:bg-surface-container transition-colors"
             >
-              Passer
+              {m.d1_tw_skip()}
             </button>
             <button
               onclick={getStarted}
               class="flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-primary to-secondary text-on-primary font-semibold text-sm hover:opacity-90 transition-opacity shadow-sm"
             >
-              C'est parti !
+              {m.d1_tw_lets_go()}
               <Rocket class="w-4 h-4" />
             </button>
           </div>
@@ -172,12 +173,12 @@
         <button
           onclick={() => (step = 0)}
           class="w-2 h-2 rounded-full transition-all duration-300 {step === 0 ? 'w-6 bg-primary' : 'bg-outline-variant hover:bg-outline'}"
-          aria-label="Étape 1"
+          aria-label={m.d1_tw_step1()}
         ></button>
         <button
           onclick={() => (step = 1)}
           class="w-2 h-2 rounded-full transition-all duration-300 {step === 1 ? 'w-6 bg-primary' : 'bg-outline-variant hover:bg-outline'}"
-          aria-label="Étape 2"
+          aria-label={m.d1_tw_step2()}
         ></button>
       </div>
     </div>

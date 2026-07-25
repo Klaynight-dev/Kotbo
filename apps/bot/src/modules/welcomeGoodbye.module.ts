@@ -2,22 +2,20 @@
  * Welcome/Goodbye Module — Bus-based subscriber
  *
  * Handles member join/leave/boost events via the bus.
- * Some operations (applyJoinAutoRole, applyTagAutoRole) need the full
- * GuildMember object, so they fetch from Discord cache/API as needed.
+ * applyJoinAutoRole needs the full GuildMember object, so it fetches
+ * from Discord cache/API as needed.
  *
- * UserUpdate (global username change) stays on client.on() because
- * it doesn't map to a bus event type (it's cross-guild).
+ * Le rôle "tag de serveur" est géré par tagRoleService.ts / raidProtection.ts
+ * (basé sur l'API officielle Discord, pas sur un pattern de pseudo).
  */
 
 import type { Client } from 'discord.js';
-import { Events } from 'discord.js';
 import { kotboEventBus } from '@kotbo/core';
 import {
   handleGuildMemberAdd,
   handleGuildMemberRemove,
   handleGuildBoost,
   applyJoinAutoRole,
-  applyTagAutoRole,
 } from '../services/features/welcomeGoodbyeService.js';
 import { handleWelcomeThread } from '../services/features/welcomeThreadService.js';
 import { checkMemberCountTriggers } from '../services/core/ctfTriggerService.js';
@@ -39,7 +37,6 @@ export function registerWelcomeGoodbyeBusSubscribers(client: Client): void {
     if (!member) return;
 
     await applyJoinAutoRole(member);
-    await applyTagAutoRole(member);
     await syncMemberClanFromDcLink(payload.guildId, payload.userId, null);
     await autoAssignClanOnJoin(payload.guildId, member);
     await handleGuildMemberAdd(member, client);
@@ -75,33 +72,6 @@ export function registerWelcomeGoodbyeBusSubscribers(client: Client): void {
     await handleGuildBoost(member, client);
     await awardClanPointsOnBoost(payload.guildId, member);
   }, MODULE_NAME);
-
-  // ── Nickname changes for tag auto-role (via member:update) ────
-  kotboEventBus.subscribe('member:update', async (payload) => {
-    if (payload.oldNickname === payload.newNickname) return;
-
-    const guild = client.guilds.cache.get(payload.guildId);
-    if (!guild) return;
-
-    const member = guild.members.cache.get(payload.userId)
-      ?? await guild.members.fetch(payload.userId).catch(() => null);
-    if (!member) return;
-
-    await applyTagAutoRole(member);
-  }, MODULE_NAME);
-
-  // ── UserUpdate (global username change) — stays on client.on ──
-  client.on(Events.UserUpdate, async (oldUser, newUser) => {
-    if (oldUser.username === newUser.username) return;
-
-    const mutualGuilds = client.guilds.cache.filter((g) => g.members.cache.has(newUser.id));
-    const fetches = mutualGuilds.map(async (guild) => {
-      const member = guild.members.cache.get(newUser.id)
-        ?? await guild.members.fetch(newUser.id).catch(() => null);
-      if (member) await applyTagAutoRole(member);
-    });
-    await Promise.all(fetches);
-  });
 
   logger.info('Modules', `Module "${MODULE_NAME}" enregistre sur le bus d'events.`);
 }

@@ -9,6 +9,7 @@
   import { authStore } from '../stores/auth.svelte';
   import { toast } from '../stores/toast.svelte';
   import { reportFeedback, submitPartnershipApplication } from '../api';
+  import { m } from '../i18n';
 
   let type = $state<'retour' | 'bloquage' | 'suggestion' | 'autre' | 'partenariat' | 'beta'>('retour');
   let message = $state('');
@@ -57,15 +58,15 @@
 
     if (type === 'partenariat' || type === 'beta') {
       if (!projectName.trim()) {
-        toast.warning('Veuillez saisir le nom de votre projet.');
+        toast.warning(m.d1_fb_warn_project_name());
         return;
       }
       if (!description.trim()) {
-        toast.warning('Veuillez décrire votre projet.');
+        toast.warning(m.d1_fb_warn_describe_project());
         return;
       }
       if (!motivation.trim()) {
-        toast.warning('Veuillez saisir vos motivations.');
+        toast.warning(m.d1_fb_warn_motivations());
         return;
       }
 
@@ -83,9 +84,9 @@
           contact: contact.trim() || null
         });
         successResult = res;
-        toast.success('Votre candidature a bien été envoyée !');
+        toast.success(m.d1_fb_application_sent());
       } catch (err: any) {
-        toast.error(err?.message || 'Échec de l\'envoi de la demande.');
+        toast.error(err?.message || m.d1_fb_send_request_failed());
       } finally {
         isSending = false;
       }
@@ -93,11 +94,11 @@
     }
 
     if (!message.trim()) {
-      toast.warning('Veuillez saisir un message.');
+      toast.warning(m.d1_fb_warn_message());
       return;
     }
     if (message.length > 2000) {
-      toast.warning('Le message ne doit pas dépasser 2000 caractères.');
+      toast.warning(m.d1_fb_warn_message_length());
       return;
     }
 
@@ -109,10 +110,10 @@
         url: window.location.href,
         guildId: authStore.selectedGuildId
       });
-      toast.success('Votre retour a bien été transmis aux administrateurs. Merci !');
+      toast.success(m.d1_fb_feedback_sent());
       closeModal();
     } catch (err: any) {
-      toast.error(err?.message || 'Échec de l\'envoi du retour.');
+      toast.error(err?.message || m.d1_fb_send_feedback_failed());
     } finally {
       isSending = false;
     }
@@ -122,8 +123,8 @@
 <Modal
   open={isOpen}
   onClose={closeModal}
-  title={type === 'partenariat' || type === 'beta' ? 'Candidature Partenariat / Bêta-test' : 'Retour / Suggestion'}
-  subtitle={type === 'partenariat' || type === 'beta' ? 'Présentez votre projet à notre équipe' : 'Aidez-nous à améliorer l\'application'}
+  title={type === 'partenariat' || type === 'beta' ? m.d1_fb_title_partnership() : m.d1_fb_title_feedback()}
+  subtitle={type === 'partenariat' || type === 'beta' ? m.d1_fb_subtitle_partnership() : m.d1_fb_subtitle_feedback()}
   size={successResult ? 'md' : (type === 'partenariat' || type === 'beta' ? 'lg' : 'md')}
 >
   <!-- Premium background mesh glow -->
@@ -139,24 +140,24 @@
         <Papicon icon="check_circle" size={32} />
       </div>
       
-      <h3 class="text-xl font-bold text-on-surface">Candidature transmise !</h3>
+      <h3 class="text-xl font-bold text-on-surface">{m.d1_fb_success_title()}</h3>
       
       {#if successResult.alreadyMember}
         <p class="text-sm text-on-surface-variant leading-relaxed">
-          Comme vous êtes déjà sur notre serveur Discord, un ticket privé avec le staff a été automatiquement ouvert pour échanger avec vous.
+          {m.d1_fb_already_member()}
         </p>
         {#if successResult.dmDelivered}
           <p class="text-xs text-on-surface-variant/70 italic">
-            Un récapitulatif vous a été envoyé par Message Privé (MP).
+            {m.d1_fb_recap_dm()}
           </p>
         {/if}
       {:else}
         <div class="p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-2 text-left">
           <p class="text-sm font-semibold text-amber-500 flex items-center gap-1.5">
-            ⚠️ Action requise pour valider votre demande !
+            {m.d1_fb_action_required()}
           </p>
           <p class="text-xs text-on-surface-variant leading-relaxed">
-            Pour que votre candidature soit prise en compte, <strong>vous devez impérativement rejoindre notre serveur</strong>. Un ticket d'échange y sera alors créé automatiquement.
+            {@html m.d1_fb_must_join()}
           </p>
         </div>
 
@@ -168,28 +169,28 @@
             class="inline-flex items-center justify-center w-full px-5 py-3 rounded-xl font-semibold bg-primary text-on-primary hover:bg-primary-container transition-all duration-200 gap-2 shadow-md hover:shadow-lg active:scale-[0.98]"
           >
             <Papicon icon="external-link" size={14} />
-            <span>Rejoindre le serveur Discord</span>
+            <span>{m.d1_fb_join_server()}</span>
           </a>
         {:else}
           <p class="text-sm text-error/80 italic font-medium">
-            (Lien d'invitation indisponible. Veuillez contacter un administrateur)
+            {m.d1_fb_invite_unavailable()}
           </p>
         {/if}
 
         {#if successResult.dmDelivered}
           <p class="text-xs text-on-surface-variant/70 italic">
-            Le lien et un récapitulatif de votre candidature vous ont également été envoyés par Message Privé (MP).
+            {m.d1_fb_link_recap_dm()}
           </p>
         {:else}
           <p class="text-xs text-error/70 italic">
-            Nous n'avons pas pu vous envoyer de Message Privé (assurez-vous de permettre les DMs des membres du serveur).
+            {m.d1_fb_dm_failed()}
           </p>
         {/if}
       {/if}
 
       <div class="pt-4 border-t border-outline-variant/20">
         <ActionButton
-          label="Fermer"
+          label={m.d1_fb_close()}
           variant="muted"
           size="md"
           className="w-full"
@@ -202,14 +203,14 @@
     <form onsubmit={handleSubmit} class="p-6 space-y-5 relative z-10">
       <!-- Type Selection -->
       <div class="space-y-2">
-        <label for="feedback-type" class="text-[13px] font-medium text-on-surface-variant/70">Type de retour</label>
+        <label for="feedback-type" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_type_label()}</label>
         <FormSelect id="feedback-type" bind:value={type} className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300">
-          <option value="retour">📬 Retour d'expérience</option>
-          <option value="bloquage">🛑 Bloquage / Bug</option>
-          <option value="suggestion">💡 Suggestion d'amélioration</option>
-          <option value="partenariat">🤝 Demande de Partenariat</option>
-          <option value="beta">🧪 Demande de Bêta-test</option>
-          <option value="autre">💬 Autre</option>
+          <option value="retour">{m.d1_fb_opt_feedback()}</option>
+          <option value="bloquage">{m.d1_fb_opt_bug()}</option>
+          <option value="suggestion">{m.d1_fb_opt_suggestion()}</option>
+          <option value="partenariat">{m.d1_fb_opt_partnership()}</option>
+          <option value="beta">{m.d1_fb_opt_beta()}</option>
+          <option value="autre">{m.d1_fb_opt_other()}</option>
         </FormSelect>
       </div>
 
@@ -217,11 +218,11 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <!-- Nom du projet -->
           <div class="space-y-1.5">
-            <label for="p-name" class="text-[13px] font-medium text-on-surface-variant/70">Nom du Projet / Serveur *</label>
+            <label for="p-name" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_project_name()}</label>
             <FormInput
               id="p-name"
               bind:value={projectName}
-              placeholder="Ex: Mon Super Serveur"
+              placeholder={m.d1_fb_ph_project_name()}
               disabled={isSending}
               className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 font-medium"
             />
@@ -229,11 +230,11 @@
 
           <!-- Lien du projet -->
           <div class="space-y-1.5">
-            <label for="p-url" class="text-[13px] font-medium text-on-surface-variant/70">Lien du projet (URL)</label>
+            <label for="p-url" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_project_url()}</label>
             <FormInput
               id="p-url"
               bind:value={projectUrl}
-              placeholder="Ex: https://discord.gg/..."
+              placeholder={m.d1_fb_ph_project_url()}
               disabled={isSending}
               className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 font-medium"
             />
@@ -241,11 +242,11 @@
 
           <!-- Nombre de membres -->
           <div class="space-y-1.5">
-            <label for="p-members" class="text-[13px] font-medium text-on-surface-variant/70">Nombre de membres / Audience</label>
+            <label for="p-members" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_members()}</label>
             <FormInput
               id="p-members"
               bind:value={memberCount}
-              placeholder="Ex: 1500"
+              placeholder={m.d1_fb_ph_members()}
               disabled={isSending}
               className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 font-medium"
             />
@@ -253,11 +254,11 @@
 
           <!-- Disponibilités -->
           <div class="space-y-1.5">
-            <label for="p-avail" class="text-[13px] font-medium text-on-surface-variant/70">Disponibilités</label>
+            <label for="p-avail" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_availability()}</label>
             <FormInput
               id="p-avail"
               bind:value={availability}
-              placeholder="Ex: Soirs et week-ends"
+              placeholder={m.d1_fb_ph_availability()}
               disabled={isSending}
               className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 font-medium"
             />
@@ -266,11 +267,11 @@
 
         <!-- Autre contact -->
         <div class="space-y-1.5">
-          <label for="p-contact" class="text-[13px] font-medium text-on-surface-variant/70">Autre moyen de contact (ex: Discord, Mail, Telegram...)</label>
+          <label for="p-contact" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_contact()}</label>
           <FormInput
             id="p-contact"
             bind:value={contact}
-            placeholder="Ex: mon_tag ou contact@projet.com"
+            placeholder={m.d1_fb_ph_contact()}
             disabled={isSending}
             className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 font-medium"
           />
@@ -279,7 +280,7 @@
         <!-- Description -->
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label for="p-desc" class="text-[13px] font-medium text-on-surface-variant/70">Description du projet *</label>
+            <label for="p-desc" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_description()}</label>
             <span class="text-[10px] font-bold {description.length > 1900 ? 'text-error' : 'text-on-surface-variant/50'}">
               {description.length} / 2000
             </span>
@@ -288,7 +289,7 @@
             id="p-desc"
             bind:value={description}
             rows={3}
-            placeholder="Présentez votre projet de manière détaillée..."
+            placeholder={m.d1_fb_ph_description()}
             disabled={isSending}
             className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 resize-none font-medium leading-relaxed placeholder:text-on-surface-variant/40"
           />
@@ -297,7 +298,7 @@
         <!-- Motivation -->
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label for="p-motiv" class="text-[13px] font-medium text-on-surface-variant/70">Motivations *</label>
+            <label for="p-motiv" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_motivation()}</label>
             <span class="text-[10px] font-bold {motivation.length > 1900 ? 'text-error' : 'text-on-surface-variant/50'}">
               {motivation.length} / 2000
             </span>
@@ -306,7 +307,7 @@
             id="p-motiv"
             bind:value={motivation}
             rows={3}
-            placeholder="Pourquoi souhaitez-vous collaborer / participer au bêta-test ?"
+            placeholder={m.d1_fb_ph_motivation()}
             disabled={isSending}
             className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 resize-none font-medium leading-relaxed placeholder:text-on-surface-variant/40"
           />
@@ -315,7 +316,7 @@
         <!-- Expérience -->
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label for="p-exp" class="text-[13px] font-medium text-on-surface-variant/70">Expériences passées (le cas échéant)</label>
+            <label for="p-exp" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_experience()}</label>
             <span class="text-[10px] font-bold {experience.length > 1900 ? 'text-error' : 'text-on-surface-variant/50'}">
               {experience.length} / 2000
             </span>
@@ -324,7 +325,7 @@
             id="p-exp"
             bind:value={experience}
             rows={2}
-            placeholder="Avez-vous déjà géré des partenariats ou participé à des phases de test ?"
+            placeholder={m.d1_fb_ph_experience()}
             disabled={isSending}
             className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 resize-none font-medium leading-relaxed placeholder:text-on-surface-variant/40"
           />
@@ -333,7 +334,7 @@
         <!-- Description Textarea (original) -->
         <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <label for="feedback-message" class="text-[13px] font-medium text-on-surface-variant/70">Message / Description</label>
+            <label for="feedback-message" class="text-[13px] font-medium text-on-surface-variant/70">{m.d1_fb_field_message()}</label>
             <span class="text-[10px] font-bold {message.length > 1900 ? 'text-error' : 'text-on-surface-variant/50'}">
               {message.length} / 2000
             </span>
@@ -342,7 +343,7 @@
             id="feedback-message"
             bind:value={message}
             rows={5}
-            placeholder="Décrivez votre expérience, votre bug bloquant ou votre idée de fonctionnalité..."
+            placeholder={m.d1_fb_ph_message()}
             disabled={isSending}
             className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-hidden focus:border-primary/40 focus:ring-4 focus:ring-primary/10 transition-all duration-300 resize-none font-medium leading-relaxed placeholder:text-on-surface-variant/40"
           />
@@ -352,7 +353,7 @@
       <!-- Actions -->
       <div class="flex items-center gap-3 justify-end pt-3 border-t border-outline-variant/20">
         <ActionButton
-          label="Annuler"
+          label={m.d1_fb_cancel()}
           variant="muted"
           size="md"
           onClick={closeModal}
@@ -365,10 +366,10 @@
         >
           {#if isSending}
             <div class="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin"></div>
-            <span>Envoi en cours...</span>
+            <span>{m.d1_fb_sending()}</span>
           {:else}
             <Papicon icon="send" size={12} />
-            <span>Transmettre</span>
+            <span>{m.d1_fb_submit()}</span>
           {/if}
         </button>
       </div>

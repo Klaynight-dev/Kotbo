@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '../lib/i18n';
   import { channelDisplayName } from '../lib/channelUtils';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
@@ -79,9 +80,9 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     
     const ok = await saveAction.run(async () => {
       const resOk = await updateFeatureConfiguration('regulation', { [key]: value });
-      if (!resOk) throw new Error('Erreur API');
+      if (!resOk) throw new Error(m.e9_error_api());
       return true;
-    }, { successMessage: 'Configuration mise à jour.' });
+    }, { successMessage: m.e9_regulation_config_updated() });
 
     if (!ok) {
       featureConfig[key] = previousValue;
@@ -101,14 +102,14 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     (() => {
       const isFallback = !guildState.regulationChannelId;
       const channelId = guildState.regulationChannelId || guildState.configChannelId;
-      if (!channelId) return 'Aucun salon de publication';
+      if (!channelId) return m.e9_regulation_no_channel();
       const channel = (guildState.discordChannels || []).find((c: any) => c.id === channelId);
-      const name = channel ? channelDisplayName(channel) : `Salon #${channelId}`;
-      return name + (isFallback ? ' (Configuration par défaut)' : '');
+      const name = channel ? channelDisplayName(channel) : m.e9_regulation_channel_hash({ channelId });
+      return name + (isFallback ? ` ${m.e9_regulation_default_config_suffix()}` : '');
     })()
   );
   const publicationStatusLabel = $derived(
-    guildState.regulationMessageId ? 'Message publié et synchronisable' : 'Aucun message publié pour le moment'
+    guildState.regulationMessageId ? m.e9_regulation_msg_published() : m.e9_regulation_msg_none()
   );
 
   function resetDraft() {
@@ -293,7 +294,7 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     const emoji = normalizeText(draftEmoji);
 
     if (!title || !description) {
-      feedbackMessage = 'Le titre et la description sont obligatoires.';
+      feedbackMessage = m.e9_regulation_title_desc_required();
       feedbackIsError = true;
       return;
     }
@@ -314,13 +315,13 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
           : false;
 
       if (!ok) {
-        feedbackMessage = 'Impossible d’enregistrer l’article de règlement.';
+        feedbackMessage = m.e9_regulation_save_failed();
         feedbackIsError = true;
         return;
       }
 
       modalOpen = false;
-      await refreshState(modalMode === 'create' ? 'Article de règlement ajouté.' : 'Article de règlement mis à jour.');
+      await refreshState(modalMode === 'create' ? m.e9_regulation_article_added() : m.e9_regulation_article_updated());
     } finally {
       saving = false;
     }
@@ -330,7 +331,7 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     if (!deletingRule) return;
 
     if (deleteConfirmationText.trim().toUpperCase() !== 'SUPPRIMER') {
-      feedbackMessage = 'Suppression annulée: validation finale non confirmée.';
+      feedbackMessage = m.e9_regulation_delete_cancelled();
       feedbackIsError = true;
       return;
     }
@@ -343,12 +344,12 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     try {
       const ok = await deleteRegulationArticle(rule.id);
       if (!ok) {
-        feedbackMessage = 'Impossible de supprimer l’article de règlement.';
+        feedbackMessage = m.e9_regulation_delete_failed();
         feedbackIsError = true;
         return;
       }
 
-      await refreshState('Article de règlement supprimé.');
+      await refreshState(m.e9_regulation_article_deleted());
     } finally {
       saving = false;
     }
@@ -359,7 +360,7 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     feedbackIsError = false;
 
     if (!guildState.regulationChannelId && !guildState.configChannelId) {
-      feedbackMessage = 'Le salon de publication du règlement n’est pas défini. Configure-le avant de publier le règlement.';
+      feedbackMessage = m.e9_regulation_no_publish_channel();
       feedbackIsError = true;
       return;
     }
@@ -367,9 +368,9 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     publishing = true;
     try {
       await publishRegulation();
-      await refreshState(guildState.regulationMessageId ? 'Règlement actualisé dans le salon de publication.' : 'Règlement publié dans le salon de publication.');
+      await refreshState(guildState.regulationMessageId ? m.e9_regulation_republished() : m.e9_regulation_published());
     } catch (error) {
-      feedbackMessage = error instanceof Error ? error.message : 'Impossible de publier ou mettre à jour le règlement.';
+      feedbackMessage = error instanceof Error ? error.message : m.e9_regulation_publish_failed();
       feedbackIsError = true;
     } finally {
       publishing = false;
@@ -387,14 +388,14 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     try {
       const ok = await saveAction.run(async () => {
         const resOk = await updateRegulationSettings({ regulationChannelId: channelId });
-        if (!resOk) throw new Error('Erreur API');
-        
+        if (!resOk) throw new Error(m.e9_error_api());
+
         if (featureConfig) {
           await updateFeatureConfiguration('regulation', { channelId });
           featureConfig.channelId = channelId;
         }
         return true;
-      }, { successMessage: channelId ? 'Salon de publication du règlement mis à jour.' : 'Salon de publication spécifique supprimé (fallback configuration actif).' });
+      }, { successMessage: channelId ? m.e9_regulation_channel_updated() : m.e9_regulation_channel_removed() });
       
       if (!ok) {
         guildState.regulationChannelId = previousChannelId;
@@ -437,9 +438,9 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     try {
       const ok = await saveAction.run(async () => {
         const resOk = await updateRegulationSettings({ regulationVerificationEnabled: enabled });
-        if (!resOk) throw new Error('Erreur API');
+        if (!resOk) throw new Error(m.e9_error_api());
         return true;
-      }, { successMessage: enabled ? 'Vérification du règlement activée !' : 'Vérification du règlement désactivée.' });
+      }, { successMessage: enabled ? m.e9_regulation_verif_enabled() : m.e9_regulation_verif_disabled() });
       
       if (!ok) {
         guildState.regulationVerificationEnabled = previous;
@@ -459,9 +460,9 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     try {
       const ok = await saveAction.run(async () => {
         const resOk = await updateRegulationSettings({ regulationRoleId: roleId });
-        if (!resOk) throw new Error('Erreur API');
+        if (!resOk) throw new Error(m.e9_error_api());
         return true;
-      }, { successMessage: 'Rôle de vérification mis à jour.' });
+      }, { successMessage: m.e9_regulation_role_updated() });
       
       if (!ok) {
         guildState.regulationRoleId = previous;
@@ -481,9 +482,9 @@ import EmojiPicker from '../lib/components/EmojiPicker.svelte';
     try {
       const ok = await saveAction.run(async () => {
         const resOk = await updateRegulationSettings({ regulationLockEnabled: enabled });
-        if (!resOk) throw new Error('Erreur API');
+        if (!resOk) throw new Error(m.e9_error_api());
         return true;
-      }, { successMessage: enabled ? 'Verrouillage du serveur activé !' : 'Verrouillage du serveur désactivé.' });
+      }, { successMessage: enabled ? m.e9_regulation_lock_enabled() : m.e9_regulation_lock_disabled() });
 
       if (!ok) {
         guildState.regulationLockEnabled = previous;

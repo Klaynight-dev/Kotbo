@@ -1,6 +1,8 @@
 import type { SlashCommandDefinition } from '../../commands.js';
 import { Collection, SlashCommandBuilder, PermissionFlagsBits, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('clear')
@@ -25,10 +27,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const amount = interaction.options.getInteger('nombre', true);
   const targetUser = interaction.options.getUser('membre');
   const channel = interaction.channel;
+  const locale = await getEffectiveLocale(interaction);
 
   if (!channel || channel.isDMBased() || !('messages' in channel)) {
     await interaction.reply({
-      embeds: [errorEmbed('Action impossible', 'Cette commande ne peut être exécutée que dans un salon textuel de serveur.')],
+      embeds: [errorEmbed(m.b2_action_impossible({}, { locale }), m.b2_clear_text_channel_only({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -59,8 +62,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.editReply({
         embeds: [
           errorEmbed(
-            'Aucun message supprimable',
-            'Aucun message ne correspond aux critères de suppression ou ils sont tous datés de plus de 14 jours.',
+            m.b2_clear_none_title({}, { locale }),
+            m.b2_clear_none_desc({}, { locale }),
           ),
         ],
       });
@@ -72,8 +75,10 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.editReply({
       embeds: [
         successEmbed(
-          'Nettoyage effectué',
-          `Suppression de **${deleted.size}** message(s)${targetUser ? ` de ${targetUser}` : ''} effectuée avec succès.`,
+          m.b2_clear_done_title({}, { locale }),
+          targetUser
+            ? m.b2_clear_done_desc_user({ count: deleted.size, user: targetUser.toString() }, { locale })
+            : m.b2_clear_done_desc({ count: deleted.size }, { locale }),
         ),
       ],
     });
@@ -81,8 +86,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.editReply({
       embeds: [
         errorEmbed(
-          'Erreur',
-          `Impossible de supprimer les messages : ${error instanceof Error ? error.message : String(error)}`,
+          m.b2_err_title({}, { locale }),
+          m.b2_clear_error({ error: error instanceof Error ? error.message : String(error) }, { locale }),
         ),
       ],
     });

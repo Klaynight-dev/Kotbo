@@ -3,6 +3,8 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, EmbedBuilder, MessageFlags } from 'discord.js';
 import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -27,6 +29,7 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const profile = await getOrCreateRpgProfile(guildId, userId);
@@ -37,8 +40,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.reply({
         embeds: [
           errorEmbed(
-            'Sac à dos vide',
-            'Vous ne possédez aucun objet actuellement. Visitez la boutique avec `/shop` et achetez des objets avec `/buy` !'
+            m.b3_items_empty_title({}, { locale }),
+            m.b3_items_empty_desc({}, { locale })
           )
         ]
       });
@@ -46,10 +49,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     }
 
     const embed = new EmbedBuilder()
-      .setTitle('🎒 Votre Inventaire')
-      .setDescription(
-        `Retrouvez ici tous vos objets achetés.\n*Pour vous équiper d'un objet ou boire une potion, utilisez* \`/use <objet>\` !`
-      )
+      .setTitle(m.b3_items_title({}, { locale }))
+      .setDescription(m.b3_items_desc({}, { locale }))
       .setColor(COLORS.primary)
       .setTimestamp();
 
@@ -57,18 +58,18 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       .map((entry) => {
         const item = entry.item;
         let desc = `${item.emoji} **${item.name}** (x${entry.quantity}) - *${item.type}*`;
-        if (item.id === profile.weaponId) desc += " 🟢 *(Équipé en tant qu'Arme)*";
-        if (item.id === profile.armorId) desc += " 🟢 *(Équipé en tant qu'Armure)*";
+        if (item.id === profile.weaponId) desc += m.b3_items_equipped_weapon({}, { locale });
+        if (item.id === profile.armorId) desc += m.b3_items_equipped_armor({}, { locale });
         return desc;
       })
       .join('\n');
 
-    embed.addFields({ name: 'Contenu du sac à dos', value: list });
+    embed.addFields({ name: m.b3_items_field_content({}, { locale }), value: list });
 
     await interaction.reply({ embeds: [embed] });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || "Impossible de lister l'inventaire.")],
+      embeds: [errorEmbed(m.b3_error_title({}, { locale }), errorMessage(err) || m.b3_items_error_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

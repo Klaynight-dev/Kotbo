@@ -4020,7 +4020,14 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
 
     if (parts.length === 6 && parts[5] === 'youtube' && method === 'POST') {
       try {
-        const body = await readJsonBody<{ query: string; liveChannelId?: string | null; shortChannelId?: string | null; videoChannelId?: string | null }>(req);
+        const body = await readJsonBody<{
+          query: string;
+          discordChannelId?: string | null;
+          mention?: string | null;
+          liveMessage?: string | null;
+          videoMessage?: string | null;
+          shortMessage?: string | null;
+        }>(req);
         if (!body?.query) {
           json(res, 400, { error: 'Recherche ou URL YouTube requise' });
           return true;
@@ -4039,15 +4046,19 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
             guildId,
             channelId,
             channelName,
-            liveChannelId: body.liveChannelId || null,
-            shortChannelId: body.shortChannelId || null,
-            videoChannelId: body.videoChannelId || null,
+            discordChannelId: body.discordChannelId || null,
+            mention: body.mention || null,
+            liveMessage: body.liveMessage || null,
+            videoMessage: body.videoMessage || null,
+            shortMessage: body.shortMessage || null,
           },
           update: {
             channelName,
-            liveChannelId: body.liveChannelId || null,
-            shortChannelId: body.shortChannelId || null,
-            videoChannelId: body.videoChannelId || null,
+            discordChannelId: body.discordChannelId || null,
+            mention: body.mention || null,
+            liveMessage: body.liveMessage || null,
+            videoMessage: body.videoMessage || null,
+            shortMessage: body.shortMessage || null,
           }
         });
 
@@ -4095,7 +4106,12 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
 
     if (parts.length === 6 && parts[5] === 'twitch' && method === 'POST') {
       try {
-        const body = await readJsonBody<{ streamerName: string; liveChannelId?: string | null; otherChannelId?: string | null }>(req);
+        const body = await readJsonBody<{
+          streamerName: string;
+          discordChannelId?: string | null;
+          mention?: string | null;
+          liveMessage?: string | null;
+        }>(req);
         if (!body?.streamerName) {
           json(res, 400, { error: 'streamerName requis' });
           return true;
@@ -4109,13 +4125,15 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
             guildId,
             streamerName,
             streamerId,
-            liveChannelId: body.liveChannelId || null,
-            otherChannelId: body.otherChannelId || null,
+            discordChannelId: body.discordChannelId || null,
+            mention: body.mention || null,
+            liveMessage: body.liveMessage || null,
           },
           update: {
             streamerId,
-            liveChannelId: body.liveChannelId || null,
-            otherChannelId: body.otherChannelId || null,
+            discordChannelId: body.discordChannelId || null,
+            mention: body.mention || null,
+            liveMessage: body.liveMessage || null,
           }
         });
 
@@ -5802,8 +5820,8 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
     if (parts.length === 6 && method === 'GET') {
       const ticketId = parts[5];
       try {
-        const ticket = await prisma.ticket.findUnique({
-          where: { id: ticketId }
+        const ticket = await prisma.ticket.findFirst({
+          where: { id: ticketId, guildId }
         });
 
         if (!ticket) {

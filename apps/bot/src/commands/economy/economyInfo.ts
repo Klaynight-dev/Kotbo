@@ -4,6 +4,8 @@ import { getOrCreateEconomyConfig } from '../../services/features/economyService
 import { kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('economy-info')
@@ -11,6 +13,7 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const config = await getOrCreateEconomyConfig(guildId);
@@ -18,28 +21,19 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.coins} Économie de Kotbo — ${interaction.guild?.name}`,
+        title: m.b3_ecoinfo_title({ coins: E.coins, guild: interaction.guild?.name ?? '' }, { locale }),
         fields: [
-          `Bienvenue dans le système économique et RPG du serveur !\n` +
-            `La monnaie officielle est le **${config.currencyName}** ${config.currencyEmoji}.`,
+          m.b3_ecoinfo_welcome({ currencyName: config.currencyName, currencyEmoji: config.currencyEmoji }, { locale }),
           separator({ divider: true, spacing: 'small' }),
-          `### ${E.stats} Comment gagner des pièces ?\n` +
-            `${E.dot} **Messages textuels :** Discuter dans les salons rapporte entre 1 et 4 pièces par message (cooldown de 1 min).\n` +
-            `${E.dot} **Salons Vocaux :** Être en vocal rapporte entre 3 et 10 pièces toutes les 2 min.\n` +
-            `${E.dot} **Récompense quotidienne :** Réclamez vos pièces gratuites toutes les 20h avec \`/daily\`.\n` +
-            `${E.dot} **Travail :** Utilisez \`/work\` toutes les heures pour un salaire fixe indexé sur votre niveau RPG.\n` +
-            `${E.dot} **Mini-Jeux :** Gagnez gros aux dés (\`/dice\`), au rps (\`/rps\`), à la roulette (\`/roulette\`) ou en devinant (\`/guess\`).`,
+          m.b3_ecoinfo_earn({ stats: E.stats, dot: E.dot }, { locale }),
           separator({ divider: true, spacing: 'small' }),
-          `### ${E.coins} Boutique & Profil RPG\n` +
-            `${E.dot} Utilisez vos pièces pour acheter des armes, des armures ou des potions dans la boutique (\`/shop\` et \`/buy\`).\n` +
-            `${E.dot} Visualisez vos objets achetés avec \`/items\`.\n` +
-            `${E.dot} Équipez votre matériel ou consommez vos potions avec \`/use\`. Avoir de l'équipement augmente vos statistiques d'attaque et de défense RPG.`,
+          m.b3_ecoinfo_shop({ coins: E.coins, dot: E.dot }, { locale }),
         ],
-        footerOverwrite: `-# ${E.info} Activé : ${config.enabled ? `${E.success} Oui` : `${E.error} Non`}`,
+        footerOverwrite: `-# ${E.info} ${config.enabled ? m.b3_ecoinfo_enabled_yes({ success: E.success }, { locale }) : m.b3_ecoinfo_enabled_no({ error: E.error }, { locale })}`,
       }),
     ));
   } catch (err: unknown) {
-    await interaction.reply({ content: `${E.error} Impossible de récupérer les informations de l'économie.`, flags: [MessageFlags.Ephemeral] });
+    await interaction.reply({ content: m.b3_ecoinfo_error({ error: E.error }, { locale }), flags: [MessageFlags.Ephemeral] });
   }
 }
 

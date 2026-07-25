@@ -2,15 +2,18 @@ import { errorMessage } from '../../utils/errors.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, EmbedBuilder, MessageFlags } from 'discord.js';
 import prisma from '../../utils/db.js';
-import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
+import { getOrCreateRpgProfile, getOrCreateEconomyConfig, registerGambleAttempt } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const CHOICES = ['pierre', 'feuille', 'ciseaux'];
-const EMOJIS: Record<string, string> = {
-  pierre: '🪨 Pierre',
-  feuille: '📄 Feuille',
-  ciseaux: '✂️ Ciseaux'
-};
+
+function choiceLabel(choice: string, locale: 'fr' | 'en'): string {
+  if (choice === 'pierre') return m.b2_rps_rock({}, { locale });
+  if (choice === 'feuille') return m.b2_rps_paper({}, { locale });
+  return m.b2_rps_scissors({}, { locale });
+}
 
 const data = new SlashCommandBuilder()
   .setName('rps')
@@ -39,12 +42,13 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const userId = interaction.user.id;
   const userChoice = interaction.options.getString('choix', true);
   const bet = interaction.options.getInteger('mise', true);
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const config = await getOrCreateEconomyConfig(guildId);
     if (!config.enabled) {
       await interaction.reply({
-        embeds: [errorEmbed('Module Désactivé', "Le système d'économie est désactivé sur ce serveur.")],
+        embeds: [errorEmbed(m.b2_economy_disabled_title({}, { locale }), m.b2_economy_disabled_desc({}, { locale }))],
         flags: [MessageFlags.Ephemeral]
       });
       return;
@@ -53,11 +57,13 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     const profile = await getOrCreateRpgProfile(guildId, userId);
     if (profile.balance < bet) {
       await interaction.reply({
-        embeds: [errorEmbed('Solde insuffisant', `Vous n'avez pas assez de pièces pour parier **${bet}** 🪙 (Solde actuel : **${profile.balance}** 🪙).`)],
+        embeds: [errorEmbed(m.b2_insufficient_balance_title({}, { locale }), m.b2_rps_insufficient_desc({ bet, balance: profile.balance }, { locale }))],
         flags: [MessageFlags.Ephemeral]
       });
       return;
     }
+
+    await registerGambleAttempt(guildId, userId, bet);
 
     // Bot choice
     const botChoice = CHOICES[Math.floor(Math.random() * CHOICES.length)]!;
@@ -81,15 +87,15 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (result === 'win') {
       multiplier = 2;
-      resultMessage = `🎉 **Victoire ! Vous battez le bot et remportez 2x votre mise !**`;
+      resultMessage = m.b2_rps_win({}, { locale });
       embedColor = COLORS.success;
     } else if (result === 'draw') {
       multiplier = 1;
-      resultMessage = `⚖️ **Égalité ! Vous jouez le même coup. Votre mise vous est remboursée.**`;
+      resultMessage = m.b2_rps_draw({}, { locale });
       embedColor = COLORS.info;
     } else {
       multiplier = 0;
-      resultMessage = `😢 **Défaite... Le bot vous bat. Vous perdez votre mise.**`;
+      resultMessage = m.b2_rps_lose({}, { locale });
       embedColor = COLORS.danger;
     }
 
@@ -102,14 +108,17 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     });
 
     const embed = new EmbedBuilder()
-      .setTitle('🪨 Pierre, Feuille, Ciseaux')
+      .setTitle(m.b2_rps_embed_title({}, { locale }))
       .setDescription(
-        `Vous misez **${bet}** ${config.currencyEmoji}.\n\n` +
-        `**Votre coup :** ${EMOJIS[userChoice]}\n` +
-        `**Coup du bot :** ${EMOJIS[botChoice]}\n\n` +
-        `${resultMessage}\n\n` +
-        `**Gain net :** **${netGain >= 0 ? '+' : ''}${netGain}** ${config.currencyEmoji}\n` +
-        `**Nouveau solde :** **${newBalance}** ${config.currencyEmoji}`
+        m.b2_rps_embed_desc({
+          bet,
+          emoji: config.currencyEmoji,
+          userChoice: choiceLabel(userChoice, locale),
+          botChoice: choiceLabel(botChoice, locale),
+          result: resultMessage,
+          netGain: `${netGain >= 0 ? '+' : ''}${netGain}`,
+          newBalance,
+        }, { locale })
       )
       .setColor(embedColor)
       .setTimestamp();
@@ -117,7 +126,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({ embeds: [embed] });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || 'Impossible de jouer au rps.')],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), errorMessage(err) || m.b2_rps_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, EmbedBuilder, Me
 import prisma from '../../utils/db.js';
 import { getOrCreateEconomyConfig, getOrCreateRpgProfile } from '../../services/features/economyService.js';
 import { errorEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -19,13 +21,18 @@ interface LocalRpgItem {
   price: number;
 }
 
+const meta = getCommandMetadata('b5_shop');
+
 const data = new SlashCommandBuilder()
-  .setName('shop')
-  .setDescription('🛒 Liste les objets disponibles dans la boutique');
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations);
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const config = await getOrCreateEconomyConfig(guildId);
@@ -44,25 +51,23 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (items.length === 0) {
       await interaction.reply({
-        content: 'La boutique est vide actuellement.',
+        content: m.b5_shop_empty({}, { locale }),
         flags: [MessageFlags.Ephemeral]
       });
       return;
     }
 
     const embed = new EmbedBuilder()
-      .setTitle('🛒 Boutique du Serveur')
-      .setDescription(
-        `Achetez des objets pour améliorer vos statistiques et voyager en toute sécurité !\nVotre Solde: **${profile.balance}** ${config.currencyEmoji}\n\n*Pour acheter un objet, utilise* \`/buy <objet>\` !`
-      )
+      .setTitle(m.b5_shop_title({}, { locale }))
+      .setDescription(m.b5_shop_desc({ balance: profile.balance, emoji: config.currencyEmoji }, { locale }))
       .setColor(COLORS.primary)
       .setTimestamp();
 
     const typesMap: Record<string, string> = {
-      WEAPON: '🗡️ Armes',
-      ARMOR: '🦺 Armures',
-      POTION: '🧪 Potions',
-      QUEST: '🔑 Objets de quête'
+      WEAPON: m.b5_shop_type_weapon({}, { locale }),
+      ARMOR: m.b5_shop_type_armor({}, { locale }),
+      POTION: m.b5_shop_type_potion({}, { locale }),
+      QUEST: m.b5_shop_type_quest({}, { locale }),
     };
 
     // Group items by type
@@ -79,18 +84,18 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
           let stats = '';
           if (item.atkBonus) stats += ` (+${item.atkBonus} ATK)`;
           if (item.defBonus) stats += ` (+${item.defBonus} DEF)`;
-          if (item.hpRestore) stats += ` (Restaure ${item.hpRestore} HP)`;
-          if (item.energyRestore) stats += ` (Restaure ${item.energyRestore} Énergie)`;
+          if (item.hpRestore) stats += ` (${m.b5_shop_restores({}, { locale })} ${item.hpRestore} HP)`;
+          if (item.energyRestore) stats += ` (${m.b5_shop_restores({}, { locale })} ${item.energyRestore} ${m.b5_shop_energy({}, { locale })})`;
           return `${item.emoji} **${item.name}** - **${item.price}** 🪙\n*${item.description}*${stats}`;
         })
         .join('\n\n');
-      embed.addFields({ name: typesMap[type] || type, value: list || 'Vide' });
+      embed.addFields({ name: typesMap[type] || type, value: list || m.b5_shop_empty_category({}, { locale }) });
     }
 
     await interaction.reply({ embeds: [embed] });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || "Impossible d'ouvrir la boutique.")],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), errorMessage(err) || m.b5_shop_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

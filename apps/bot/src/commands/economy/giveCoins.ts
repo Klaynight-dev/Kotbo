@@ -3,20 +3,28 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import { transferCoins, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_givecoins');
 
 const data = new SlashCommandBuilder()
-  .setName('give-coins')
-  .setDescription('💸 Donner des pièces de ton portefeuille à un autre membre')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addUserOption(option =>
     option
       .setName('membre')
-      .setDescription('Le membre à qui donner les pièces')
+      .setDescription(m.b5_givecoins_opt_member({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_givecoins_opt_member({}, { locale: 'fr' }) })
       .setRequired(true)
   )
   .addIntegerOption(option =>
     option
       .setName('montant')
-      .setDescription('Le montant de pièces à envoyer')
+      .setDescription(m.b5_givecoins_opt_amount({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_givecoins_opt_amount({}, { locale: 'fr' }) })
       .setRequired(true)
       .setMinValue(1)
   );
@@ -26,10 +34,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const senderId = interaction.user.id;
   const receiver = interaction.options.getUser('membre', true);
   const amount = interaction.options.getInteger('montant', true);
+  const locale = await getEffectiveLocale(interaction);
 
   if (receiver.bot) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Vous ne pouvez pas envoyer des pièces à un bot !')],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), m.b5_givecoins_to_bot({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -37,7 +46,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (receiver.id === senderId) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Vous ne pouvez pas vous envoyer des pièces à vous-même !')],
+      embeds: [errorEmbed(m.b5_err_title({}, { locale }), m.b5_givecoins_to_self({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -50,16 +59,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         successEmbed(
-          'Transaction réussie !',
-          `Vous avez envoyé **${amount}** ${config.currencyEmoji} à <@${receiver.id}>.\n\n` +
-          `**Vos pièces :** **${result.senderBalance}** ${config.currencyEmoji}\n` +
-          `**Leurs pièces :** **${result.receiverBalance}** ${config.currencyEmoji}`
+          m.b5_givecoins_success_title({}, { locale }),
+          m.b5_givecoins_success_desc({ amount, emoji: config.currencyEmoji, user: `<@${receiver.id}>`, senderBalance: result.senderBalance, receiverBalance: result.receiverBalance }, { locale })
         )
       ]
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Transaction échouée', errorMessage(err) || "Impossible d'envoyer les pièces.")],
+      embeds: [errorEmbed(m.b5_givecoins_failed_title({}, { locale }), errorMessage(err) || m.b5_givecoins_failed_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

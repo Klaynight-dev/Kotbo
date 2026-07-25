@@ -15,6 +15,7 @@
     ThumbsUp, FilePlus, FileText, UserPlus, Rss, Code, Smile, Share2,
     Calendar, Archive,
   } from 'lucide-svelte';
+  import { m } from '../i18n';
 
   const iconMap: Record<string, typeof LayoutGrid> = {
     'layout-grid': LayoutGrid,
@@ -124,8 +125,8 @@
                 {/if}
               </div>
               <div>
-                <h3 class="text-sm font-semibold text-on-surface leading-none">Guide de démarrage</h3>
-                <p class="text-[11px] text-on-surface-variant mt-0.5">{overallProgress}% complété</p>
+                <h3 class="text-sm font-semibold text-on-surface leading-none">{m.d4_tc_title()}</h3>
+                <p class="text-[11px] text-on-surface-variant mt-0.5">{m.d4_tc_percent_complete({ pct: overallProgress })}</p>
               </div>
             </div>
 
@@ -133,14 +134,14 @@
               <button
                 onclick={toggleMinimize}
                 class="p-1.5 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
-                aria-label="Réduire"
+                aria-label={m.d4_minimize()}
               >
                 <ChevronDown class="w-4 h-4" />
               </button>
               <button
                 onclick={dismiss}
                 class="p-1.5 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
-                aria-label="Fermer définitivement"
+                aria-label={m.d4_dismiss_permanently()}
               >
                 <X class="w-4 h-4" />
               </button>
@@ -160,7 +161,7 @@
               "
             >
               <Compass class="w-3.5 h-3.5" />
-              Découverte
+              {m.d4_tc_tab_discover()}
               {#if !discoverDone}
                 <span class="px-1.5 py-0.5 rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
                   {discoverCompleted}/{discoverTotal}
@@ -180,7 +181,7 @@
               "
             >
               <Wrench class="w-3.5 h-3.5" />
-              Configuration
+              {m.d4_tc_tab_setup()}
               {#if !setupDone}
                 <span class="px-1.5 py-0.5 rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
                   {setupCompletedCount}/{setupTotal}
@@ -202,13 +203,13 @@
                 <div class="w-14 h-14 mx-auto mb-3 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
                   <PartyPopper class="w-7 h-7 text-emerald-500" />
                 </div>
-                <p class="text-sm font-semibold text-on-surface mb-1">Découverte terminée !</p>
-                <p class="text-xs text-on-surface-variant mb-4">Vous connaissez les bases. Passez à l'onglet Configuration pour paramétrer votre serveur.</p>
+                <p class="text-sm font-semibold text-on-surface mb-1">{m.d4_tc_discover_done_title()}</p>
+                <p class="text-xs text-on-surface-variant mb-4">{m.d4_tc_discover_done_desc()}</p>
                 <button
                   onclick={() => setTab('setup')}
                   class="px-4 py-2 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/15 transition-colors"
                 >
-                  Aller à la Configuration
+                  {m.d4_tc_go_to_setup()}
                 </button>
               </div>
             {:else}
@@ -257,10 +258,10 @@
                 <div class="w-14 h-14 mx-auto mb-3 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
                   <PartyPopper class="w-7 h-7 text-emerald-500" />
                 </div>
-                <p class="text-sm font-semibold text-on-surface mb-1">Serveur entièrement configuré !</p>
-                <p class="text-xs text-on-surface-variant mb-4">Toutes les fonctionnalités sont en place. Votre serveur est prêt.</p>
+                <p class="text-sm font-semibold text-on-surface mb-1">{m.d4_tc_setup_done_title()}</p>
+                <p class="text-xs text-on-surface-variant mb-4">{m.d4_tc_setup_done_desc()}</p>
                 <button onclick={dismiss} class="px-4 py-2 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/15 transition-colors">
-                  Fermer le guide
+                  {m.d4_tc_close_guide()}
                 </button>
               </div>
             {:else}
@@ -269,7 +270,7 @@
                 <div class="px-2.5 pt-2 pb-1">
                   <div class="flex items-center gap-2">
                     <span class="text-xs font-medium text-amber-600 dark:text-amber-400">
-                      Indispensable
+                      {m.d4_tc_essential()}
                     </span>
                     <span class="text-[10px] text-on-surface-variant">
                       {essentialCompleted} / {essentialTotal}
@@ -331,7 +332,7 @@
                 >
                   <div class="flex items-center gap-2">
                     <span class="text-xs font-medium text-on-surface-variant">
-                      Personnalisation
+                      {m.d4_tc_customization()}
                     </span>
                     <span class="text-[10px] text-on-surface-variant/60">
                       {optionalSetupTasks.filter(t => onboardingStore.isSetupTaskCompleted(t.id)).length} / {optionalSetupTasks.length}
@@ -392,7 +393,7 @@
             ></div>
           </div>
           <p class="text-[10px] text-on-surface-variant/60 mt-1 text-center">
-            Progression globale : {overallProgress}%
+            {m.d4_tc_global_progress({ pct: overallProgress })}
           </p>
         </div>
       </div>
@@ -409,7 +410,7 @@
           hover:border-primary/30
         "
         transition:scale={{ duration: 250, easing: backOut, start: 0.85 }}
-        aria-label="Ouvrir le guide de démarrage"
+        aria-label={m.d4_tc_open_guide()}
       >
         <div class="relative">
           <div class="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/15 transition-colors">
@@ -423,7 +424,7 @@
         </div>
 
         <div class="hidden sm:block text-left">
-          <p class="text-xs font-semibold text-on-surface leading-none">Guide</p>
+          <p class="text-xs font-semibold text-on-surface leading-none">{m.d4_tc_guide()}</p>
           <div class="flex items-center gap-2 mt-1">
             <div class="w-16 h-1 bg-surface-container-high rounded-full overflow-hidden">
               <div

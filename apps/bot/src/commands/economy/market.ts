@@ -15,6 +15,8 @@ import {
 } from '../../services/economy/marketplaceService.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('market')
@@ -54,6 +56,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
   const subcommand = interaction.options.getSubcommand();
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
+  const locale = await getEffectiveLocale(interaction);
 
   if (subcommand === 'sell') {
     const itemId = interaction.options.getString('objet', true);
@@ -67,7 +70,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!result.success) {
       await interaction.editReply(v2Message(
-        errorContainer('Vente impossible', result.error),
+        errorContainer(m.b3_market_sell_error_title({}, { locale }), result.error),
       ));
       return;
     }
@@ -75,14 +78,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'success',
-        title: `${E.success} Objet en vente !`,
+        title: m.b3_market_sell_success_title({ success: E.success }, { locale }),
         fields: [
-          `Votre annonce pour **${itemId}** (x${quantity}) a été publiée.\n` +
-            `${E.dot} Mode : ${type === 'FIXED_PRICE' ? 'Prix fixe' : 'Enchère'}\n` +
-            `${E.dot} Prix de départ : **${price}** ${E.coins}\n` +
-            `${E.dot} Durée : ${duration} heures (ID : \`${result.listing.id.slice(-6)}\`)`,
+          m.b3_market_sell_success_body({ itemId, quantity, dot: E.dot, mode: type === 'FIXED_PRICE' ? m.b3_market_mode_fixed({}, { locale }) : m.b3_market_mode_auction({}, { locale }), price, coins: E.coins, duration, id: result.listing.id.slice(-6) }, { locale }),
         ],
-        footerTitle: 'Marché',
+        footerTitle: m.b3_market_footer({}, { locale }),
       }),
     ));
   }
@@ -95,7 +95,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!result.success || !result.listing) {
       await interaction.editReply(v2Message(
-        errorContainer('Achat impossible', result.error),
+        errorContainer(m.b3_market_buy_error_title({}, { locale }), result.error),
       ));
       return;
     }
@@ -105,11 +105,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'success',
-        title: `${E.success} Achat réussi !`,
+        title: m.b3_market_buy_success_title({ success: E.success }, { locale }),
         fields: [
-          `Vous avez acheté **${purchased.itemId}** (x${purchased.quantity}) pour **${purchased.price}** ${E.coins} à <@${purchased.sellerId}>.`,
+          m.b3_market_buy_success_body({ itemId: purchased.itemId, quantity: purchased.quantity, price: purchased.price, coins: E.coins, sellerId: purchased.sellerId }, { locale }),
         ],
-        footerTitle: 'Marché',
+        footerTitle: m.b3_market_footer({}, { locale }),
       }),
     ));
   }
@@ -123,7 +123,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!result.success) {
       await interaction.editReply(v2Message(
-        errorContainer('Enchère impossible', result.error),
+        errorContainer(m.b3_market_bid_error_title({}, { locale }), result.error),
       ));
       return;
     }
@@ -131,11 +131,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'success',
-        title: `${E.success} Enchère placée !`,
+        title: m.b3_market_bid_success_title({ success: E.success }, { locale }),
         fields: [
-          `Vous avez enchéri **${amount}** ${E.coins} sur l'annonce de **${result.listing?.itemId ?? 'objet'}**.`,
+          m.b3_market_bid_success_body({ amount, coins: E.coins, itemId: result.listing?.itemId ?? m.b3_market_item_fallback({}, { locale }) }, { locale }),
         ],
-        footerTitle: 'Marché',
+        footerTitle: m.b3_market_footer({}, { locale }),
       }),
     ));
   }

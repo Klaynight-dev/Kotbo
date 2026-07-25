@@ -2,6 +2,8 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { roleGrantsAdministrator } from '../../services/moderation/adminLockService.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const MAX_MENTIONS = 20;
 
@@ -43,20 +45,21 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const role = interaction.options.getRole('role', true);
   const membresRaw = interaction.options.getString('membres', true);
   const guild = interaction.guild;
+  const locale = await getEffectiveLocale(interaction);
 
   if (!guild) {
     await interaction.reply({
-      embeds: [errorEmbed('Action impossible', 'Cette commande ne peut être utilisée que dans un serveur.')],
+      embeds: [errorEmbed(m.b2_action_impossible({}, { locale }), m.b2_guild_only({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
   }
 
-  const userIds = [...new Set(membresRaw.match(/<@!?(\d+)>/g)?.map((m) => m.replace(/<@!?/, '').replace(/>/, '')) ?? [])];
+  const userIds = [...new Set(membresRaw.match(/<@!?(\d+)>/g)?.map((mention) => mention.replace(/<@!?/, '').replace(/>/, '')) ?? [])];
 
   if (userIds.length === 0) {
     await interaction.reply({
-      embeds: [errorEmbed('Aucun membre', 'Vous devez mentionner au moins un membre.')],
+      embeds: [errorEmbed(m.b2_role_no_member_title({}, { locale }), m.b2_role_no_member_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -64,7 +67,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (userIds.length > MAX_MENTIONS) {
     await interaction.reply({
-      embeds: [errorEmbed('Trop de membres', `Vous ne pouvez pas cibler plus de ${MAX_MENTIONS} membres à la fois.`)],
+      embeds: [errorEmbed(m.b2_role_too_many_title({}, { locale }), m.b2_role_too_many_desc({ max: MAX_MENTIONS }, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -73,7 +76,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const botMember = guild.members.me;
   if (!botMember) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Impossible de récupérer les informations du bot.')],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_role_bot_info_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -82,7 +85,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const guildRole = guild.roles.cache.get(role.id);
   if (!guildRole || guildRole.managed) {
     await interaction.reply({
-      embeds: [errorEmbed('Rôle invalide', 'Ce rôle ne peut pas être géré (rôle intégré ou géré par une intégration).')],
+      embeds: [errorEmbed(m.b2_role_invalid_title({}, { locale }), m.b2_role_invalid_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -90,7 +93,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (guildRole.position >= botMember.roles.highest.position) {
     await interaction.reply({
-      embeds: [errorEmbed('Permission insuffisante', 'Ce rôle est supérieur ou égal au rôle le plus élevé du bot.')],
+      embeds: [errorEmbed(m.b2_role_insufficient_title({}, { locale }), m.b2_role_insufficient_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -123,19 +126,19 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     }
 
     if (pendingUserIds.length > 0) {
-      const lines = ['🔒 Ce rôle donne la permission **ADMINISTRATOR**.'];
+      const lines = [m.b2_role_admin_grant_warning({}, { locale })];
       lines.push(
-        `**${pendingUserIds.length}** demande(s) d'approbation envoyée(s) au propriétaire du serveur / rôles sécurité pour : ${pendingUserIds.map((id) => `<@${id}>`).join(', ')}.`,
+        m.b2_role_admin_grant_pending({ count: pendingUserIds.length, users: pendingUserIds.map((id) => `<@${id}>`).join(', ') }, { locale }),
       );
       if (nonBlockedUserIds.length > 0) {
         for (const userId of nonBlockedUserIds) {
-          await guild.members.fetch(userId).then((m) => m.roles.add(guildRole)).catch(() => null);
+          await guild.members.fetch(userId).then((member) => member.roles.add(guildRole)).catch(() => null);
         }
         lines.push(
-          `**${nonBlockedUserIds.length}** attribution(s) appliquée(s) directement (vous êtes propriétaire du serveur ou rôle sécurité) : ${nonBlockedUserIds.map((id) => `<@${id}>`).join(', ')}.`,
+          m.b2_role_admin_grant_applied({ count: nonBlockedUserIds.length, users: nonBlockedUserIds.map((id) => `<@${id}>`).join(', ') }, { locale }),
         );
       }
-      await interaction.editReply({ embeds: [successEmbed("Demande(s) envoyée(s)", lines.join('\n\n'))] });
+      await interaction.editReply({ embeds: [successEmbed(m.b2_role_requests_sent({}, { locale }), lines.join('\n\n'))] });
       return;
     }
     // Personne bloqué (acteur owner/bypass, ou fonctionnalité désactivée) → flux normal ci-dessous.
@@ -158,19 +161,22 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     }
   }
 
-  const action = subcommand === 'add' ? 'ajouté à' : 'retiré de';
   const lines: string[] = [];
 
   if (succeeded.length > 0) {
-    lines.push(`Rôle ${guildRole} ${action} **${succeeded.length}** membre(s) : ${succeeded.join(', ')}`);
+    lines.push(
+      subcommand === 'add'
+        ? m.b2_role_added({ role: guildRole.toString(), count: succeeded.length, users: succeeded.join(', ') }, { locale })
+        : m.b2_role_removed({ role: guildRole.toString(), count: succeeded.length, users: succeeded.join(', ') }, { locale })
+    );
   }
   if (failed.length > 0) {
-    lines.push(`Échec pour **${failed.length}** membre(s) : ${failed.join(', ')}`);
+    lines.push(m.b2_role_failed({ count: failed.length, users: failed.join(', ') }, { locale }));
   }
 
   const embed = failed.length === 0
-    ? successEmbed('Rôles mis à jour', lines.join('\n\n'))
-    : errorEmbed('Rôles partiellement mis à jour', lines.join('\n\n'));
+    ? successEmbed(m.b2_role_updated_title({}, { locale }), lines.join('\n\n'))
+    : errorEmbed(m.b2_role_partial_title({}, { locale }), lines.join('\n\n'));
 
   await interaction.editReply({ embeds: [embed] });
 }

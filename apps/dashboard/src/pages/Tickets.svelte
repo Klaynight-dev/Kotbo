@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '../lib/i18n';
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount, onDestroy } from 'svelte';
   import { authStore } from '../lib/stores/auth.svelte';
@@ -70,7 +71,7 @@
   let ticketOverclaimPermission = $state('ANY');
   let ticketInactivityEnabled = $state(false);
   let ticketInactivityHours = $state(24);
-  let ticketInactivityMessage = $state("Bonjour {user}, votre ticket est inactif depuis un moment. N'hésitez pas à y répondre si vous avez toujours besoin d'aide !");
+  let ticketInactivityMessage = $state(m.e1_tickets_default_inactivity_message({ user: '{user}' }));
   let ticketEmbedThumbnail = $state('');
   let ticketEmbedImage = $state('');
   let ticketEmbedFooter = $state('');
@@ -124,14 +125,14 @@
   };
 
   const ratingEmojis = ['', '\u{1F621}', '\u{1F615}', '\u{1F610}', '\u{1F642}', '\u{1F929}'];
-  const ratingLabels = ['', 'Tres insatisfait', 'Insatisfait', 'Neutre', 'Satisfait', 'Tres satisfait'];
+  const ratingLabels = ['', m.e1_tickets_sat_rating_1(), m.e1_tickets_sat_rating_2(), m.e1_tickets_sat_rating_3(), m.e1_tickets_sat_rating_4(), m.e1_tickets_sat_rating_5()];
 
   function getSatisfactionPersonName(person: SatisfactionPerson | null | undefined, userId: string): string {
-    return person?.displayName || person?.username || `Utilisateur ${userId}`;
+    return person?.displayName || person?.username || m.e1_tickets_sat_user_fallback({ userId });
   }
 
   function getSatisfactionPersonHandle(person: SatisfactionPerson | null | undefined, userId: string): string {
-    return person?.username ? `@${person.username}` : `ID ${userId}`;
+    return person?.username ? `@${person.username}` : m.e1_tickets_sat_user_id({ userId });
   }
 
   function getSatisfactionInitials(person: SatisfactionPerson | null | undefined, userId: string): string {
@@ -160,7 +161,7 @@
     try {
       satisfactionData = await fetchSatisfactionData();
     } catch {
-      toast.error('Erreur lors du chargement de la satisfaction');
+      toast.error(m.e1_tickets_err_load_satisfaction());
     } finally {
       satisfactionLoading = false;
     }
@@ -176,7 +177,7 @@
   let selectedCaseData = $state<any>(null);
   let selectedCaseLoading = $state(false);
   let selectedCaseError = $state('');
-  let memberActionReason = $state('Action lancée depuis le panel de Tickets.');
+  let memberActionReason = $state(m.e1_tickets_member_action_default_reason());
   let memberActionDuration = $state('30m');
   let memberActionBusy = $state(false);
   let memberActionFeedback = $state('');
@@ -216,7 +217,7 @@
   });
 
   useUnsavedChanges({
-    label: 'Tickets (Configuration)',
+    label: m.e1_tickets_config_label(),
     getConfig: () => currentSettings,
     getSaved: () => savedSettingsConfig,
     onSave: () => saveSettings(),
@@ -257,11 +258,11 @@
   }
 
   async function changeTab(tab: 'tickets' | 'transcripts' | 'satisfaction' | 'config') {
-    if (unsavedChanges.isDirty && unsavedChanges.pageLabel === 'Tickets (Configuration)') {
+    if (unsavedChanges.isDirty && unsavedChanges.pageLabel === m.e1_tickets_config_label()) {
       const confirmLeave = await confirmDialog.ask({
-        title: 'Modifications non sauvegardées',
-        description: 'Quitter sans enregistrer ?',
-        confirmLabel: 'Quitter sans enregistrer',
+        title: m.e1_tickets_unsaved_title(),
+        description: m.e1_tickets_unsaved_desc(),
+        confirmLabel: m.e1_tickets_unsaved_confirm(),
         variant: 'warning',
       });
       if (!confirmLeave) return;

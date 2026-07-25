@@ -8,10 +8,16 @@ import {
 import type { SlashCommandDefinition } from '../../commands.js';
 import { COLORS_RAW } from '../../utils/embeds.js';
 import { runSecurityAudit, type AuditFinding } from '../../services/moderation/securityAuditService.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c1_audit');
 
 const data = new SlashCommandBuilder()
-  .setName('audit')
-  .setDescription('🔍 Analyse la sécurité du serveur et suggère des améliorations')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const SEVERITY_ICONS: Record<string, string> = {
@@ -27,12 +33,12 @@ function scoreColor(score: number): number {
   return COLORS_RAW.danger;
 }
 
-function scoreLabel(score: number): string {
-  if (score >= 90) return 'Excellente';
-  if (score >= 80) return 'Bonne';
-  if (score >= 60) return 'Moyenne';
-  if (score >= 40) return 'Faible';
-  return 'Critique';
+function scoreLabel(score: number, locale: 'fr' | 'en'): string {
+  if (score >= 90) return m.c1_audit_score_excellent({}, { locale });
+  if (score >= 80) return m.c1_audit_score_good({}, { locale });
+  if (score >= 60) return m.c1_audit_score_average({}, { locale });
+  if (score >= 40) return m.c1_audit_score_weak({}, { locale });
+  return m.c1_audit_score_critical({}, { locale });
 }
 
 function formatFinding(finding: AuditFinding): string {
@@ -45,6 +51,7 @@ function formatFinding(finding: AuditFinding): string {
 async function execute(interaction: ChatInputCommandInteraction) {
   const guild = interaction.guild;
   if (!guild) return;
+  const locale = await getEffectiveLocale(interaction);
 
   await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -55,8 +62,8 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   const embed = new EmbedBuilder()
     .setColor(scoreColor(score))
-    .setTitle('🔍 Audit de sécurité')
-    .setDescription(`## Score : ${score}/100 — ${scoreLabel(score)}\n${score >= 80 ? 'Ton serveur est bien protégé. 👏' : 'Des améliorations sont recommandées ci-dessous.'}`)
+    .setTitle(`🔍 ${m.c1_audit_title({}, { locale })}`)
+    .setDescription(`## ${m.c1_audit_score_heading({ score }, { locale })} — ${scoreLabel(score, locale)}\n${score >= 80 ? m.c1_audit_protected({}, { locale }) : m.c1_audit_improvements({}, { locale })}`)
     .setTimestamp();
 
   if (problems.length > 0) {
@@ -66,18 +73,18 @@ async function execute(interaction: ChatInputCommandInteraction) {
     for (const finding of problems) {
       const entry = formatFinding(finding);
       if (block.length + entry.length + 2 > 1024) {
-        embed.addFields({ name: blockIndex === 0 ? '⚠️ Points à corriger' : '​', value: block });
+        embed.addFields({ name: blockIndex === 0 ? `⚠️ ${m.c1_audit_fix_points({}, { locale })}` : '​', value: block });
         block = '';
         blockIndex++;
       }
       block += (block ? '\n\n' : '') + entry;
     }
-    if (block) embed.addFields({ name: blockIndex === 0 ? '⚠️ Points à corriger' : '​', value: block });
+    if (block) embed.addFields({ name: blockIndex === 0 ? `⚠️ ${m.c1_audit_fix_points({}, { locale })}` : '​', value: block });
   }
 
   if (oks.length > 0) {
     embed.addFields({
-      name: '✅ Points conformes',
+      name: `✅ ${m.c1_audit_compliant_points({}, { locale })}`,
       value: oks.map((f) => `🟢 ${f.title}`).join(' · ').slice(0, 1024),
     });
   }

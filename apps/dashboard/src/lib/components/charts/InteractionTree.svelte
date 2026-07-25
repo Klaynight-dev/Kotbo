@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { m } from '../../i18n';
   import Papicon from '../Papicon.svelte';
 
   interface Node {
@@ -404,7 +405,7 @@
   {#if nodes.length === 0}
     <div class="absolute inset-0 flex flex-col items-center justify-center graph-empty">
       <Papicon icon="share-2" size={48} />
-      <p class="mt-4 text-[13px] font-medium">Aucune interaction détectée</p>
+      <p class="mt-4 text-[13px] font-medium">{m.d6_it_no_interaction()}</p>
     </div>
   {:else}
     <!-- Header -->
@@ -414,11 +415,11 @@
           <Papicon icon="share-2" size={18} />
         </div>
         <h3 class="text-sm font-semibold graph-title tracking-wide">
-          Réseau d'interactions
+          {m.d6_it_network_title()}
         </h3>
       </div>
       <span class="text-[10px] graph-subtitle mt-0.5">
-        {nodes.length} membres · {groupedEdges.length} connexions
+        {m.d6_it_members_connections({ members: nodes.length, connections: groupedEdges.length })}
       </span>
     </div>
 
@@ -427,7 +428,7 @@
       <button
         onclick={resetGraph}
         class="graph-btn pointer-events-auto"
-        title="Recentrer"
+        title={m.d6_it_recenter()}
       >
         <Papicon icon="rotate-ccw" size={14} />
       </button>
@@ -451,15 +452,15 @@
     <div class="absolute bottom-4 right-5 z-10 flex items-center gap-3 pointer-events-none">
       <div class="flex items-center gap-1">
         <div class="w-2 h-2 rounded-full legend-mention"></div>
-        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">Mentions</span>
+        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">{m.d6_it_mentions()}</span>
       </div>
       <div class="flex items-center gap-1">
         <div class="w-2 h-2 rounded-full legend-reply"></div>
-        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">Réponses</span>
+        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">{m.d6_it_replies()}</span>
       </div>
       <div class="flex items-center gap-1">
         <div class="w-2 h-2 rounded-full legend-reaction"></div>
-        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">Réactions</span>
+        <span class="text-[8px] font-semibold uppercase tracking-wider graph-legend-text">{m.d6_it_reactions()}</span>
       </div>
     </div>
 
@@ -661,7 +662,7 @@
           <div class="flex flex-col min-w-0">
             <span class="text-xs font-semibold detail-name truncate">{selectedNode.label}</span>
             <span class="text-[10px] detail-role">
-              {selectedNode.isCenter ? 'Utilisateur principal' : `${selectedNodeStats.connections} connexion${selectedNodeStats.connections > 1 ? 's' : ''}`}
+              {selectedNode.isCenter ? m.d6_it_main_user() : m.d6_it_connections_count({ count: selectedNodeStats.connections })}
             </span>
           </div>
           <button
@@ -674,21 +675,21 @@
 
         <div class="grid grid-cols-3 gap-1.5 mt-3 text-center">
           <div class="detail-stat-card">
-            <span class="text-[9px] font-medium detail-stat-label">Mentions</span>
+            <span class="text-[9px] font-medium detail-stat-label">{m.d6_it_mentions()}</span>
             <span class="text-sm font-bold detail-stat-value">{selectedNodeStats.mentions}</span>
           </div>
           <div class="detail-stat-card">
-            <span class="text-[9px] font-medium detail-stat-label">Réponses</span>
+            <span class="text-[9px] font-medium detail-stat-label">{m.d6_it_replies()}</span>
             <span class="text-sm font-bold detail-stat-value">{selectedNodeStats.replies}</span>
           </div>
           <div class="detail-stat-card">
-            <span class="text-[9px] font-medium detail-stat-label">Réactions</span>
+            <span class="text-[9px] font-medium detail-stat-label">{m.d6_it_reactions()}</span>
             <span class="text-sm font-bold detail-stat-value">{selectedNodeStats.reactions}</span>
           </div>
         </div>
 
         <div class="flex justify-between items-center text-[10px] mt-2.5 pt-2 detail-total-row">
-          <span class="font-medium detail-total-label">Total des interactions</span>
+          <span class="font-medium detail-total-label">{m.d6_it_total_interactions()}</span>
           <span class="font-bold detail-total-value">{selectedNodeStats.total}</span>
         </div>
       </div>
@@ -700,7 +701,7 @@
       {@const targetNode = nodes.find(n => n.id === hoveredEdge.to)}
       <div class="absolute bottom-4 left-4 right-4 z-10 graph-edge-tooltip animate-fade-in">
         <div class="flex items-center justify-between pb-1.5 mb-1.5 edge-tooltip-header">
-          <span class="text-[10px] font-semibold uppercase tracking-wider edge-tooltip-title">Interaction</span>
+          <span class="text-[10px] font-semibold uppercase tracking-wider edge-tooltip-title">{m.d6_it_interaction()}</span>
           <span class="text-[9px] font-semibold truncate edge-tooltip-path">
             {sourceNode?.label ?? '?'} → {targetNode?.label ?? '?'}
           </span>

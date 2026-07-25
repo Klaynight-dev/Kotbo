@@ -2,6 +2,8 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import prisma from '../../utils/db.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('excuse')
@@ -27,6 +29,7 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const category = interaction.options.getString('catégorie');
+  const locale = await getEffectiveLocale(interaction);
 
   const whereClause: { language: string; category?: string } = { language: 'fr' };
   if (category) {
@@ -40,16 +43,16 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (excuses.length === 0) {
     await interaction.reply({
-      embeds: [errorEmbed('Aucune excuse disponible', category ? `Aucune excuse trouvée dans la catégorie "${category}".` : 'La base de données ne contient encore aucune excuse de développeur.')],
+      embeds: [errorEmbed(m.b2_excuse_none_title({}, { locale }), category ? m.b2_excuse_none_category({ category }, { locale }) : m.b2_excuse_none_desc({}, { locale }))],
     });
     return;
   }
 
-  const randomExcuse = excuses[Math.floor(Math.random() * excuses.length)]?.text ?? 'Aucune excuse trouvée.';
+  const randomExcuse = excuses[Math.floor(Math.random() * excuses.length)]?.text ?? m.b2_excuse_not_found({}, { locale });
 
   await interaction.reply({
     embeds: [
-      successEmbed('Excuse de développeur trouvée', `> ${randomExcuse}`),
+      successEmbed(m.b2_excuse_found_title({}, { locale }), `> ${randomExcuse}`),
     ],
   });
 }

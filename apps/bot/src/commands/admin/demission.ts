@@ -12,6 +12,8 @@ import prisma from '../../utils/db.js';
 import { getStaffMember } from '../../services/staff/staffManagementService.js';
 import { errorContainer } from '../../utils/embeds.js';
 import { v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 
 const data = new SlashCommandBuilder()
@@ -21,11 +23,13 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction) {
   if (!interaction.guildId) return;
 
+  const locale = await getEffectiveLocale(interaction);
+
   const staff = await getStaffMember(interaction.guildId, interaction.user.id);
   if (!staff) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Accès refusé', "Vous ne faites pas partie de l'équipe Staff."),
+      errorContainer(m.b2_access_denied({}, { locale }), m.b2_not_staff({}, { locale })),
     ));
     return;
   }
@@ -42,7 +46,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
   if (pending) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Demande existante', "Vous avez déjà une demande de démission en attente d'approbation."),
+      errorContainer(m.b2_demission_existing_title({}, { locale }), m.b2_demission_existing_desc({}, { locale })),
     ));
     return;
   }
@@ -50,13 +54,13 @@ async function execute(interaction: ChatInputCommandInteraction) {
   // Afficher le modal pour renseigner le motif
   const modal = new ModalBuilder()
     .setCustomId('modal:resignation:open')
-    .setTitle('Demande de démission');
+    .setTitle(m.b2_demission_modal_title({}, { locale }));
 
   const reasonInput = new TextInputBuilder()
     .setCustomId('reason')
-    .setLabel('Raison / Motif de la démission')
+    .setLabel(m.b2_demission_modal_label({}, { locale }))
     .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('Veuillez expliquer brièvement les raisons de votre départ...')
+    .setPlaceholder(m.b2_demission_modal_placeholder({}, { locale }))
     .setRequired(true)
     .setMaxLength(500);
 

@@ -294,7 +294,7 @@
             Prévision de croissance
           </h3>
           <div class="grid grid-cols-3 gap-4">
-            <div class="bg-surface-container-high/30 rounded-xl p-4 text-center">
+            <div class="bg-surface-container-high/30 rounded-xl 0 p-4 text-center">
               <div class="text-2xl font-bold">{predData.growthForecast.predicted7d.toLocaleString()}</div>
               <div class="text-xs font-medium text-on-surface-variant/60 mt-1">Membres 7j</div>
             </div>
@@ -351,7 +351,7 @@
               <div class="flex items-end gap-0.5 h-[100px]">
                 {#each trend.data as point}
                   <div
-                    class="flex-1 min-w-1 rounded-t transition-all duration-300 hover:opacity-100 {point.predicted ? 'opacity-40 border border-dashed' : 'opacity-80'}"
+                    class="flex-1 min-w-1 rounded-t transition-all duration-300 hover:opacity-100 {point.predicted ? 'opacity-40 border border-dotted' : 'opacity-80'}"
                     style="height: {(point.value / maxVal) * 100}%; background: {trend.color}"
                     title="{point.dateKey}: {point.value}"
                   ></div>

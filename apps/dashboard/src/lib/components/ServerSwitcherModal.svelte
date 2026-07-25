@@ -5,6 +5,7 @@
   import { authStore } from '../stores/auth.svelte';
   import { serverSwitcherStore } from '../stores/serverSwitcher.svelte';
   import { resolveGuildIconSrc } from '../discordMedia';
+  import { m } from '../i18n';
 
   let query = $state('');
   let selectedIndex = $state(0);
@@ -109,7 +110,7 @@
     class="fixed inset-0 z-100 flex items-start justify-center pt-[15vh] px-4"
     role="dialog"
     aria-modal="true"
-    aria-label="Sélecteur de serveurs"
+    aria-label={m.d7_server_switcher()}
     tabindex="-1"
     onkeydown={(e) => { if (e.key === 'Escape') close(); }}
   >
@@ -117,7 +118,7 @@
       type="button"
       class="absolute inset-0 bg-black/40 border-none cursor-default w-full h-full text-left p-0"
       onclick={close}
-      aria-label="Fermer"
+      aria-label={m.d7_close()}
       transition:fade={{ duration: 100 }}
     ></button>
 
@@ -134,7 +135,7 @@
           oninput={() => selectedIndex = 0}
           onkeydown={handleKeydown}
           type="text"
-          placeholder="Rechercher un serveur..."
+          placeholder={m.d7_search_server()}
           class="flex-1 bg-transparent text-sm text-on-surface placeholder-on-surface-variant/40 focus:outline-none"
         />
         <kbd class="hidden sm:flex px-1.5 py-0.5 rounded bg-surface-container border border-outline-variant text-[10px] font-medium text-on-surface-variant/40 leading-none">
@@ -144,7 +145,7 @@
 
       <div class="max-h-[50vh] overflow-y-auto py-1">
         <p class="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant px-3 py-1.5">
-          Serveurs ({filteredGroups.length})
+          {m.d7_servers_count({ count: filteredGroups.length })}
         </p>
 
         {#each visibleRows as row, idx (row.guild.id)}
@@ -166,7 +167,7 @@
                 type="button"
                 onclick={(e) => { e.stopPropagation(); toggleGroup(guild.id); }}
                 class="w-5 h-5 shrink-0 flex items-center justify-center rounded text-on-surface-variant/40 hover:text-on-surface transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}"
-                aria-label={isExpanded ? 'Replier' : 'Afficher le serveur staff lié'}
+                aria-label={isExpanded ? m.d7_collapse() : m.d7_show_linked_staff()}
               >
                 <Papicon icon="ChevronRight" size={12} />
               </button>
@@ -197,14 +198,14 @@
                 <p class="text-sm leading-none truncate flex items-center gap-1.5">
                   {guild.name}
                   {#if guild.isStaffServer}
-                    <span class="text-[9px] font-medium uppercase tracking-wide px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20">Staff</span>
+                    <span class="text-[9px] font-medium uppercase tracking-wide px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20">{m.d7_staff()}</span>
                   {/if}
                   {#if isActive}
-                    <span class="text-[9px] font-medium uppercase tracking-wide px-1 py-0.5 rounded bg-primary/10 text-primary">Actuel</span>
+                    <span class="text-[9px] font-medium uppercase tracking-wide px-1 py-0.5 rounded bg-primary/10 text-primary">{m.d7_current()}</span>
                   {/if}
                 </p>
                 <p class="text-[10px] text-on-surface-variant mt-0.5 truncate">
-                  {guild.accessLevel === 'admin' ? 'Admin' : guild.accessLevel === 'moderator' ? 'Modérateur' : 'Membre'}
+                  {guild.accessLevel === 'admin' ? m.d7_admin() : guild.accessLevel === 'moderator' ? m.d7_moderator() : m.d7_member()}
                 </p>
               </div>
 
@@ -216,7 +217,7 @@
         {:else}
           <div class="flex flex-col items-center py-8 gap-1.5 text-center">
             <Papicon icon="SearchX" size={24} class="text-on-surface-variant/30" />
-            <p class="text-sm text-on-surface-variant/50">Aucun serveur trouvé</p>
+            <p class="text-sm text-on-surface-variant/50">{m.d7_no_server_found()}</p>
           </div>
         {/each}
       </div>
@@ -224,11 +225,11 @@
       <div class="flex items-center gap-3 px-3 py-2 border-t border-outline-variant bg-surface-container">
         <div class="flex items-center gap-1 text-[10px] text-on-surface-variant/40">
           <kbd class="px-1 py-0.5 rounded bg-surface-container-highest border border-outline-variant font-mono text-[9px]">↑↓</kbd>
-          Naviguer
+          {m.d7_navigate()}
         </div>
         <div class="flex items-center gap-1 text-[10px] text-on-surface-variant/40">
           <kbd class="px-1 py-0.5 rounded bg-surface-container-highest border border-outline-variant font-mono text-[9px]">↵</kbd>
-          Sélectionner
+          {m.d7_select()}
         </div>
       </div>
     </div>

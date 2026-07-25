@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, type Autocomplet
 import prisma from '../../utils/db.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { buyShopItem, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('buy')
@@ -49,6 +51,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
   const itemId = interaction.options.getString('objet', true);
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const buyResult = await buyShopItem(guildId, userId, itemId);
@@ -56,14 +59,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         successEmbed(
-          'Achat réussi !',
-          `Vous avez acheté **${buyResult.itemName}** pour **${buyResult.price}** ${config.currencyEmoji}.\nNouveau solde: **${buyResult.newBalance}** ${config.currencyEmoji}`
+          m.b3_buy_success_title({}, { locale }),
+          m.b3_buy_success_desc({ itemName: buyResult.itemName, price: buyResult.price, currency: config.currencyEmoji, newBalance: buyResult.newBalance }, { locale })
         )
       ]
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Achat échoué', errorMessage(err) || "Impossible d'effectuer l'achat.")],
+      embeds: [errorEmbed(m.b3_buy_failed_title({}, { locale }), errorMessage(err) || m.b3_buy_failed_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

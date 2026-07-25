@@ -2,6 +2,7 @@
   import { reportDashboardError } from '../api';
   import { authStore } from '../stores/auth.svelte';
   import { toast } from '../stores/toast.svelte';
+  import { m } from '../i18n';
   import Papicon from './Papicon.svelte';
 
   let { errorMsg, errorStack } = $props<{ errorMsg: string; errorStack?: string }>();
@@ -26,10 +27,10 @@
         guildId: authStore.selectedGuildId
       });
       isSent = true;
-      toast.success('Rapport d\'erreur envoyé avec succès !');
+      toast.success(m.d6_error_report_sent());
     } catch (err: any) {
       console.error(err);
-      toast.error('Échec de l\'envoi du rapport d\'erreur.');
+      toast.error(m.d6_error_report_failed());
     } finally {
       isSending = false;
     }
@@ -48,17 +49,17 @@
     <!-- Title and Subtitle -->
     <div>
       <h1 class="text-xl md:text-2xl font-semibold text-on-surface tracking-tight">
-        Une erreur est survenue
+        {m.d6_error_title()}
       </h1>
       <p class="text-on-surface-variant text-sm md:text-base mt-2 max-w-md mx-auto">
-        L'application a rencontré un problème inattendu. Ne vous inquiétez pas, vous pouvez essayer de rafraîchir la page.
+        {m.d6_error_subtitle()}
       </p>
     </div>
 
     <!-- Error Message Snippet -->
     <div class="w-full text-left bg-surface-container border border-outline-variant rounded-lg p-4 overflow-hidden">
       <div class="flex items-center justify-between border-b border-outline-variant/50 pb-2 mb-3">
-        <span class="text-xs font-medium uppercase tracking-wider text-on-surface-variant">Détails de l'erreur</span>
+        <span class="text-xs font-medium uppercase tracking-wider text-on-surface-variant">{m.d6_error_details()}</span>
         <span class="text-xs text-error font-semibold font-mono text-right">CRITICAL</span>
       </div>
       <p class="font-mono text-xs md:text-sm text-error break-words whitespace-pre-wrap font-semibold leading-relaxed">
@@ -86,7 +87,7 @@
         class="w-full sm:w-auto px-5 py-2.5 bg-primary hover:opacity-90 text-on-primary font-medium text-sm rounded-lg transition-opacity cursor-pointer flex items-center justify-center gap-2"
       >
         <Papicon icon="refresh-cw" size={18} />
-        Actualiser la page
+        {m.d6_error_refresh_page()}
       </button>
 
       {#if isRefreshed}
@@ -96,7 +97,7 @@
             class="w-full sm:w-auto px-5 py-2.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium text-sm rounded-lg cursor-default flex items-center justify-center gap-2"
           >
             <Papicon icon="check-circle" size={18} />
-            Signalé
+            {m.d6_error_reported()}
           </button>
         {:else}
           <button
@@ -106,10 +107,10 @@
           >
             {#if isSending}
               <div class="w-4 h-4 border-2 border-on-surface border-t-transparent rounded-full animate-spin"></div>
-              Envoi...
+              {m.d6_error_sending()}
             {:else}
               <Papicon icon="send" size={18} />
-              Transmettre l'erreur
+              {m.d6_error_transmit()}
             {/if}
           </button>
         {/if}

@@ -4,6 +4,8 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, type Autocomplet
 import prisma from '../../utils/db.js';
 import { adminSpawnItem } from '../../services/features/economyService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('spawn-item')
@@ -63,10 +65,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const targetUser = interaction.options.getUser('membre', true);
   const itemId = interaction.options.getString('objet', true);
   const quantity = interaction.options.getInteger('quantite') ?? 1;
+  const locale = await getEffectiveLocale(interaction);
 
   if (targetUser.bot) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', "Impossible de modifier l'inventaire d'un bot.")],
+      embeds: [errorEmbed(m.b3_error_title({}, { locale }), m.b3_spawnitem_bot_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -78,14 +81,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         successEmbed(
-          'Objet apparu !',
-          `Vous avez fait apparaître **${quantity}x** ${result.itemEmoji} **${result.itemName}** dans l'inventaire de <@${targetUser.id}>.`
+          m.b3_spawnitem_success_title({}, { locale }),
+          m.b3_spawnitem_success_desc({ quantity, itemEmoji: result.itemEmoji, itemName: result.itemName, userId: targetUser.id }, { locale })
         )
       ]
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', errorMessage(err) || "Impossible de faire apparaître l'objet.")],
+      embeds: [errorEmbed(m.b3_error_title({}, { locale }), errorMessage(err) || m.b3_spawnitem_error_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

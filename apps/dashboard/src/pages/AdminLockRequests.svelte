@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { m } from '../lib/i18n';
   import Papicon from '../lib/components/Papicon.svelte';
   import { fetchAdminLockRequests, decideAdminLockRequest as decideRequestApi } from '../lib/api';
   import { confirmDialog } from '../lib/stores/confirmDialog.svelte';
@@ -35,16 +36,16 @@
   const history = $derived(requests.filter(r => r.status !== 'PENDING'));
 
   const TYPE_LABELS: Record<string, string> = {
-    ROLE_CREATE: 'Création de rôle',
-    ROLE_PERMISSION_EDIT: 'Modification de permissions',
-    MEMBER_ROLE_GRANT: 'Attribution de rôle à un membre',
+    ROLE_CREATE: m.e7_alr_type_role_create(),
+    ROLE_PERMISSION_EDIT: m.e7_alr_type_role_permission_edit(),
+    MEMBER_ROLE_GRANT: m.e7_alr_type_member_role_grant(),
   };
 
   const STATUS_META: Record<string, { label: string; classes: string }> = {
-    PENDING: { label: 'En attente', classes: 'bg-amber-500/10 text-amber-500 border-amber-500/30' },
-    APPROVED: { label: 'Approuvée', classes: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' },
-    REJECTED: { label: 'Rejetée', classes: 'bg-rose-500/10 text-rose-500 border-rose-500/30' },
-    EXPIRED: { label: 'Expirée', classes: 'bg-rose-900/20 text-rose-400 border-rose-900/40' },
+    PENDING: { label: m.e7_alr_status_pending(), classes: 'bg-amber-500/10 text-amber-500 border-amber-500/30' },
+    APPROVED: { label: m.e7_alr_status_approved(), classes: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' },
+    REJECTED: { label: m.e7_alr_status_rejected(), classes: 'bg-rose-500/10 text-rose-500 border-rose-500/30' },
+    EXPIRED: { label: m.e7_alr_status_expired(), classes: 'bg-rose-900/20 text-rose-400 border-rose-900/40' },
   };
 
   // ── API ────────────────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@
   }
 
   async function decide(request: AdminLockRequest, decision: 'APPROVED' | 'REJECTED') {
-    if (decision === 'REJECTED' && !actionReason.trim() && !(await confirmDialog.ask({ title: 'Rejeter sans indiquer de raison ?', description: 'Aucune explication ne sera communiquée au demandeur.', confirmLabel: 'Rejeter', variant: 'warning' }))) return;
+    if (decision === 'REJECTED' && !actionReason.trim() && !(await confirmDialog.ask({ title: m.e7_alr_confirm_reject_title(), description: m.e7_alr_confirm_reject_desc(), confirmLabel: m.e7_alr_confirm_reject_label(), variant: 'warning' }))) return;
     actionInProgress = true;
     try {
       await decideRequestApi(request.id, { decision, reason: actionReason.trim() || undefined });
@@ -78,14 +79,14 @@
   }
 
   function requesterLabel(r: AdminLockRequest): string {
-    if (r.requestedByUserId === 'mcp') return 'Agent MCP (sans identité Discord)';
+    if (r.requestedByUserId === 'mcp') return m.e7_alr_requester_mcp();
     return r.requestedByTag ? `${r.requestedByTag} (${r.requestedByUserId})` : r.requestedByUserId;
   }
 
   function targetLabel(r: AdminLockRequest): string {
-    if (r.type === 'MEMBER_ROLE_GRANT') return `Rôle « ${r.targetRoleName ?? r.targetRoleId} » → membre ${r.targetMemberId}`;
-    if (r.type === 'ROLE_PERMISSION_EDIT') return `Rôle « ${r.targetRoleName ?? r.targetRoleId} »`;
-    return `Nouveau rôle « ${r.targetRoleName ?? '?'} »`;
+    if (r.type === 'MEMBER_ROLE_GRANT') return m.e7_alr_target_member_grant({ role: r.targetRoleName ?? r.targetRoleId ?? '', member: r.targetMemberId ?? '' });
+    if (r.type === 'ROLE_PERMISSION_EDIT') return m.e7_alr_target_permission_edit({ role: r.targetRoleName ?? r.targetRoleId ?? '' });
+    return m.e7_alr_target_role_create({ role: r.targetRoleName ?? '?' });
   }
 
   onMount(async () => {
@@ -94,8 +95,8 @@
 </script>
 
 <ModulePage
-  title="Admin Permission Lock"
-  description="Demandes d'octroi de la permission ADMINISTRATOR bloquées en attente d'approbation. Configuration disponible dans Modération auto."
+  title={m.e7_alr_page_title()}
+  description={m.e7_alr_page_description()}
   icon="lock"
   featureKey="automod"
 >
@@ -103,8 +104,8 @@
   <!-- Tabs -->
   <div class="tab-group w-fit" role="tablist">
     {#each [
-      { id: 'queue', label: `File d'attente (${queue.length})` },
-      { id: 'history', label: 'Historique' },
+      { id: 'queue', label: m.e7_alr_tab_queue({ count: queue.length }) },
+      { id: 'history', label: m.e7_alr_tab_history() },
     ] as t}
       <button onclick={() => { tab = t.id as typeof tab; openId = null; }}
         role="tab" aria-selected={tab === t.id}
@@ -125,7 +126,7 @@
         <div class="mb-4 text-on-surface-variant/30">
           <Papicon icon={tab === 'queue' ? 'check' : 'inbox'} size={48} />
         </div>
-        <p class="text-sm">{tab === 'queue' ? 'Aucune demande en attente.' : 'Aucune demande traitée pour le moment.'}</p>
+        <p class="text-sm">{tab === 'queue' ? m.e7_alr_empty_queue() : m.e7_alr_empty_history()}</p>
       </div>
     {:else}
       <div class="space-y-3">
@@ -140,7 +141,7 @@
               <div class="flex-1 min-w-0">
                 <p class="font-semibold text-on-surface text-sm truncate">{TYPE_LABELS[request.type] ?? request.type} — {targetLabel(request)}</p>
                 <p class="text-xs text-on-surface-variant/60 mt-0.5 truncate">
-                  {formatDate(request.createdAt)} · Demandé par {requesterLabel(request)} · via {request.requestedVia}
+                  {m.e7_alr_meta_created({ date: formatDate(request.createdAt), requester: requesterLabel(request), via: request.requestedVia })}
                 </p>
               </div>
               <span class="px-2.5 py-1 rounded-full text-[11px] font-bold border shrink-0 {meta.classes}">{meta.label}</span>
@@ -150,40 +151,40 @@
             {#if openId === request.id}
               <div class="border-t border-outline-variant/10 p-5 space-y-4 bg-surface-container-low/30">
                 <div class="rounded-lg bg-surface border border-outline-variant/15 p-3 text-sm space-y-1">
-                  <p><span class="font-semibold text-on-surface-variant/60">Type :</span> {TYPE_LABELS[request.type] ?? request.type}</p>
-                  <p><span class="font-semibold text-on-surface-variant/60">Cible :</span> {targetLabel(request)}</p>
-                  <p><span class="font-semibold text-on-surface-variant/60">Demandé par :</span> {requesterLabel(request)}</p>
-                  <p><span class="font-semibold text-on-surface-variant/60">Via :</span> {request.requestedVia}</p>
+                  <p><span class="font-semibold text-on-surface-variant/60">{m.e7_alr_field_type()}</span> {TYPE_LABELS[request.type] ?? request.type}</p>
+                  <p><span class="font-semibold text-on-surface-variant/60">{m.e7_alr_field_target()}</span> {targetLabel(request)}</p>
+                  <p><span class="font-semibold text-on-surface-variant/60">{m.e7_alr_field_requested_by()}</span> {requesterLabel(request)}</p>
+                  <p><span class="font-semibold text-on-surface-variant/60">{m.e7_alr_field_via()}</span> {request.requestedVia}</p>
                   {#if request.requestReason}
-                    <p><span class="font-semibold text-on-surface-variant/60">Raison :</span> {request.requestReason}</p>
+                    <p><span class="font-semibold text-on-surface-variant/60">{m.e7_alr_field_reason()}</span> {request.requestReason}</p>
                   {/if}
                 </div>
 
                 {#if request.status === 'PENDING'}
                   <div class="space-y-3 pt-2 border-t border-outline-variant/10">
                     <textarea bind:value={actionReason} rows="2"
-                      placeholder="Raison du rejet / note d'approbation (optionnel)…"
+                      placeholder={m.e7_alr_reject_placeholder()}
                       class="w-full bg-surface rounded-xl px-4 py-3 text-sm outline-none border border-outline-variant/20 focus:border-primary transition-colors resize-y"></textarea>
                     <div class="flex flex-wrap gap-2">
                       <button onclick={() => decide(request, 'APPROVED')} disabled={actionInProgress}
                         class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                        <Papicon icon="check" size={14} /> Approuver
+                        <Papicon icon="check" size={14} /> {m.e7_alr_approve_btn()}
                       </button>
                       <button onclick={() => decide(request, 'REJECTED')} disabled={actionInProgress}
                         class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                        <Papicon icon="x" size={14} /> Rejeter
+                        <Papicon icon="x" size={14} /> {m.e7_alr_reject_btn()}
                       </button>
                     </div>
                     <p class="text-[11px] text-on-surface-variant/50">
-                      Seul le propriétaire du serveur ou un membre d'un rôle « sécurité » configuré peut traiter cette demande.
+                      {m.e7_alr_permission_note()}
                     </p>
                   </div>
                 {:else}
                   <div class="rounded-lg bg-surface border border-outline-variant/15 p-3 text-sm">
                     <p class="font-semibold text-on-surface">
-                      Décision : {STATUS_META[request.status]?.label}
-                      {#if request.decidedByTag}<span class="text-on-surface-variant/60 font-normal"> par {request.decidedByTag}</span>{/if}
-                      {#if request.decidedAt}<span class="text-on-surface-variant/60 font-normal"> le {formatDate(request.decidedAt)}</span>{/if}
+                      {m.e7_alr_decision_label({ status: STATUS_META[request.status]?.label ?? '' })}
+                      {#if request.decidedByTag}<span class="text-on-surface-variant/60 font-normal"> {m.e7_alr_decision_by({ tag: request.decidedByTag })}</span>{/if}
+                      {#if request.decidedAt}<span class="text-on-surface-variant/60 font-normal"> {m.e7_alr_decision_on({ date: formatDate(request.decidedAt) })}</span>{/if}
                     </p>
                     {#if request.decisionReason}
                       <p class="text-on-surface-variant/80 mt-1">{request.decisionReason}</p>

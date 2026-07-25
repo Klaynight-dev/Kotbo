@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toast, type Toast as ToastType } from '../stores/toast.svelte';
   import Papicon from './Papicon.svelte';
+  import { m } from '../i18n';
 
   let { item }: { item: ToastType } = $props();
 
@@ -43,7 +44,7 @@
   <button
     onclick={() => toast.remove(item.id)}
     class="ml-auto p-0.5 hover:bg-black/5 dark:hover:bg-white/10 rounded transition-colors cursor-pointer shrink-0"
-    aria-label="Fermer"
+    aria-label={m.d7_close()}
   >
     <Papicon name="close" size={14} />
   </button>

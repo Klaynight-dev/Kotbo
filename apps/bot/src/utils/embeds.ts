@@ -336,12 +336,12 @@ export function buildTwitchEmbed(params: {
   gameName?: string;
   viewerCount?: number;
   thumbnailUrl?: string;
-  isOffline?: boolean;
 }) {
   const embed = baseEmbed(0x9146ff)
     .setTitle(truncate(params.title, 256))
     .setURL(`https://twitch.tv/${params.streamerName}`)
-    .setAuthor({ name: params.streamerName });
+    .setAuthor({ name: params.streamerName })
+    .setDescription(`${E.dnd} ${params.streamerName} est en live !`);
 
   if (params.gameName) {
     embed.addFields({ name: 'Jeu', value: params.gameName, inline: true });
@@ -354,11 +354,6 @@ export function buildTwitchEmbed(params: {
       .replace('{width}', '1280')
       .replace('{height}', '720');
     embed.setImage(formattedUrl);
-  }
-  if (params.isOffline) {
-    embed.setDescription('Le stream est maintenant hors ligne.');
-  } else {
-    embed.setDescription(`${E.dnd} ${params.streamerName} est en live !`);
   }
 
   return embed;

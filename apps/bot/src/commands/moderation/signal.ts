@@ -15,26 +15,35 @@ import {
 } from 'discord.js';
 import type { SlashCommandDefinition, ContextCommandDefinition } from '../../commands.js';
 import { errorEmbed, successEmbed, COLORS } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_signal');
 
 const data = new SlashCommandBuilder()
-  .setName('signal')
-  .setDescription("🚨 Signale un utilisateur Discord à l'administrateur du bot")
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addUserOption((option) =>
     option
       .setName('membre')
-      .setDescription("L'utilisateur à signaler")
+      .setDescription(m.b5_signal_opt_member({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_signal_opt_member({}, { locale: 'fr' }) })
       .setRequired(true),
   )
   .addStringOption((option) =>
     option
       .setName('raison')
-      .setDescription('Raison/motif du signalement')
+      .setDescription(m.b5_signal_opt_reason({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_signal_opt_reason({}, { locale: 'fr' }) })
       .setRequired(true)
       .setMaxLength(1000),
   );
 
 const contextData = new ContextMenuCommandBuilder()
-  .setName('Signaler cet utilisateur')
+  .setName(m.b5_signal_context_name({}, { locale: 'en' }))
+  .setNameLocalizations({ fr: m.b5_signal_context_name({}, { locale: 'fr' }) })
   .setType(ApplicationCommandType.User);
 
 export async function sendReportToAdmin(params: {
@@ -78,6 +87,7 @@ export async function sendReportToAdmin(params: {
 async function executeSlash(interaction: ChatInputCommandInteraction): Promise<void> {
   const targetUser = interaction.options.getUser('membre', true);
   const reason = interaction.options.getString('raison', true);
+  const locale = await getEffectiveLocale(interaction);
 
   await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -93,27 +103,28 @@ async function executeSlash(interaction: ChatInputCommandInteraction): Promise<v
 
   if (success) {
     await interaction.editReply({
-      embeds: [successEmbed('Signalement envoyé', `L'utilisateur ${targetUser} a été signalé avec succès à l'administrateur du bot.`)],
+      embeds: [successEmbed(m.b5_signal_sent_title({}, { locale }), m.b5_signal_sent_desc({ user: targetUser.toString() }, { locale }))],
     });
   } else {
     await interaction.editReply({
-      embeds: [errorEmbed("Échec de l'envoi", "Impossible de transmettre le signalement à l'administrateur du bot.")],
+      embeds: [errorEmbed(m.b5_signal_failed_title({}, { locale }), m.b5_signal_failed_desc({}, { locale }))],
     });
   }
 }
 
 async function executeContext(interaction: UserContextMenuCommandInteraction): Promise<void> {
   const targetUser = interaction.targetUser;
+  const locale = await getEffectiveLocale(interaction);
 
   const modal = new ModalBuilder()
     .setCustomId(`modal:signal:${targetUser.id}`)
-    .setTitle(`Signaler : ${targetUser.username.slice(0, 20)}`);
+    .setTitle(m.b5_signal_modal_title({ user: targetUser.username.slice(0, 20) }, { locale }));
 
   const reasonInput = new TextInputBuilder()
     .setCustomId('raison')
-    .setLabel('Raison du signalement')
+    .setLabel(m.b5_signal_modal_label({}, { locale }))
     .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('Expliquez pourquoi vous signalez cet utilisateur...')
+    .setPlaceholder(m.b5_signal_modal_placeholder({}, { locale }))
     .setRequired(true)
     .setMaxLength(1000);
 

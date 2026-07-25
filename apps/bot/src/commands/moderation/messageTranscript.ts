@@ -13,6 +13,8 @@ import prisma from '../../utils/db.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { generateTranscriptFromMessages } from '../../services/features/transcriptService.js';
 import { logger } from '../../utils/logger.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 async function isStaffMember(interaction: MessageContextMenuCommandInteraction, guildId: string): Promise<boolean> {
   const member = interaction.member as GuildMember;
@@ -51,9 +53,10 @@ const contextData = new ContextMenuCommandBuilder()
 
 async function executeFrom(interaction: MessageContextMenuCommandInteraction): Promise<void> {
   const { guildId } = interaction;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée sur un serveur.',
+      content: `❌ ${m.b2_transcript_guild_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -61,7 +64,7 @@ async function executeFrom(interaction: MessageContextMenuCommandInteraction): P
 
   if (!(await isStaffMember(interaction, guildId))) {
     await interaction.reply({
-      content: "❌ Vous n'avez pas la permission d'utiliser cette commande.",
+      content: `❌ ${m.b2_transcript_no_permission({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -70,7 +73,7 @@ async function executeFrom(interaction: MessageContextMenuCommandInteraction): P
   const channel = interaction.channel;
   if (!channel || !(channel instanceof TextChannel)) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée dans un salon textuel.',
+      content: `❌ ${m.b2_transcript_text_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -102,8 +105,8 @@ async function executeFrom(interaction: MessageContextMenuCommandInteraction): P
     await interaction.editReply({
       embeds: [
         successEmbed(
-          '📄 Transcription générée depuis ce message',
-          `La transcription de **${transcriptData.count}** message(s) à partir du message sélectionné a été créée avec succès.\n\n🌐 [Consulter la transcription](${publicLink})`
+          m.b2_transcript_from_title({}, { locale }),
+          m.b2_transcript_from_desc({ count: transcriptData.count, link: publicLink }, { locale })
         ),
       ],
     });
@@ -112,8 +115,8 @@ async function executeFrom(interaction: MessageContextMenuCommandInteraction): P
     await interaction.editReply({
       embeds: [
         errorEmbed(
-          'Erreur de transcription',
-          'Une erreur est survenue lors de la transcription des messages.'
+          m.b2_transcript_error_title({}, { locale }),
+          m.b2_transcript_error_desc({}, { locale })
         ),
       ],
     });
@@ -122,9 +125,10 @@ async function executeFrom(interaction: MessageContextMenuCommandInteraction): P
 
 async function executeContext(interaction: MessageContextMenuCommandInteraction): Promise<void> {
   const { guildId } = interaction;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée sur un serveur.',
+      content: `❌ ${m.b2_transcript_guild_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -132,7 +136,7 @@ async function executeContext(interaction: MessageContextMenuCommandInteraction)
 
   if (!(await isStaffMember(interaction, guildId))) {
     await interaction.reply({
-      content: "❌ Vous n'avez pas la permission d'utiliser cette commande.",
+      content: `❌ ${m.b2_transcript_no_permission({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -141,7 +145,7 @@ async function executeContext(interaction: MessageContextMenuCommandInteraction)
   const channel = interaction.channel;
   if (!channel || !(channel instanceof TextChannel)) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée dans un salon textuel.',
+      content: `❌ ${m.b2_transcript_text_only({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;

@@ -2125,13 +2125,15 @@ export async function fetchSocialFollows(guildId = authStore.selectedGuildId) {
   });
 }
 
-export async function addYoutubeFollow(payload: { query: string; channelId?: string; channelName?: string; liveChannelId?: string | null; shortChannelId?: string | null; videoChannelId?: string | null }, guildId = authStore.selectedGuildId) {
+export async function addYoutubeFollow(payload: { query: string; channelId?: string; discordChannelId?: string | null; mention?: string | null; liveMessage?: string | null; videoMessage?: string | null; shortMessage?: string | null }, guildId = authStore.selectedGuildId) {
   // If editing an existing follow, we can pass query as channelId
   const body = {
     query: payload.query || payload.channelId || '',
-    liveChannelId: payload.liveChannelId,
-    shortChannelId: payload.shortChannelId,
-    videoChannelId: payload.videoChannelId
+    discordChannelId: payload.discordChannelId,
+    mention: payload.mention,
+    liveMessage: payload.liveMessage,
+    videoMessage: payload.videoMessage,
+    shortMessage: payload.shortMessage
   };
   return dashboardRequest('/social-follows/youtube', {
     method: 'POST',
@@ -2149,7 +2151,7 @@ export async function deleteYoutubeFollow(id: string, guildId = authStore.select
   });
 }
 
-export async function addTwitchFollow(payload: { streamerName: string; liveChannelId?: string | null; otherChannelId?: string | null }, guildId = authStore.selectedGuildId) {
+export async function addTwitchFollow(payload: { streamerName: string; discordChannelId?: string | null; mention?: string | null; liveMessage?: string | null }, guildId = authStore.selectedGuildId) {
   return dashboardRequest('/social-follows/twitch', {
     method: 'POST',
     payload,

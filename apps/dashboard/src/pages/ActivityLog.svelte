@@ -227,7 +227,7 @@
   <div class="flex flex-col md:flex-row md:items-center gap-4 justify-between">
     <div class="space-y-2 w-full md:max-w-2xl">
       <label class="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest ml-1" for="search">Recherche</label>
-      <div class="relative">
+      <div class="relative top-1.5">
         <Papicon icon="search" size={18} class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
         <FormInput
           id="search"

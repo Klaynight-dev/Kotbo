@@ -3,16 +3,20 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction, MessageFlags } f
 import { errorEmbed, COLORS, baseEmbed } from '../../utils/embeds.js';
 import prisma from '../../utils/db.js';
 import fs from 'fs/promises';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const packagePath = new URL('../../package.json', import.meta.url);
+
+const meta = getCommandMetadata('c6_info');
 
 async function getVersion() {
   try {
     const raw = await fs.readFile(packagePath, 'utf8');
     const pkg = JSON.parse(raw);
-    return pkg.version ?? 'inconnue';
+    return pkg.version ?? 'unknown';
   } catch {
-    return 'inconnue';
+    return 'unknown';
   }
 }
 
@@ -32,12 +36,12 @@ function formatMb(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)} MB`;
 }
 
-function boolChip(enabled: boolean): string {
-  return enabled ? '🟢 Activé' : '🔴 Désactivé';
+function boolChip(enabled: boolean, locale: 'fr' | 'en'): string {
+  return enabled ? m.c6_bool_enabled({}, { locale }) : m.c6_bool_disabled({}, { locale });
 }
 
-function channelRef(channelId?: string | null): string {
-  return channelId ? `<#${channelId}>` : 'Non défini';
+function channelRef(channelId: string | null | undefined, locale: 'fr' | 'en'): string {
+  return channelId ? `<#${channelId}>` : m.c6_info_not_set({}, { locale });
 }
 
 function truncate(value: string, max = 120): string {
@@ -46,15 +50,18 @@ function truncate(value: string, max = 120): string {
 }
 
 const data = new SlashCommandBuilder()
-  .setName('info')
-  .setDescription('ℹ️ Informations sur le bot (version, état, configuration)');
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations);
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
   const guildId = interaction.guildId;
   if (!guildId) {
-    await interaction.reply({ 
-      embeds: [errorEmbed('Impossible', 'Cette commande doit être utilisée dans un serveur.')], 
-      flags: [MessageFlags.Ephemeral] 
+    await interaction.reply({
+      embeds: [errorEmbed(m.c6_info_no_guild_title({}, { locale }), m.c6_info_no_guild_desc({}, { locale }))],
+      flags: [MessageFlags.Ephemeral]
     });
     return;
   }
@@ -76,79 +83,80 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   const guildCreated = interaction.guild?.createdTimestamp
     ? `<t:${Math.floor(interaction.guild.createdTimestamp / 1000)}:R>`
-    : 'Inconnu';
+    : m.c6_info_unknown({}, { locale });
 
   const reposPreview = guild?.githubRepositories?.length
     ? truncate(guild.githubRepositories.slice(0, 3).join(' • '), 140)
-    : 'Aucun dépôt configuré';
-
-
+    : m.c6_info_no_repos({}, { locale });
 
   const embed = baseEmbed(COLORS.info, { user: interaction.user })
-    .setTitle('🛰️ Tableau de bord Kotbo')
-    .setDescription('Vue rapide de la santé du bot, des modules actifs et des métriques de ce serveur.')
+    .setTitle(m.c6_info_title({}, { locale }))
+    .setDescription(m.c6_info_desc({}, { locale }))
     .setThumbnail(interaction.client.user?.displayAvatarURL() ?? null)
     .addFields(
       {
-        name: '🤖 Runtime',
-        value: [
-          `**Version bot:** \`${version}\``,
-          `**Node:** \`${process.version}\``,
-          `**Uptime:** \`${formatUptime(uptime)}\``,
-          `**Latence WS:** \`${interaction.client.ws.ping} ms\``,
-          `**Mémoire heap:** \`${formatMb(memory.heapUsed)} / ${formatMb(memory.heapTotal)}\``,
-          `**Plateforme:** \`${process.platform}\``,
-        ].join('\n'),
+        name: m.c6_info_field_runtime_title({}, { locale }),
+        value: m.c6_info_field_runtime_body({
+          version,
+          node: process.version,
+          uptime: formatUptime(uptime),
+          ping: interaction.client.ws.ping,
+          heapUsed: formatMb(memory.heapUsed),
+          heapTotal: formatMb(memory.heapTotal),
+          platform: process.platform,
+        }, { locale }),
         inline: true,
       },
       {
-        name: '🏠 Serveur',
-        value: [
-          `**Nom:** ${interaction.guild?.name ?? 'Inconnu'}`,
-          `**Créé:** ${guildCreated}`,
-          `**Membres visibles:** \`${interaction.guild?.memberCount ?? 0}\``,
-          `**Serveurs connectés:** \`${interaction.client.guilds.cache.size}\``,
-          `**Users en cache:** \`${interaction.client.users.cache.size}\``,
-        ].join('\n'),
+        name: m.c6_info_field_server_title({}, { locale }),
+        value: m.c6_info_field_server_body({
+          name: interaction.guild?.name ?? m.c6_info_unknown({}, { locale }),
+          created: guildCreated,
+          memberCount: interaction.guild?.memberCount ?? 0,
+          guildCount: interaction.client.guilds.cache.size,
+          userCount: interaction.client.users.cache.size,
+        }, { locale }),
         inline: true,
       },
       {
-        name: '🧩 Modules',
-        value: [
-          `**Traduction:** ${boolChip(guild?.translationEnabled ?? false)} (${guild?.defaultTranslateTo ?? 'FR'})`,
-          `**Code Police:** ${boolChip(guild?.codePoliceEnabled ?? false)}`,
-          `**Daily Algo:** ${boolChip(guild?.dailyAlgoEnabled ?? false)}`,
-          `**GitHub Releases:** ${boolChip(guild?.githubReleasesEnabled ?? false)}`,
-        ].join('\n'),
+        name: m.c6_info_field_modules_title({}, { locale }),
+        value: m.c6_info_field_modules_body({
+          translation: boolChip(guild?.translationEnabled ?? false, locale),
+          translateTo: guild?.defaultTranslateTo ?? 'FR',
+          codePolice: boolChip(guild?.codePoliceEnabled ?? false, locale),
+          dailyAlgo: boolChip(guild?.dailyAlgoEnabled ?? false, locale),
+          githubReleases: boolChip(guild?.githubReleasesEnabled ?? false, locale),
+        }, { locale }),
         inline: false,
       },
       {
-        name: '📈 Métriques',
-        value: [
-          `**Runs Daily Algo:** \`${dailyAlgoRuns}\` (${dailyAlgoSubmissions} soumission(s))`,
-        ].join('\n'),
+        name: m.c6_info_field_metrics_title({}, { locale }),
+        value: m.c6_info_field_metrics_body({
+          runs: dailyAlgoRuns,
+          submissions: dailyAlgoSubmissions,
+        }, { locale }),
         inline: true,
       },
       {
-        name: '📣 Canaux configurés',
-        value: [
-          `**Daily Algo:** ${channelRef(guild?.dailyAlgoChannelId)}`,
-          `**Validation Daily Algo:** ${channelRef(guild?.dailyAlgoValidationChannelId)}`,
-          `**Status check:** ${channelRef(guild?.statusCheckChannelId)}`,
-        ].join('\n'),
+        name: m.c6_info_field_channels_title({}, { locale }),
+        value: m.c6_info_field_channels_body({
+          dailyAlgo: channelRef(guild?.dailyAlgoChannelId, locale),
+          dailyAlgoValidation: channelRef(guild?.dailyAlgoValidationChannelId, locale),
+          statusCheck: channelRef(guild?.statusCheckChannelId, locale),
+        }, { locale }),
         inline: true,
       },
       {
-        name: '🚀 GitHub Releases',
-        value: [
-          `**Canal:** ${channelRef(guild?.githubReleasesChannelId)}`,
-          `**Dépôts suivis:** \`${guild?.githubRepositories?.length ?? 0}\``,
-          `**Aperçu:** ${reposPreview}`,
-        ].join('\n'),
+        name: m.c6_info_field_github_title({}, { locale }),
+        value: m.c6_info_field_github_body({
+          channel: channelRef(guild?.githubReleasesChannelId, locale),
+          repoCount: guild?.githubRepositories?.length ?? 0,
+          preview: reposPreview,
+        }, { locale }),
         inline: false,
       }
     )
-    .setFooter({ text: `Kotbo • /config pour modifier les paramètres`, iconURL: interaction.guild?.iconURL() ?? undefined })
+    .setFooter({ text: m.c6_info_footer({}, { locale }), iconURL: interaction.guild?.iconURL() ?? undefined })
     .setTimestamp();
 
   await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });

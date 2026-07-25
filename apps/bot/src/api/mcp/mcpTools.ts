@@ -14,6 +14,7 @@ import {
   registerTimeoutSanction,
 } from '../../services/moderation/sanctionService.js';
 import { closeTicket } from '../../services/features/ticketService.js';
+import { adminDeleteShopItem } from '../../services/features/economyService.js';
 import { getPredictionData } from '../../services/analytics/predictionService.js';
 import { getPulseDashboardData } from '../../services/analytics/pulseService.js';
 import { getHourlyHeatmapData } from '../../services/analytics/dashboardAnalyticsService.js';
@@ -7377,19 +7378,9 @@ export function registerMcpTools(
       },
       guard('WRITE_MEMBERS', async ({ id, key_name }) => {
         try {
-          const existing = await prisma.rpgItem.findUnique({
-            where: { id }
-          });
-          if (!existing) return err('Objet introuvable');
-          if (existing.guildId !== guildId) {
-            return err("Cet objet appartient à un autre serveur ou est un objet global.");
-          }
+          const { item, unequippedCount } = await adminDeleteShopItem(guildId, id);
 
-          await prisma.rpgItem.delete({
-            where: { id }
-          });
-
-          await audit(key_name, 'Configuration économie MCP', `Objet boutique RPG supprimé: ${existing.name}`, `ID: ${id}`);
+          await audit(key_name, 'Configuration économie MCP', `Objet boutique RPG supprimé: ${item.name}`, `ID: ${id}${unequippedCount > 0 ? ` | Déséquipé de ${unequippedCount} profil(s)` : ''}`);
           return ok({ ok: true });
         } catch (e) {
           return err(`Erreur : ${e instanceof Error ? e.message : String(e)}`);

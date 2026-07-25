@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { m } from '../i18n';
   export let values: string[] = [];
   export let options: Array<{ id: string; name: string }> = [];
-  export let placeholder: string = 'Rechercher…';
+  export let placeholder: string = m.d4_search_placeholder();
   export let disabled: boolean = false;
   export let accentClass: string = 'bg-primary/20 text-primary border-primary/40'; // active pill style
   export let id: string = '';
@@ -65,7 +66,7 @@
             type="button"
             onclick={(e) => { e.stopPropagation(); remove(opt.id); }}
             class="ml-0.5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer text-xs leading-none"
-            aria-label="Retirer {opt.name}"
+            aria-label={m.d4_remove_item({ name: opt.name })}
           >✕</button>
         {/if}
       </span>
@@ -96,7 +97,7 @@
     >
       {#if filtered.length === 0}
         <div class="px-4 py-3 text-xs text-on-surface-variant/50 italic">
-          {query ? 'Aucun résultat pour « ' + query + ' »' : 'Tout est déjà sélectionné.'}
+          {query ? m.d4_no_result_for({ query }) : m.d4_all_selected()}
         </div>
       {:else}
         <div class="p-1.5 space-y-0.5">

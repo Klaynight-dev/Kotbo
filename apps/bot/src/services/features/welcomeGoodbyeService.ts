@@ -131,36 +131,6 @@ export async function applyJoinAutoRole(member: GuildMember) {
 }
 
 /**
- * Attribue ou retire le rôle du tag si configuré
- */
-export async function applyTagAutoRole(member: GuildMember) {
-  try {
-    if (member.user.bot) return;
-
-    const config = await getOrCreateWelcomeConfig(member.guild.id);
-    if (!config.tagAutoRoleEnabled || !config.tagAutoRoleId || !config.tagAutoRoleWord) return;
-
-    const role = member.guild.roles.cache.get(config.tagAutoRoleId);
-    if (!role) return;
-
-    // Vérifie le pseudo, le nom global et le surnom
-    const nameToCheck = `${member.nickname ?? ''} ${member.user.globalName ?? ''} ${member.user.username}`.toLowerCase();
-    const hasTag = nameToCheck.includes(config.tagAutoRoleWord.toLowerCase());
-    const hasRole = member.roles.cache.has(config.tagAutoRoleId);
-
-    if (hasTag && !hasRole) {
-      await member.roles.add(role, 'Auto-rôle tag configuré détecté').catch(() => null);
-      logger.info('AutoRole', `Rôle tag attribué à ${member.user.tag} dans ${member.guild.name}`);
-    } else if (!hasTag && hasRole) {
-      await member.roles.remove(role, 'Retrait auto-rôle tag (tag retiré)').catch(() => null);
-      logger.info('AutoRole', `Rôle tag retiré de ${member.user.tag} dans ${member.guild.name}`);
-    }
-  } catch (err) {
-    logger.error('WelcomeGoodbyeService', `Erreur auto-rôle tag pour ${member.id}:`, err);
-  }
-}
-
-/**
  * Génère une carte de bienvenue au format PNG avec Canvas
  */
 export async function generateWelcomeCard(member: GuildMember, titleText = 'BIENVENUE !'): Promise<Buffer> {

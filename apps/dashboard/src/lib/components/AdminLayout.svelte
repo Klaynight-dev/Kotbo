@@ -6,6 +6,7 @@
   import CommandPalette from './CommandPalette.svelte';
   import { fetchAdminStats } from '../api';
   import { brandingStore } from '../stores/branding.svelte';
+  import { m } from '../i18n';
 
   let { children }: { children?: Snippet } = $props();
 
@@ -72,34 +73,34 @@
 
   const navGroups: NavGroup[] = [
     {
-      label: 'Supervision',
+      label: m.d4_nav_supervision(),
       items: [
-        { path: '/admin', label: "Vue d'ensemble", icon: 'activity', exact: true },
-        { path: '/admin/servers', label: 'Serveurs', icon: 'Server' },
-        { path: '/admin/shards', label: 'Shards', icon: 'Zap' },
-        { path: '/admin/modules', label: 'Modules', icon: 'Box' },
-        { path: '/admin/broadcast', label: 'Broadcast', icon: 'Megaphone' },
+        { path: '/admin', label: m.d4_nav_overview(), icon: 'activity', exact: true },
+        { path: '/admin/servers', label: m.d4_nav_servers(), icon: 'Server' },
+        { path: '/admin/shards', label: m.d4_nav_shards(), icon: 'Zap' },
+        { path: '/admin/modules', label: m.d4_nav_modules(), icon: 'Box' },
+        { path: '/admin/broadcast', label: m.d4_nav_broadcast(), icon: 'Megaphone' },
       ]
     },
     {
-      label: 'Sécurité & Filtrage',
+      label: m.d4_nav_security_filtering(),
       items: [
-        { path: '/admin/security', label: 'Sécurité', icon: 'ShieldCheck' },
-        { path: '/admin/content', label: 'Mots globaux', icon: 'filter' },
-        { path: '/admin/activation', label: "Codes d'activation", icon: 'Key' },
-        { path: '/admin/whitelabel', label: 'White-Label', icon: 'Layers' },
+        { path: '/admin/security', label: m.d4_nav_security(), icon: 'ShieldCheck' },
+        { path: '/admin/content', label: m.d4_nav_global_words(), icon: 'filter' },
+        { path: '/admin/activation', label: m.d4_nav_activation_codes(), icon: 'Key' },
+        { path: '/admin/whitelabel', label: m.d4_nav_whitelabel(), icon: 'Layers' },
       ]
     },
     {
-      label: 'Conformité',
+      label: m.d4_nav_compliance(),
       items: [
-        { path: '/admin/gdpr', label: 'Export RGPD', icon: 'ShieldCheck' },
+        { path: '/admin/gdpr', label: m.d4_nav_gdpr_export(), icon: 'ShieldCheck' },
       ]
     },
     {
-      label: 'Système',
+      label: m.d4_nav_system(),
       items: [
-        { path: '/admin/config', label: 'Avancé', icon: 'Settings' },
+        { path: '/admin/config', label: m.d4_nav_advanced(), icon: 'Settings' },
       ]
     }
   ];
@@ -112,7 +113,7 @@
   }
 
   const currentLabel = $derived(
-    allItems.find(item => isActive(item.path, item.exact))?.label ?? 'Admin'
+    allItems.find(item => isActive(item.path, item.exact))?.label ?? m.d4_admin()
   );
 </script>
 
@@ -136,7 +137,7 @@
         </div>
         <div>
           <p class="text-[13px] font-medium text-primary/80 leading-none">{brandingStore.brandName}</p>
-          <h1 class="text-base font-semibold text-on-surface leading-none mt-0.5">Console Admin</h1>
+          <h1 class="text-base font-semibold text-on-surface leading-none mt-0.5">{m.d4_admin_console()}</h1>
         </div>
       </div>
 
@@ -146,7 +147,7 @@
         class="hidden md:flex items-center gap-3 px-4 py-2 rounded-xl bg-on-surface/5 hover:bg-on-surface/8 border border-outline-variant/10 text-on-surface-variant/40 hover:text-on-surface/60 transition-all duration-200 text-sm font-medium min-w-52"
       >
         <Papicon icon="Search" size={14} />
-        <span class="flex-1 text-left text-xs">Rechercher ou naviguer...</span>
+        <span class="flex-1 text-left text-xs">{m.d4_search_or_navigate()}</span>
         <div class="flex items-center gap-1">
           <kbd class="px-1.5 py-0.5 rounded bg-on-surface/8 border border-outline-variant/10 text-[11px] font-semibold font-mono leading-none">⌘K</kbd>
         </div>
@@ -156,7 +157,7 @@
       <div class="flex items-center gap-3">
         <div class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-success/10 border border-success/20 text-success text-xs font-medium">
           <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span>
-          Opérationnel
+          {m.d4_operational()}
         </div>
         <!-- Mobile Cmd+K -->
         <button
@@ -170,7 +171,7 @@
           class="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold bg-on-surface/5 hover:bg-on-surface/10 text-on-surface-variant hover:text-on-surface border border-outline-variant/10 transition-all duration-200"
         >
           <Papicon icon="ArrowLeft" size={12} />
-          <span class="hidden sm:block">Dashboard</span>
+          <span class="hidden sm:block">{m.d4_dashboard()}</span>
         </a>
       </div>
     </div>
@@ -263,8 +264,8 @@
 
         <!-- Access notice -->
         <div class="px-3 py-3 rounded-xl bg-on-surface/3 border border-outline-variant/5 space-y-1">
-          <p class="text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/30">Accès restreint</p>
-          <p class="text-xs text-on-surface-variant/50 font-medium">Admins Kotbo uniquement</p>
+          <p class="text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/30">{m.d4_restricted_access()}</p>
+          <p class="text-xs text-on-surface-variant/50 font-medium">{m.d4_kotbo_admins_only()}</p>
         </div>
       </div>
     </aside>
@@ -273,7 +274,7 @@
     <main class="flex-1 min-w-0 p-6 lg:p-8">
       <!-- Breadcrumb -->
       <div class="flex items-center gap-2 mb-6 text-xs text-on-surface-variant/40 font-medium">
-        <span class="font-bold text-on-surface-variant/30">Admin</span>
+        <span class="font-bold text-on-surface-variant/30">{m.d4_admin()}</span>
         <Papicon icon="ChevronRight" size={12} class="text-on-surface-variant/20" />
         <span class="text-on-surface-variant/60 font-bold">{currentLabel}</span>
       </div>

@@ -9,6 +9,8 @@ import { giveRep, getReputation, getReputationLeaderboard, REP_DAILY_VOTE_LIMIT 
 import { incrementQuestProgress } from '../../services/community/questService.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { separator, v2Message } from '@arcscord/components'
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('rep')
@@ -29,6 +31,7 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction) {
   const subcommand = interaction.options.getSubcommand();
   const guildId = interaction.guildId!;
+  const locale = await getEffectiveLocale(interaction);
 
   if (subcommand === 'give') {
     const target = interaction.options.getUser('membre', true);
@@ -38,7 +41,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!result.success) {
       await interaction.reply({
-        components: [errorContainer('Impossible', result.error)],
+        components: [errorContainer(m.b2_rep_impossible({}, { locale }), result.error)],
         flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
       });
       return;
@@ -49,11 +52,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.reply(v2Message(
       kotboContainer({
         color: 'success',
-        title: `${E.star} +Rep !`,
+        title: `${E.star} ${m.b2_rep_give_title({}, { locale })}`,
         fields: [
-          `<@${interaction.user.id}> a donné un **+rep** à <@${target.id}>` + (reason ? `\n${E.dot} *${reason}*` : ''),
+          m.b2_rep_give_field({ from: `<@${interaction.user.id}>`, to: `<@${target.id}>` }, { locale }) + (reason ? `\n${E.dot} *${reason}*` : ''),
         ],
-        footerTitle: `<@${target.id}> a maintenant ${result.newTotal} rep`
+        footerTitle: m.b2_rep_give_footer({ user: `<@${target.id}>`, total: result.newTotal ?? 0 }, { locale })
       })
     ));
   }
@@ -65,17 +68,17 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.reply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.star} Réputation · <@${target.id}>`,
+        title: `${E.star} ${m.b2_rep_reputation({}, { locale })} · <@${target.id}>`,
         titleThumbnail: { url: target.displayAvatarURL() },
         fields: [
           separator({ divider: true, spacing: 'small' }),
           [
-            `${E.arrow} **Total** · **${profile.totalRep}** rep`,
-            `${E.arrow} **Rang** · #${profile.rank}`,
-            `${E.arrow} **Votes restants** · ${REP_DAILY_VOTE_LIMIT - profile.votesGivenToday}/${REP_DAILY_VOTE_LIMIT}`,
+            `${E.arrow} **${m.b2_rep_total({}, { locale })}** · **${profile.totalRep}** rep`,
+            `${E.arrow} **${m.b2_rep_rank({}, { locale })}** · #${profile.rank}`,
+            `${E.arrow} **${m.b2_rep_votes_left({}, { locale })}** · ${REP_DAILY_VOTE_LIMIT - profile.votesGivenToday}/${REP_DAILY_VOTE_LIMIT}`,
           ].join('\n'),
         ],
-        footerTitle: 'Réputation'
+        footerTitle: m.b2_rep_reputation({}, { locale })
       })
     ));
   }
@@ -88,11 +91,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
       await interaction.editReply(v2Message(
         kotboContainer({
           color: 'dark',
-          title: `${E.trophy} Classement Réputation`,
+          title: `${E.trophy} ${m.b2_rep_leaderboard_title({}, { locale })}`,
           fields: [
-            `${E.info} Aucune réputation enregistrée pour le moment.`,
+            `${E.info} ${m.b2_rep_leaderboard_empty({}, { locale })}`,
           ],
-          footerTitle: 'Réputation'
+          footerTitle: m.b2_rep_reputation({}, { locale })
         })
       ));
       return;
@@ -106,12 +109,12 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.trophy} Classement Réputation`,
+        title: `${E.trophy} ${m.b2_rep_leaderboard_title({}, { locale })}`,
         fields: [
           separator({ divider: true, spacing: 'small' }),
           lines.join('\n'),
         ],
-        footerTitle: `${lb.totalVoters} votants au total`
+        footerTitle: m.b2_rep_leaderboard_footer({ count: lb.totalVoters }, { locale })
       })
     ));
   }

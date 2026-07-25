@@ -1114,7 +1114,7 @@
           </div>
         </div>
         <div class="px-6 pb-4">
-          <label class="relative block w-full md:max-w-xl">
+          <label class="relative block w-full top-1.5 md:max-w-xl">
             <Papicon icon="search" size={18} class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <FormInput
               type="search"

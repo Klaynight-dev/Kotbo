@@ -3,45 +3,36 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.j
 import { kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_games');
 
 const data = new SlashCommandBuilder()
-  .setName('games')
-  .setDescription("🎮 Obtenir des informations détaillées sur les jeux de l'économie");
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations);
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  const locale = await getEffectiveLocale(interaction);
+
   await interaction.reply(v2Message(
     kotboContainer({
       color: 'primary',
-      title: `${E.coins} Mini-Jeux de l'Économie`,
+      title: `${E.coins} ${m.b5_games_title({}, { locale })}`,
       fields: [
-        'Tentez de faire fructifier vos pièces ou de vous divertir grâce aux commandes de jeu ci-dessous !',
+        m.b5_games_intro({}, { locale }),
         separator({ divider: true, spacing: 'small' }),
-        `**${E.coins} \`/dice <mise>\`**\n` +
-          `Lancez deux dés de 1 à 6.\n` +
-          `${E.dot} **Double 6 :** Gagnez **3x** votre mise !\n` +
-          `${E.dot} **Autre Double :** Gagnez **2x** votre mise !\n` +
-          `${E.dot} **Somme >= 8 :** Gagnez **1.5x** votre mise !\n` +
-          `${E.dot} **Somme = 7 :** Égalité (mise remboursée)\n` +
-          `${E.dot} **Somme <= 6 :** Vous perdez votre mise.`,
+        m.b5_games_dice({ coins: E.coins, dot: E.dot }, { locale }),
         separator({ divider: true, spacing: 'small' }),
-        `**${E.coins} \`/rps <choix> <mise>\`**\n` +
-          `Jouez à Pierre, Feuille, Ciseaux contre le bot.\n` +
-          `${E.dot} **Victoire :** Gagnez **2x** votre mise !\n` +
-          `${E.dot} **Égalité :** Mise remboursée\n` +
-          `${E.dot} **Défaite :** Vous perdez votre mise.`,
+        m.b5_games_rps({ coins: E.coins, dot: E.dot }, { locale }),
         separator({ divider: true, spacing: 'small' }),
-        `**${E.coins} \`/roulette <mise>\`**\n` +
-          `Tentez la roulette russe avec 1 chance sur 6 de vous faire tirer dessus.\n` +
-          `${E.dot} **Survie (5/6) :** Gagnez **1.2x** votre mise (20% de profit) !\n` +
-          `${E.dot} **Tir (1/6) :** Vous perdez votre mise et **50 PV RPG**.`,
+        m.b5_games_roulette({ coins: E.coins, dot: E.dot }, { locale }),
         separator({ divider: true, spacing: 'small' }),
-        `**${E.coins} \`/guess\`**\n` +
-          `Trouvez un nombre secret entre 1 et 100.\n` +
-          `${E.dot} Vous avez **7 essais**.\n` +
-          `${E.dot} Le bot vous aide à chaque coup (plus grand / plus petit).\n` +
-          `${E.dot} Plus vous trouvez vite, plus vous gagnez de pièces (jusqu'à **200 pièces**).`,
+        m.b5_games_guess({ coins: E.coins, dot: E.dot }, { locale }),
       ],
-      footerOverwrite: `-# ${E.warning} Rappelez-vous : misez de manière responsable !`,
+      footerOverwrite: `-# ${E.warning} ${m.b5_games_footer({}, { locale })}`,
     }),
   ));
 }

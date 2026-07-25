@@ -51,6 +51,10 @@ model Guild {
   translationEnabled Boolean @default(false)
   defaultTranslateTo String  @default("FR")
 
+  // Langue des réponses du bot sur ce serveur (override de la locale Discord).
+  // null = pas de préférence explicite, on retombe sur interaction.locale/guildLocale.
+  language String?
+
   globalIncludeKeywords String[] @default([])
   globalExcludeKeywords String[] @default([])
   globalIgnoredKeywords String[] @default([])

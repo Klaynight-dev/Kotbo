@@ -5,6 +5,7 @@
   import { fetchMaintenanceConfig, updateMaintenanceConfig, fetchBotErrors, clearBotErrors } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
   import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import { m } from '../../lib/i18n';
 
   interface BotError {
     id: string;
@@ -41,7 +42,7 @@
   }
 
   async function handleClearErrors() {
-    if (!(await confirmDialog.danger("Purger tous les logs d'erreurs ?", '', 'Purger'))) return;
+    if (!(await confirmDialog.danger(m.d7_purge_logs_confirm(), '', m.d7_purge()))) return;
     try {
       await clearBotErrors();
       botErrors = [];
@@ -54,8 +55,8 @@
   <!-- Header -->
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
     <div>
-      <h2 class="text-lg font-semibold text-on-surface tracking-tight">Avancé</h2>
-      <p class="text-sm text-on-surface-variant/50 font-medium">Configuration système et logs d'erreurs</p>
+      <h2 class="text-lg font-semibold text-on-surface tracking-tight">{m.d7_advanced()}</h2>
+      <p class="text-sm text-on-surface-variant/50 font-medium">{m.d7_system_config_desc()}</p>
     </div>
   </div>
 
@@ -79,7 +80,7 @@
   {:else if error}
     <div class="bg-error/10 border border-error/20 p-8 rounded-[2.25rem] text-center">
       <Papicon icon="AlertTriangle" size={48} class="text-error mx-auto mb-4" />
-      <h2 class="text-xl font-bold text-on-error-container">Erreur de chargement</h2>
+      <h2 class="text-xl font-bold text-on-error-container">{m.d7_loading_error()}</h2>
       <p class="text-on-error-container/70 mt-2">{error}</p>
     </div>
   {:else}
@@ -88,7 +89,7 @@
       <div class="space-y-6">
         <h2 class="text-xl font-semibold font-headline flex items-center gap-3 px-2">
           <Papicon icon="Power" size={24} class="text-amber-500" />
-          Kill Switch
+          {m.d7_kill_switch()}
         </h2>
         
         <div class="premium-card rounded-[2.25rem] p-8 flex flex-col justify-center items-center text-center space-y-6 h-full {maintenanceMode ? 'border-amber-500/50 bg-amber-500/5' : ''}">
@@ -96,18 +97,18 @@
             <Papicon icon="AlertOctagon" size={48} />
           </div>
           <div>
-            <h3 class="text-xl font-bold text-on-surface mb-2">Mode Maintenance</h3>
+            <h3 class="text-xl font-bold text-on-surface mb-2">{m.d7_maintenance_mode()}</h3>
             <p class="text-sm text-on-surface-variant">
-              {maintenanceMode 
-                ? "Le bot ignore actuellement toutes les commandes des utilisateurs normaux." 
-                : "Activez ceci pour bloquer l'accès au bot sur tous les serveurs instantanément."}
+              {maintenanceMode
+                ? m.d7_maintenance_on_desc()
+                : m.d7_maintenance_off_desc()}
             </p>
           </div>
           <button 
             onclick={handleToggleMaintenance}
             class="px-8 py-4 rounded-xl font-semibold text-lg transition-all {maintenanceMode ? 'bg-success text-on-success shadow-success/20' : 'bg-amber-500 text-white shadow-amber-500/20'} shadow-lg"
           >
-            {maintenanceMode ? "DÉSACTIVER (Retour Normal)" : "ACTIVER LA MAINTENANCE"}
+            {maintenanceMode ? m.d7_maintenance_deactivate() : m.d7_maintenance_activate()}
           </button>
         </div>
       </div>
@@ -116,14 +117,14 @@
       <div class="space-y-6">
         <h2 class="text-xl font-semibold font-headline flex items-center gap-3 px-2">
           <Papicon icon="Terminal" size={24} class="text-red-400" />
-          Flux d'Erreurs
+          {m.d7_error_stream()}
         </h2>
         
         <div class="premium-card rounded-[2.25rem] p-6 h-100 flex flex-col bg-[#0d1117] border-red-500/20">
           <div class="flex items-center justify-between mb-4 px-2">
-            <span class="text-xs font-mono text-on-surface-variant">Dernières erreurs non interceptées</span>
+            <span class="text-xs font-mono text-on-surface-variant">{m.d7_last_uncaught_errors()}</span>
             <button onclick={handleClearErrors} class="text-xs text-error hover:underline flex items-center gap-1">
-              <Papicon icon="Trash" size={12} /> Purger
+              <Papicon icon="Trash" size={12} /> {m.d7_purge()}
             </button>
           </div>
           
@@ -132,14 +133,14 @@
               <div class="border-b border-white/5 pb-3">
                  <div class="flex justify-between text-[10px] text-white/40 mb-1">
                   <span>{new Date(err.createdAt).toLocaleString()}</span>
-                  <span class="text-amber-400/80">{err.source || 'Inconnu'}</span>
+                  <span class="text-amber-400/80">{err.source || m.d7_unknown()}</span>
                 </div>
                 <div class="text-red-400 wrap-break-word">{err.message}</div>
               </div>
             {/each}
             {#if botErrors.length === 0}
               <div class="h-full flex items-center justify-center text-success/70 italic">
-                Aucune erreur détectée ✅
+                {m.d7_no_errors_detected()}
               </div>
             {/if}
           </div>

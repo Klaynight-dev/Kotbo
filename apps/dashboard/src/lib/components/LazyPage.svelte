@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCachedPage, loadPage, type RouteLoader } from '../lazyRoutes';
   import Skeleton from './Skeleton.svelte';
+  import { m } from '../i18n';
 
   let {
     pattern,
@@ -52,12 +53,12 @@
   {/key}
 {:else if failed}
   <div class="flex flex-col items-center justify-center gap-3 py-16 text-center">
-    <p class="text-on-surface-variant">Cette page n'a pas pu être chargée.</p>
+    <p class="text-on-surface-variant">{m.d1_page_load_failed()}</p>
     <button
       class="rounded-lg bg-primary px-4 py-2 text-on-primary"
       onclick={() => window.location.reload()}
     >
-      Réessayer
+      {m.d1_retry()}
     </button>
   </div>
 {:else}

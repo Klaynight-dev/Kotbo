@@ -1,6 +1,7 @@
 <script lang="ts">
   import Chart from './charts/Chart.svelte';
   import { onMount } from 'svelte';
+  import { m } from '../i18n';
 
   let { data = [], labelKey = 'label', valueKey = 'value', color = '#6366f1', height = 200 }: {
     data: any[]; labelKey?: string; valueKey?: string; color?: string; height?: number;
@@ -20,7 +21,7 @@
   const chartData = $derived({
     labels: data.map(d => d[labelKey]),
     datasets: [{
-      label: 'Volume',
+      label: m.e5_bar_chart_volume(),
       data: data.map(d => d[valueKey]),
       backgroundColor: resolvedColor,
       borderRadius: 6,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Papicon from './Papicon.svelte';
+  import { m } from '../i18n';
 
   interface Props {
     open?: boolean;
@@ -16,10 +17,10 @@
 
   let {
     open = $bindable(false),
-    title = 'Confirmation requise',
+    title = m.d7_confirm_required(),
     description = '',
-    confirmLabel = 'Confirmer',
-    cancelLabel = 'Annuler',
+    confirmLabel = m.d7_confirm(),
+    cancelLabel = m.d7_cancel(),
     variant = 'default',
     requireInput = '',
     loading = false,
@@ -105,7 +106,7 @@
       {#if requireInput}
         <div class="space-y-1.5">
           <p class="text-xs text-on-surface-variant/50 font-medium">
-            Tapez <span class="font-mono font-semibold text-on-surface">{requireInput}</span> pour confirmer
+            {m.d7_type_to_confirm_pre()} <span class="font-mono font-semibold text-on-surface">{requireInput}</span> {m.d7_type_to_confirm_post()}
           </p>
           <input
             type="text"

@@ -60,22 +60,20 @@ model YoutubeChannelFollow {
   guildId String
   channelId String
   channelName String
-  liveChannelId String?
-  shortChannelId String?
-  videoChannelId String?
-  lastVideoId String?
-  lastShortId String?
-  lastLiveId String?
-  
-  // Custom notification messages
+
+  // Un seul salon de destination pour tous les types d'alertes
+  discordChannelId String?
+  // Un seul rôle/utilisateur à mentionner pour tous les types d'alertes
+  mention String?
+
+  // Message personnalisé par type d'événement (variables [title] / [channel])
   liveMessage String?
   videoMessage String?
   shortMessage String?
-  
-  // Mentions (roles or users to ping)
-  liveMention String?
-  videoMention String?
-  shortMention String?
+
+  lastLiveId String?
+  lastVideoId String?
+  lastShortId String?
 
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
@@ -90,8 +88,11 @@ model TwitchChannelFollow {
   guildId String
   streamerName String
   streamerId String?
-  liveChannelId String?
-  otherChannelId String?
+
+  discordChannelId String?
+  mention String?
+  liveMessage String?
+
   isLive Boolean @default(false)
   lastStreamId String?
 

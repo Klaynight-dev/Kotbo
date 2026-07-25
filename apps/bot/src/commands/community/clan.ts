@@ -14,28 +14,38 @@ import prisma from '../../utils/db.js';
 import { runDistribution, runClear } from '../../services/community/clanService.js';
 import { E, rankEmoji } from '../../utils/emojis.js';
 import { COLORS_RAW } from '../../utils/embeds.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c4_clan');
 
 export const data = new SlashCommandBuilder()
-  .setName('clan')
-  .setDescription('🛡️ Gestion et classements des clans du serveur')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((sub) =>
     sub
       .setName('list')
-      .setDescription('📋 Liste tous les clans configurés sur le serveur')
+      .setDescription(m.c4_clan_list_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_list_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((sub) =>
     sub
       .setName('leaderboard')
-      .setDescription('🏆 Affiche le classement des clans pour la saison active')
+      .setDescription(m.c4_clan_leaderboard_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_leaderboard_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((sub) =>
     sub
       .setName('info')
-      .setDescription('ℹ️ Affiche les informations et le classement des membres d\'un clan')
+      .setDescription(m.c4_clan_info_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_info_desc({}, { locale: 'fr' }) })
       .addStringOption((opt) =>
         opt
           .setName('nom')
-          .setDescription('Le nom du clan')
+          .setDescription(m.c4_clan_opt_nom({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c4_clan_opt_nom({}, { locale: 'fr' }) })
           .setRequired(true)
           .setAutocomplete(true)
       )
@@ -43,23 +53,27 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName('historique')
-      .setDescription('📜 Affiche l\'historique des saisons passées')
+      .setDescription(m.c4_clan_historique_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_historique_desc({}, { locale: 'fr' }) })
       .addIntegerOption((opt) =>
         opt
           .setName('saison')
-          .setDescription('Le numéro de la saison à consulter (ex: 5)')
+          .setDescription(m.c4_clan_opt_saison({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c4_clan_opt_saison({}, { locale: 'fr' }) })
           .setRequired(false)
       )
   )
   .addSubcommand((sub) =>
     sub
       .setName('distribute')
-      .setDescription('🎲 (Admin) Répartit aléatoirement les membres sans clan')
+      .setDescription(m.c4_clan_distribute_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_distribute_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((sub) =>
     sub
       .setName('clear')
-      .setDescription('🧹 (Admin) Retire tous les rôles de clan du serveur')
+      .setDescription(m.c4_clan_clear_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_clan_clear_desc({}, { locale: 'fr' }) })
   ) as any;
 
 export async function autocomplete(interaction: AutocompleteInteraction) {
@@ -83,9 +97,11 @@ export async function autocomplete(interaction: AutocompleteInteraction) {
 
 export async function execute(interaction: ChatInputCommandInteraction) {
     const guildId = interaction.guildId;
+    const locale = await getEffectiveLocale(interaction);
+
     if (!guildId) {
       await interaction.reply({
-        content: '❌ Cette commande doit être exécutée sur un serveur.',
+        content: m.c4_clan_guild_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -101,7 +117,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!guildConfig?.clansEnabled) {
       await interaction.reply({
-        content: '❌ Le module de clans est actuellement désactivé sur ce serveur.',
+        content: m.c4_clan_module_disabled({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -117,22 +133,22 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       });
 
       if (clans.length === 0) {
-        await interaction.editReply('Aucun clan n\'est configuré sur ce serveur.');
+        await interaction.editReply(m.c4_clan_list_empty({}, { locale }));
         return;
       }
 
       const embed = new EmbedBuilder()
         .setColor(COLORS_RAW.primary)
-        .setTitle(`🛡️ Clans de ${interaction.guild?.name}`)
-        .setDescription('Voici la liste des clans disponibles. Utilisez `/clan info <nom>` pour voir leurs détails.')
+        .setTitle(m.c4_clan_list_title({ guild: interaction.guild?.name ?? '' }, { locale }))
+        .setDescription(m.c4_clan_list_desc_hint({}, { locale }))
         .setTimestamp();
 
       for (const clan of clans) {
         const role = interaction.guild?.roles.cache.get(clan.roleId);
         const memberCount = role?.members.size ?? 0;
         embed.addFields({
-          name: `• ${clan.name} (${memberCount} membres)`,
-          value: clan.description || '*Aucune description.*',
+          name: m.c4_clan_list_field_name({ name: clan.name, count: memberCount }, { locale }),
+          value: clan.description || m.c4_clan_no_description({}, { locale }),
           inline: false,
         });
       }
@@ -148,7 +164,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       const clans = await prisma.clan.findMany({ where: { guildId } });
 
       if (clans.length === 0) {
-        await interaction.editReply('Aucun clan n\'est configuré sur ce serveur.');
+        await interaction.editReply(m.c4_clan_list_empty({}, { locale }));
         return;
       }
 
@@ -176,16 +192,16 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
       const embed = new EmbedBuilder()
         .setColor(COLORS_RAW.warning)
-        .setTitle(`🏆 Classement des Clans — Saison ${guildConfig.currentClanSeason}`)
+        .setTitle(m.c4_clan_leaderboard_title({ season: guildConfig.currentClanSeason }, { locale }))
         .setTimestamp();
 
       let desc = '';
       for (let i = 0; i < rankedClans.length; i++) {
         const c = rankedClans[i];
-        desc += `\n${rankEmoji(i + 1)} **${c.name}**\n▸ Contribution : \`${c.xp.toLocaleString('fr-FR')} XP\` · Membres : \`${c.memberCount}\`\n`;
+        desc += `\n${rankEmoji(i + 1)} **${c.name}**\n` + m.c4_clan_leaderboard_line({ xp: c.xp.toLocaleString('fr-FR'), count: c.memberCount }, { locale }) + '\n';
       }
 
-      embed.setDescription(desc || '*Aucune contribution enregistrée pour le moment.*');
+      embed.setDescription(desc || m.c4_clan_leaderboard_none({}, { locale }));
       await interaction.editReply({ embeds: [embed] });
       return;
     }
@@ -200,7 +216,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       });
 
       if (!clan) {
-        await interaction.editReply(`❌ Le clan "${nom}" n'existe pas.`);
+        await interaction.editReply(m.c4_clan_info_not_found({ name: nom }, { locale }));
         return;
       }
 
@@ -231,12 +247,12 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
       const embed = new EmbedBuilder()
         .setColor(role?.color ?? COLORS_RAW.primary)
-        .setTitle(`🛡️ Clan ${clan.name}`)
-        .setDescription(clan.description || '*Aucune description.*')
+        .setTitle(m.c4_clan_info_title({ name: clan.name }, { locale }))
+        .setDescription(clan.description || m.c4_clan_no_description({}, { locale }))
         .addFields(
-          { name: 'Rôle Discord', value: role ? `@${role.name}` : `ID: ${clan.roleId}`, inline: true },
-          { name: 'Membres actifs', value: `\`${memberCount}\``, inline: true },
-          { name: 'XP de Saison', value: `\`${totalXp.toLocaleString('fr-FR')} XP\``, inline: true }
+          { name: m.c4_clan_info_field_role({}, { locale }), value: role ? `@${role.name}` : `ID: ${clan.roleId}`, inline: true },
+          { name: m.c4_clan_info_field_members({}, { locale }), value: `\`${memberCount}\``, inline: true },
+          { name: m.c4_clan_info_field_xp({}, { locale }), value: `\`${totalXp.toLocaleString('fr-FR')} XP\``, inline: true }
         )
         .setTimestamp();
 
@@ -244,13 +260,13 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       for (let i = 0; i < topContributions.length; i++) {
         const contrib = topContributions[i];
         const member = await interaction.guild?.members.fetch(contrib.userId).catch(() => null);
-        const name = member ? member.displayName : `Utilisateur ${contrib.userId}`;
+        const name = member ? member.displayName : m.c4_clan_unknown_user({ id: contrib.userId }, { locale });
         contributorsList += `${rankEmoji(i + 1)} **${name}** : \`${contrib.xp.toLocaleString('fr-FR')} XP\`\n`;
       }
 
       embed.addFields({
-        name: '🏆 Top Contributeurs de Saison',
-        value: contributorsList || '*Aucune contribution pour le moment.*',
+        name: m.c4_clan_info_top_contributors({}, { locale }),
+        value: contributorsList || m.c4_clan_info_no_contributions({}, { locale }),
         inline: false,
       });
 
@@ -268,7 +284,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
       const currentSeason = guildSettings?.currentClanSeason ?? 1;
       if (currentSeason <= 1) {
-        await interaction.editReply('❌ Aucun historique de saison n\'est disponible pour le moment. La Saison 1 est toujours en cours !');
+        await interaction.editReply(m.c4_clan_historique_none({}, { locale }));
         return;
       }
 
@@ -276,11 +292,11 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       const targetSeason = inputSeason !== null ? inputSeason : (currentSeason - 1);
 
       if (targetSeason < 1 || targetSeason >= currentSeason) {
-        await interaction.editReply(`❌ Saison invalide. Veuillez spécifier une saison passée (entre 1 et ${currentSeason - 1}).`);
+        await interaction.editReply(m.c4_clan_historique_invalid({ max: currentSeason - 1 }, { locale }));
         return;
       }
 
-      const embed = await renderSeasonHistoryEmbed(guildId, targetSeason, interaction.guild!);
+      const embed = await renderSeasonHistoryEmbed(guildId, targetSeason, interaction.guild!, locale);
 
       await interaction.editReply({
         embeds: [embed]
@@ -293,7 +309,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       const isExecutorAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
       if (!isExecutorAdmin) {
         await interaction.reply({
-          content: '❌ Vous devez disposer de la permission "Gérer le serveur" pour exécuter cette commande.',
+          content: m.c4_clan_admin_required({}, { locale }),
           flags: [MessageFlags.Ephemeral],
         });
         return;
@@ -306,7 +322,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         const message = await runDistribution(guildId, interaction.client, initiator);
         await interaction.editReply(message);
       } catch (err: any) {
-        await interaction.editReply(`❌ Erreur : ${err.message}`);
+        await interaction.editReply(m.c4_clan_error({ message: err.message }, { locale }));
       }
       return;
     }
@@ -316,7 +332,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       const isExecutorAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
       if (!isExecutorAdmin) {
         await interaction.reply({
-          content: '❌ Vous devez disposer de la permission "Gérer le serveur" pour exécuter cette commande.',
+          content: m.c4_clan_admin_required({}, { locale }),
           flags: [MessageFlags.Ephemeral],
         });
         return;
@@ -329,7 +345,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         const message = await runClear(guildId, interaction.client, initiator);
         await interaction.editReply(message);
       } catch (err: any) {
-        await interaction.editReply(`❌ Erreur : ${err.message}`);
+        await interaction.editReply(m.c4_clan_error({ message: err.message }, { locale }));
       }
       return;
     }
@@ -338,7 +354,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 export const clanCommand = { data, autocomplete, execute } satisfies SlashCommandDefinition;
 
 // ── HELPER: Rendu de l'historique d'une saison ────────────────────────────────
-export async function renderSeasonHistoryEmbed(guildId: string, season: number, discordGuild: any) {
+export async function renderSeasonHistoryEmbed(guildId: string, season: number, discordGuild: any, locale: 'fr' | 'en' = 'fr') {
   // 1. Récupérer les clans
   const clans = await prisma.clan.findMany({ where: { guildId } });
 
@@ -372,41 +388,41 @@ export async function renderSeasonHistoryEmbed(guildId: string, season: number, 
     });
     if (top) {
       const member = await discordGuild.members.fetch(top.userId).catch(() => null);
-      const name = member ? member.displayName : `Utilisateur ${top.userId}`;
+      const name = member ? member.displayName : m.c4_clan_unknown_user({ id: top.userId }, { locale });
       leaders.push({ clanName: clan.name, userName: name, xp: top.xp });
     }
   }
 
   const embed = new EmbedBuilder()
     .setColor(0xF59E0B) // Amber/Gold color
-    .setTitle(`📜 Historique de la Saison de Clans ${season}`)
+    .setTitle(m.c4_clan_history_title({ season }, { locale }))
     .setTimestamp();
 
   let desc = '';
   if (winningClan) {
-    desc += `🏆 **Clan Vainqueur** : **${winningClan.name}** (\`${clansWithXp[0].totalXp.toLocaleString('fr-FR')} XP\`)\n\n`;
+    desc += m.c4_clan_history_winner({ name: winningClan.name, xp: clansWithXp[0].totalXp.toLocaleString('fr-FR') }, { locale }) + '\n\n';
   } else {
-    desc += `🏆 **Clan Vainqueur** : *Aucun vainqueur* (aucun point marqué)\n\n`;
+    desc += m.c4_clan_history_no_winner({}, { locale }) + '\n\n';
   }
 
   // Classement des clans
-  desc += `**📊 Classement des Clans :**\n`;
+  desc += m.c4_clan_history_ranking_title({}, { locale }) + '\n';
   if (clansWithXp.length > 0 && clansWithXp.some(c => c.totalXp > 0)) {
     for (let i = 0; i < clansWithXp.length; i++) {
       const c = clansWithXp[i];
       desc += `${rankEmoji(i + 1)} **${c.clan.name}** : \`${c.totalXp.toLocaleString('fr-FR')} XP\`\n`;
     }
   } else {
-    desc += `*Aucun point enregistré.*\n`;
+    desc += m.c4_clan_history_no_points({}, { locale }) + '\n';
   }
 
-  desc += `\n**👑 Meilleurs Contributeurs par Clan :**\n`;
+  desc += '\n' + m.c4_clan_history_top_contributors_title({}, { locale }) + '\n';
   if (leaders.length > 0) {
     for (const leader of leaders) {
-      desc += `▸ **${leader.clanName}** : **${leader.userName}** (\`${leader.xp.toLocaleString('fr-FR')} XP\`)\n`;
+      desc += m.c4_clan_history_contributor_line({ clan: leader.clanName, user: leader.userName, xp: leader.xp.toLocaleString('fr-FR') }, { locale }) + '\n';
     }
   } else {
-    desc += `*Aucun contributeur.*`;
+    desc += m.c4_clan_history_no_contributors({}, { locale });
   }
 
   embed.setDescription(desc);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '../lib/i18n';
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { router } from 'tinro';
@@ -29,27 +30,27 @@
   let loading = $state(false);
 
   const welcomePresets = [
-    { label: 'Accueil classique',   icon: 'DoorOpen', text: 'Bienvenue {user} sur **{server}** ! 🎉 Tu es notre **{memberCount}**ème membre !' },
-    { label: 'Accueil festif',      icon: 'Sparkles', text: '🎊 Hourra ! {user} vient de rejoindre **{server}** ! Bienvenue parmi nous, tu es le membre **#{memberCount}** !' },
-    { label: 'Accueil immersif',    icon: 'Shield',   text: '⚔️ Un nouveau guerrier débarque ! Bienvenue {user} sur **{server}** ! Prépare-toi à rejoindre l\'aventure !' },
-    { label: 'Accueil chaleureux',  icon: 'Users',    text: 'Hey {user} ! 👋 Toute l\'équipe de **{server}** est ravie de t\'accueillir. N\'hésite pas à te présenter !' },
-    { label: 'Accueil gaming',      icon: 'Gamepad2', text: 'GG {user} ! Tu viens de rejoindre **{server}** 🎮 – le serveur ultime. Amuse-toi bien et bonne chance !' },
+    { label: m.e2_preset_welcome_classic(),   icon: 'DoorOpen', text: 'Bienvenue {user} sur **{server}** ! 🎉 Tu es notre **{memberCount}**ème membre !' },
+    { label: m.e2_preset_welcome_festive(),      icon: 'Sparkles', text: '🎊 Hourra ! {user} vient de rejoindre **{server}** ! Bienvenue parmi nous, tu es le membre **#{memberCount}** !' },
+    { label: m.e2_preset_welcome_immersive(),    icon: 'Shield',   text: '⚔️ Un nouveau guerrier débarque ! Bienvenue {user} sur **{server}** ! Prépare-toi à rejoindre l\'aventure !' },
+    { label: m.e2_preset_welcome_warm(),  icon: 'Users',    text: 'Hey {user} ! 👋 Toute l\'équipe de **{server}** est ravie de t\'accueillir. N\'hésite pas à te présenter !' },
+    { label: m.e2_preset_welcome_gaming(),      icon: 'Gamepad2', text: 'GG {user} ! Tu viens de rejoindre **{server}** 🎮 – le serveur ultime. Amuse-toi bien et bonne chance !' },
   ];
 
   const leavePresets = [
-    { label: 'Départ simple',       icon: 'Logout',   text: '{username} vient de quitter **{server}**. 👋 On espère te revoir bientôt !' },
-    { label: 'Départ triste',       icon: 'Frown',    text: 'Oh non... {username} a quitté le navire. 😢 Nous sommes maintenant **{memberCount}** membres.' },
-    { label: 'Départ neutre',       icon: 'Smile',    text: '{username} a quitté **{server}**. Il nous reste **{memberCount}** membres.' },
-    { label: 'Départ poétique',     icon: 'Cloud',    text: 'Et comme une vague, {username} s\'en est allé... ✨ On ne l\'oubliera pas.' },
-    { label: 'Départ dramatique',   icon: 'Play',     text: '🎬 Rideau. {username} a quitté **{server}** pour de nouvelles aventures. Bon courage !' },
+    { label: m.e2_preset_leave_simple(),       icon: 'Logout',   text: '{username} vient de quitter **{server}**. 👋 On espère te revoir bientôt !' },
+    { label: m.e2_preset_leave_sad(),       icon: 'Frown',    text: 'Oh non... {username} a quitté le navire. 😢 Nous sommes maintenant **{memberCount}** membres.' },
+    { label: m.e2_preset_leave_neutral(),       icon: 'Smile',    text: '{username} a quitté **{server}**. Il nous reste **{memberCount}** membres.' },
+    { label: m.e2_preset_leave_poetic(),     icon: 'Cloud',    text: 'Et comme une vague, {username} s\'en est allé... ✨ On ne l\'oubliera pas.' },
+    { label: m.e2_preset_leave_dramatic(),   icon: 'Play',     text: '🎬 Rideau. {username} a quitté **{server}** pour de nouvelles aventures. Bon courage !' },
   ];
 
   const boostPresets = [
-    { label: 'Boost standard',      icon: 'Zap',      text: 'Merci {user} pour ton boost ! 🚀 Grâce à toi, **{server}** compte maintenant **{boostCount}** boosts !' },
-    { label: 'Boost premium',       icon: 'Gem',      text: '💎 WOW ! {user} vient de booster **{server}** ! Tu es incroyable, merci énormément ! 🙏' },
-    { label: 'Boost épique',        icon: 'Zap',      text: '⚡ BOOST ACTIVÉ ! {user} propulse **{server}** vers de nouveaux sommets ! On est à **{boostCount}** boosts !' },
-    { label: 'Boost festif',        icon: 'Sparkles', text: '🎉 {user} a boosté le serveur ! Merci pour ton soutien, tu es une star ! ✨ ({boostCount} boosts au total)' },
-    { label: 'Boost héroïque',      icon: 'Trophy',   text: '🏆 Héros du jour : {user} ! Son boost porte **{server}** à **{boostCount}** boosts. Respect total !' },
+    { label: m.e2_preset_boost_standard(),      icon: 'Zap',      text: 'Merci {user} pour ton boost ! 🚀 Grâce à toi, **{server}** compte maintenant **{boostCount}** boosts !' },
+    { label: m.e2_preset_boost_premium(),       icon: 'Gem',      text: '💎 WOW ! {user} vient de booster **{server}** ! Tu es incroyable, merci énormément ! 🙏' },
+    { label: m.e2_preset_boost_epic(),      icon: 'Zap',      text: '⚡ BOOST ACTIVÉ ! {user} propulse **{server}** vers de nouveaux sommets ! On est à **{boostCount}** boosts !' },
+    { label: m.e2_preset_boost_festive(),      icon: 'Sparkles', text: '🎉 {user} a boosté le serveur ! Merci pour ton soutien, tu es une star ! ✨ ({boostCount} boosts au total)' },
+    { label: m.e2_preset_boost_heroic(),   icon: 'Trophy',   text: '🏆 Héros du jour : {user} ! Son boost porte **{server}** à **{boostCount}** boosts. Respect total !' },
   ];
 
   let showWelcomePresets = $state(false);

@@ -1,10 +1,12 @@
 import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import prisma from '../../utils/db.js';
-import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/features/economyService.js';
+import { getOrCreateRpgProfile, getOrCreateEconomyConfig, registerGambleAttempt } from '../../services/features/economyService.js';
 import { COLORS_RAW, errorContainer, kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const DICE_EMOJIS = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 
@@ -23,13 +25,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
   const bet = interaction.options.getInteger('mise', true);
+  const locale = await getEffectiveLocale(interaction);
 
   try {
     const config = await getOrCreateEconomyConfig(guildId);
     if (!config.enabled) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Module Désactivé', "Le système d'économie est désactivé sur ce serveur."),
+        errorContainer(m.b3_module_disabled_title({}, { locale }), m.b3_economy_disabled_desc({}, { locale })),
       ));
       return;
     }
@@ -38,10 +41,12 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     if (profile.balance < bet) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
-        errorContainer('Solde insuffisant', `Vous n'avez pas assez de pièces pour parier **${bet}** ${E.coins} (Solde actuel : **${profile.balance}** ${E.coins}).`),
+        errorContainer(m.b3_dice_insufficient_title({}, { locale }), m.b3_dice_insufficient_desc({ bet, balance: profile.balance, coins: E.coins }, { locale })),
       ));
       return;
     }
+
+    await registerGambleAttempt(guildId, userId, bet);
 
     // Roll two dice (1 to 6)
     const d1 = Math.floor(Math.random() * 6) + 1;
@@ -58,23 +63,23 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (d1 === 6 && d2 === 6) {
       multiplier = 3;
-      resultMessage = `${E.trophy} **DOUBLE SIX ! C'est le jackpot ! Vous remportez 3x votre mise !**`;
+      resultMessage = m.b3_dice_double_six({ trophy: E.trophy }, { locale });
       isWin = true;
     } else if (d1 === d2) {
       multiplier = 2;
-      resultMessage = `${E.star} **DOUBLE ${d1} ! Vous gagnez 2x votre mise !**`;
+      resultMessage = m.b3_dice_double({ star: E.star, value: d1 }, { locale });
       isWin = true;
     } else if (sum >= 8) {
       multiplier = 1.5;
-      resultMessage = `${E.success} **Victoire ! Somme des dés = ${sum} (>= 8). Vous gagnez 1.5x votre mise.**`;
+      resultMessage = m.b3_dice_win({ success: E.success, sum }, { locale });
       isWin = true;
     } else if (sum === 7) {
       multiplier = 1;
-      resultMessage = `${E.info} **Égalité ! Somme des dés = 7. Votre mise vous est remboursée.**`;
+      resultMessage = m.b3_dice_draw({ info: E.info }, { locale });
       isDraw = true;
     } else {
       multiplier = 0;
-      resultMessage = `${E.error} **Défaite... Somme des dés = ${sum} (<= 6). Vous perdez votre mise.**`;
+      resultMessage = m.b3_dice_loss({ error: E.error, sum }, { locale });
     }
 
     const netGain = Math.floor(bet * multiplier) - bet;
@@ -92,21 +97,18 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply(v2Message(
       kotboContainer({
         color: accentColor,
-        title: `${E.coins} Lancer de Dés`,
+        title: m.b3_dice_title({ coins: E.coins }, { locale }),
         fields: [
-          `Vous misez **${bet}** ${config.currencyEmoji}.\n\n` +
-            `**Résultat :** ${emoji1}  ${emoji2} *(somme: ${sum})*\n\n` +
-            `${resultMessage}`,
+          m.b3_dice_result_body({ bet, currency: config.currencyEmoji, emoji1, emoji2, sum, result: resultMessage }, { locale }),
           separator({ divider: true, spacing: 'small' }),
-          `${E.arrow} **Gain net :** **${netGain >= 0 ? '+' : ''}${netGain}** ${config.currencyEmoji}\n` +
-            `${E.arrow} **Nouveau solde :** **${newBalance}** ${config.currencyEmoji}`,
+          m.b3_dice_gain_body({ arrow: E.arrow, gain: `${netGain >= 0 ? '+' : ''}${netGain}`, currency: config.currencyEmoji, newBalance }, { locale }),
         ],
       }),
     ));
   } catch (err: unknown) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Erreur', err instanceof Error ? err.message : 'Impossible de jouer aux dés.'),
+      errorContainer(m.b3_error_title({}, { locale }), err instanceof Error ? err.message : m.b3_dice_error_desc({}, { locale })),
     ));
   }
 }

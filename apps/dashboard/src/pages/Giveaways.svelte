@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '../lib/i18n';
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
@@ -60,12 +61,12 @@
   });
 
   const presets = [
-    { label: '30m', value: 30, unit: 'minutes' },
-    { label: '1h', value: 1, unit: 'hours' },
-    { label: '12h', value: 12, unit: 'hours' },
-    { label: '1j', value: 1, unit: 'days' },
-    { label: '3j', value: 3, unit: 'days' },
-    { label: '7j', value: 7, unit: 'days' },
+    { label: m.e8_giveaways_preset_30m(), value: 30, unit: 'minutes' },
+    { label: m.e8_giveaways_preset_1h(), value: 1, unit: 'hours' },
+    { label: m.e8_giveaways_preset_12h(), value: 12, unit: 'hours' },
+    { label: m.e8_giveaways_preset_1d(), value: 1, unit: 'days' },
+    { label: m.e8_giveaways_preset_3d(), value: 3, unit: 'days' },
+    { label: m.e8_giveaways_preset_7d(), value: 7, unit: 'days' },
   ];
 
   function applyPreset(preset: typeof presets[0]) {
@@ -109,50 +110,50 @@
         durationMinutes: computedDurationMinutes,
         channelId: formChannelId
       });
-      if (!res || !res.giveaway) throw new Error('Erreur de création du concours');
+      if (!res || !res.giveaway) throw new Error(m.e8_giveaways_error_create());
       giveaways = [res.giveaway, ...giveaways];
       showModal = false;
       return true;
-    }, { successMessage: 'Giveaway créé avec succès sur Discord !' });
+    }, { successMessage: m.e8_giveaways_success_create() });
   }
 
   async function handleEnd(id: string) {
     if (!canManageSettings) return;
     await actionState.run(async () => {
       const ok = await endGiveaway(id);
-      if (!ok) throw new Error('Erreur de fin de concours');
+      if (!ok) throw new Error(m.e8_giveaways_error_end());
       giveaways = giveaways.map(g => g.id === id ? { ...g, ended: true } : g);
       const res = await fetchGiveaways();
       if (res && res.giveaways) giveaways = res.giveaways;
       return true;
-    }, { successMessage: 'Le tirage du concours a été effectué !' });
+    }, { successMessage: m.e8_giveaways_success_end() });
   }
 
   async function handleReroll(id: string) {
     if (!canManageSettings) return;
     await actionState.run(async () => {
       const ok = await rerollGiveaway(id);
-      if (!ok) throw new Error('Erreur de reroll');
+      if (!ok) throw new Error(m.e8_giveaways_error_reroll());
       const res = await fetchGiveaways();
       if (res && res.giveaways) giveaways = res.giveaways;
       return true;
-    }, { successMessage: 'Nouveau tirage effectué !' });
+    }, { successMessage: m.e8_giveaways_success_reroll() });
   }
 
   async function handleDelete(id: string) {
     if (!canManageSettings) return;
-    if (!(await confirmDialog.danger('Supprimer ce concours ?', 'Il sera retiré définitivement de la base de données.'))) return;
+    if (!(await confirmDialog.danger(m.e8_giveaways_confirm_delete_title(), m.e8_giveaways_confirm_delete_desc()))) return;
     await actionState.run(async () => {
       const ok = await deleteGiveaway(id);
-      if (!ok) throw new Error('Erreur de suppression');
+      if (!ok) throw new Error(m.e8_giveaways_error_delete());
       giveaways = giveaways.filter(g => g.id !== id);
       return true;
-    }, { successMessage: 'Concours supprimé.' });
+    }, { successMessage: m.e8_giveaways_success_delete() });
   }
 
   function getChannelName(channelId: string) {
     const channel = availableChannels.find(c => c.id === channelId);
-    return channel ? channelDisplayName(channel) : `Salon inconnu (${channelId})`;
+    return channel ? channelDisplayName(channel) : m.e8_giveaways_unknown_channel({ channelId });
   }
 
   function formatDate(dateStr: string) {
@@ -165,9 +166,9 @@
   }
 
   function formatDurationLabel(minutes: number) {
-    if (minutes < 60) return `${minutes} min`;
-    if (minutes < 1440) return `${Math.round(minutes / 60)} h`;
-    return `${Math.round(minutes / 1440)} j`;
+    if (minutes < 60) return m.e8_giveaways_duration_min({ minutes });
+    if (minutes < 1440) return m.e8_giveaways_duration_hours({ hours: Math.round(minutes / 60) });
+    return m.e8_giveaways_duration_days({ days: Math.round(minutes / 1440) });
   }
 </script>
 

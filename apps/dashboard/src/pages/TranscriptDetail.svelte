@@ -3,6 +3,7 @@
   import { API_BASE_URL } from '../lib/api';
   import { authStore } from '../lib/stores/auth.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
+  import { m } from '../lib/i18n';
 
   const { transcriptId } = $props<{ transcriptId: string }>();
 
@@ -28,17 +29,17 @@
       if (response.status === 401) {
         needsLogin = true;
       } else if (response.status === 403) {
-        error = "Vous n'avez pas accès à cette transcription.";
+        error = m.d7_ts_no_access();
       } else if (response.status === 404) {
-        error = 'Transcription introuvable.';
+        error = m.d7_ts_not_found();
       } else if (response.ok) {
         const data = await response.json();
         iframeUrl = `${API_BASE_URL}${data.signedUrl}`;
       } else {
-        error = 'Impossible de charger la transcription.';
+        error = m.d7_ts_load_fail();
       }
     } catch {
-      error = 'Erreur lors du chargement.';
+      error = m.d7_ts_load_error();
     }
   });
 </script>
@@ -47,14 +48,14 @@
   {#if needsLogin}
     <div class="flex flex-col items-center justify-center h-full gap-4 px-6 text-center">
       <p class="text-white/70 text-sm">
-        Vous devez être connecté au dashboard pour voir cette transcription.
+        {m.d7_ts_login_required()}
       </p>
       <a
         href={loginUrl}
         class="flex items-center justify-center gap-2.5 py-2.5 px-4 bg-primary text-on-primary rounded-lg font-medium text-sm hover:opacity-90 transition-opacity"
       >
         <Papicon icon="discord" size={18} />
-        Se connecter avec Discord
+        {m.d7_ts_login_discord()}
       </a>
     </div>
   {:else if error}
@@ -62,7 +63,7 @@
   {:else if iframeUrl}
     <iframe
       src={iframeUrl}
-      title="Transcription de Ticket Discord"
+      title={m.d7_ts_iframe_title()}
       class="w-full h-full border-none"
     ></iframe>
   {:else}

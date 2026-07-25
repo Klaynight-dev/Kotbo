@@ -3,6 +3,8 @@ import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, type ChatInputCommandInteraction, type AutocompleteInteraction, MessageFlags } from 'discord.js';
 import { getOrCreateRpgProfile, giveInventoryItem } from '../../services/features/economyService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 interface LocalRpgItem {
   id: string;
@@ -71,10 +73,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const receiver = interaction.options.getUser('membre', true);
   const itemId = interaction.options.getString('objet', true);
   const quantity = interaction.options.getInteger('quantite') ?? 1;
+  const locale = await getEffectiveLocale(interaction);
 
   if (receiver.bot) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', "Vous ne pouvez pas donner d'objet à un bot !")],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_giveitem_to_bot({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -82,7 +85,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (receiver.id === senderId) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', "Vous ne pouvez pas vous donner d'objet à vous-même !")],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_giveitem_to_self({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
     return;
@@ -94,14 +97,14 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply({
       embeds: [
         successEmbed(
-          "Don d'objet réussi !",
-          `Vous avez donné **${quantity}x** ${giftResult.itemEmoji} **${giftResult.itemName}** à <@${receiver.id}>.`
+          m.b2_giveitem_success_title({}, { locale }),
+          m.b2_giveitem_success_desc({ quantity, emoji: giftResult.itemEmoji, name: giftResult.itemName, user: `<@${receiver.id}>` }, { locale })
         )
       ]
     });
   } catch (err: unknown) {
     await interaction.reply({
-      embeds: [errorEmbed('Don échoué', errorMessage(err) || "Impossible d'offrir l'objet.")],
+      embeds: [errorEmbed(m.b2_giveitem_failed_title({}, { locale }), errorMessage(err) || m.b2_giveitem_failed_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral]
     });
   }

@@ -40,6 +40,10 @@ import { sendBanAppealNotificationDM } from '../../services/moderation/banAppeal
 import * as altAccountService from '../../services/moderation/altAccountService.js';
 import { buildMemberCaseActionRow } from '../../services/moderation/memberCaseService.js';
 import { extractTrackingInfo, resolveModuleFromCommand, wrapModuleTracking } from '../../utils/moduleTracking.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+type Locale = 'fr' | 'en';
 
 const DURATION_HELP = 'Exemples: 30m, 2h, 3j, 1 semaine';
 const SANCTION_PAGE_SIZE = 5;
@@ -154,15 +158,15 @@ async function fetchTargetMember(interaction: ChatInputCommandInteraction<'cache
   return interaction.guild.members.fetch(targetUser.id).catch(() => null);
 }
 
-function validateTarget(interaction: ChatInputCommandInteraction<'cached'> | UserContextMenuCommandInteraction<'cached'>, member: GuildMember | null, targetUser: User, action: string): string | null {
-  if (targetUser.bot && action === 'warn') return 'Impossible de warn un bot.';
-  if (targetUser.id === interaction.user.id) return 'Tu ne peux pas te sanctionner toi-même.';
-  if (targetUser.id === interaction.client.user.id) return 'Impossible de sanctionner le bot.';
+function validateTarget(interaction: ChatInputCommandInteraction<'cached'> | UserContextMenuCommandInteraction<'cached'>, member: GuildMember | null, targetUser: User, action: string, locale: Locale = 'fr'): string | null {
+  if (targetUser.bot && action === 'warn') return m.b1_cannot_warn_bot({}, { locale });
+  if (targetUser.id === interaction.user.id) return m.b1_cannot_sanction_self({}, { locale });
+  if (targetUser.id === interaction.client.user.id) return m.b1_cannot_sanction_bot({}, { locale });
 
   const executor = interaction.member;
   if (executor instanceof GuildMember && member) {
     if (member.roles.highest.position >= executor.roles.highest.position && interaction.guild.ownerId !== interaction.user.id) {
-      return 'Tu ne peux pas sanctionner un membre avec un rôle égal ou supérieur au tien.';
+      return m.b1_cannot_sanction_higher({}, { locale });
     }
   }
 
@@ -188,8 +192,9 @@ async function notifyModeratorDashboardReportReminder(
   ).addFields({ name: 'ID sanction', value: params.sanctionId, inline: false });
 
   try {
+    const locale = await getEffectiveLocale(interaction);
     await interaction.followUp({
-      embeds: [infoEmbed('Rapport requis', "N'oubliez pas de compléter le rapport de sanction sur le dashboard.")],
+      embeds: [infoEmbed(m.b1_report_required_title({}, { locale }), m.b1_report_required_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   } catch {
@@ -197,20 +202,20 @@ async function notifyModeratorDashboardReportReminder(
   }
 }
 
-function sanctionTypeLabel(type: SanctionType): string {
+function sanctionTypeLabel(type: SanctionType, locale: Locale = 'fr'): string {
   switch (type) {
     case SanctionType.WARN:
-      return 'Avertissement';
+      return m.b1_sanction_label_warn({}, { locale });
     case SanctionType.TIMEOUT:
-      return 'Timeout';
+      return m.b1_sanction_label_timeout({}, { locale });
     case SanctionType.KICK:
-      return 'Kick';
+      return m.b1_sanction_label_kick({}, { locale });
     case SanctionType.TEMP_BAN:
-      return 'Tempban';
+      return m.b1_sanction_label_tempban({}, { locale });
     case SanctionType.BAN:
-      return 'Ban';
+      return m.b1_sanction_label_ban({}, { locale });
     case SanctionType.SOFTBAN:
-      return 'Softban';
+      return m.b1_sanction_label_softban({}, { locale });
     default:
       return type;
   }
@@ -235,26 +240,26 @@ function sanctionTypeEmoji(type: SanctionType): string {
   }
 }
 
-function sanctionStatusLabel(status: SanctionStatus): string {
+function sanctionStatusLabel(status: SanctionStatus, locale: Locale = 'fr'): string {
   switch (status) {
     case SanctionStatus.ACTIVE:
-      return 'Active';
+      return m.b1_sanction_status_active({}, { locale });
     case SanctionStatus.RESOLVED:
-      return 'Résolue';
+      return m.b1_sanction_status_resolved({}, { locale });
     case SanctionStatus.FAILED:
-      return 'En échec';
+      return m.b1_sanction_status_failed({}, { locale });
     default:
       return status;
   }
 }
 
-function sanitizeReason(reason: string): string {
+function sanitizeReason(reason: string, locale: Locale = 'fr'): string {
   const trimmed = reason.trim();
-  if (!trimmed) return 'Aucune raison renseignée.';
+  if (!trimmed) return m.b1_no_reason({}, { locale });
   return trimmed.length > 180 ? `${trimmed.slice(0, 177)}...` : trimmed;
 }
 
-async function buildSanctionListView(guildId: string, targetUserId: string, targetLabel: string, pageIndex: number) {
+async function buildSanctionListView(guildId: string, targetUserId: string, targetLabel: string, pageIndex: number, locale: Locale = 'fr') {
   const linkedUserIds = await altAccountService.getAllLinkedUserIds(guildId, targetUserId);
 
   const [listResult, typeBreakdown] = await Promise.all([
@@ -272,24 +277,24 @@ async function buildSanctionListView(guildId: string, targetUserId: string, targ
 
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle(`🛡️ Historique des sanctions · ${targetLabel}`)
+    .setTitle(m.b1_sanction_history_title({ target: targetLabel }, { locale }))
     .setTimestamp()
-    .setFooter({ text: `Page ${safePageIndex + 1} / ${totalPages}` });
+    .setFooter({ text: m.b1_page_footer({ current: safePageIndex + 1, total: totalPages }, { locale }) });
 
   if (finalList.total === 0) {
-    embed.setDescription('Aucune sanction trouvée pour ce membre.');
+    embed.setDescription(m.b1_no_sanctions_found({}, { locale }));
   } else {
     const lines = finalList.sanctions.map((sanction, index) => {
       const absoluteIndex = safePageIndex * SANCTION_PAGE_SIZE + index + 1;
-      const reason = sanitizeReason(sanction.reason);
+      const reason = sanitizeReason(sanction.reason, locale);
       const moderatorLabel = sanction.moderatorTag ?? `<@${sanction.moderatorUserId}>`;
       const durationLabel = sanction.durationSeconds ? ` · ${formatDurationFr(sanction.durationSeconds * 1000)}` : '';
-      const expiryLabel = sanction.expiresAt ? `\nFin: <t:${Math.floor(sanction.expiresAt.getTime() / 1000)}:R>` : '';
+      const expiryLabel = sanction.expiresAt ? `\n${m.b1_sanction_line_end({ date: `<t:${Math.floor(sanction.expiresAt.getTime() / 1000)}:R>` }, { locale })}` : '';
 
       return [
-        `**${absoluteIndex}. ${sanctionTypeEmoji(sanction.type)} ${sanctionTypeLabel(sanction.type)}** (${sanctionStatusLabel(sanction.status)})${durationLabel}`,
-        `Motif: ${reason}`,
-        `Modération: ${moderatorLabel} · Créée: <t:${Math.floor(sanction.createdAt.getTime() / 1000)}:R>${expiryLabel}`,
+        `**${absoluteIndex}. ${sanctionTypeEmoji(sanction.type)} ${sanctionTypeLabel(sanction.type, locale)}** (${sanctionStatusLabel(sanction.status, locale)})${durationLabel}`,
+        m.b1_sanction_line_reason({ reason }, { locale }),
+        m.b1_sanction_line_moderation({ moderator: moderatorLabel, created: `<t:${Math.floor(sanction.createdAt.getTime() / 1000)}:R>` }, { locale }) + expiryLabel,
       ].join('\n');
     });
 
@@ -297,26 +302,29 @@ async function buildSanctionListView(guildId: string, targetUserId: string, targ
   }
 
   embed.addFields({
-    name: 'Résumé',
-    value: [
-      `Total: **${total}**`,
-      `Warn: **${typeBreakdown.WARN}**`,
-      `Timeout: **${typeBreakdown.TIMEOUT}**`,
-      `Kick: **${typeBreakdown.KICK}**`,
-      `Tempban: **${typeBreakdown.TEMP_BAN}**`,
-      `Ban: **${typeBreakdown.BAN}**`,
-    ].join(' · '),
+    name: m.b1_summary({}, { locale }),
+    value: m.b1_sanction_summary(
+      {
+        total,
+        warn: typeBreakdown.WARN,
+        timeout: typeBreakdown.TIMEOUT,
+        kick: typeBreakdown.KICK,
+        tempban: typeBreakdown.TEMP_BAN,
+        ban: typeBreakdown.BAN,
+      },
+      { locale },
+    ),
   });
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId('sanction:list:prev')
-      .setLabel('Précédent')
+      .setLabel(m.b1_previous({}, { locale }))
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(safePageIndex === 0 || finalList.total === 0),
     new ButtonBuilder()
       .setCustomId('sanction:list:next')
-      .setLabel('Suivant')
+      .setLabel(m.b1_next({}, { locale }))
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(safePageIndex >= totalPages - 1 || finalList.total === 0),
   );
@@ -346,8 +354,9 @@ async function execute(interaction: ChatInputCommandInteraction | UserContextMen
 }
 
 async function executeInternal(interaction: ChatInputCommandInteraction | UserContextMenuCommandInteraction): Promise<void> {
+  const locale = await getEffectiveLocale(interaction);
   if (!canModerate(interaction)) {
-    await replyError(interaction, 'Serveur requis', "Cette commande ne peut être utilisée qu'en serveur.");
+    await replyError(interaction, m.b1_server_required_title({}, { locale }), m.b1_server_required_desc({}, { locale }));
     return;
   }
 
@@ -355,18 +364,18 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
     const targetUserId = interaction.targetId;
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`case:sanction_action:${targetUserId}`)
-      .setPlaceholder("Sanctionner l'utilisateur")
+      .setPlaceholder(m.b1_sanction_menu_placeholder({}, { locale }))
       .addOptions(
-        { label: 'Avertissement (Warn)', value: 'warn', emoji: '⚠️' },
-        { label: 'Exclusion temporaire (Timeout)', value: 'timeout', emoji: '⏳' },
-        { label: 'Expulsion (Kick)', value: 'kick', emoji: '👢' },
-        { label: 'Bannissement (Ban)', value: 'ban', emoji: '🔨' },
+        { label: m.b1_menu_warn({}, { locale }), value: 'warn', emoji: '⚠️' },
+        { label: m.b1_menu_timeout({}, { locale }), value: 'timeout', emoji: '⏳' },
+        { label: m.b1_menu_kick({}, { locale }), value: 'kick', emoji: '👢' },
+        { label: m.b1_menu_ban({}, { locale }), value: 'ban', emoji: '🔨' },
       );
 
     const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
 
     await interaction.reply({
-      content: `Choisis la sanction à appliquer à <@${targetUserId}> :`,
+      content: m.b1_choose_sanction({ user: `<@${targetUserId}>` }, { locale }),
       components: [row],
       flags: [MessageFlags.Ephemeral],
     });
@@ -377,9 +386,9 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
   const targetUser = interaction.options.getUser('membre', true);
   const targetMember = await fetchTargetMember(interaction, targetUser);
 
-  const validationError = subcommand === 'list' ? null : validateTarget(interaction, targetMember, targetUser, subcommand);
+  const validationError = subcommand === 'list' ? null : validateTarget(interaction, targetMember, targetUser, subcommand, locale);
   if (validationError) {
-    await replyError(interaction, 'Action refusée', validationError);
+    await replyError(interaction, m.b1_action_refused({}, { locale }), validationError);
     return;
   }
 
@@ -389,7 +398,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
   try {
     if (subcommand === 'list') {
       let currentPage = 0;
-      const view = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage);
+      const view = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage, locale);
       currentPage = view.pageIndex;
 
       const reply = await interaction.reply({
@@ -407,7 +416,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       collector.on('collect', async (buttonInteraction) => {
         if (buttonInteraction.user.id !== interaction.user.id) {
           await buttonInteraction.reply({
-            embeds: [infoEmbed('Action refusée', 'Seul le modérateur ayant exécuté la commande peut changer de page.')],
+            embeds: [infoEmbed(m.b1_action_refused({}, { locale }), m.b1_only_moderator_paging({}, { locale }))],
             flags: [MessageFlags.Ephemeral],
           });
           return;
@@ -419,7 +428,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
           currentPage += 1;
         }
 
-        const nextView = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage);
+        const nextView = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage, locale);
         currentPage = nextView.pageIndex;
 
         await buttonInteraction.update({ embeds: [nextView.embed], components: [nextView.row, nextView.caseRow] });
@@ -427,16 +436,16 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
 
       collector.on('end', async () => {
         try {
-          const expiredView = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage);
+          const expiredView = await buildSanctionListView(interaction.guildId, targetUser.id, targetUser.tag, currentPage, locale);
           const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId('sanction:list:prev')
-              .setLabel('Précédent')
+              .setLabel(m.b1_previous({}, { locale }))
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
               .setCustomId('sanction:list:next')
-              .setLabel('Suivant')
+              .setLabel(m.b1_next({}, { locale }))
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
           );
@@ -458,19 +467,19 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const warnCount = await countWarns(interaction.guildId, targetUser.id, linkedUserIds);
       const warnScore = await getWarnScore(interaction.guildId, targetUser.id, linkedUserIds);
 
-      const gravityLabel = weight === 3 ? 'Grave' : weight === 2 ? 'Normal' : 'Léger';
+      const gravityLabel = weight === 3 ? m.b1_gravity_high({}, { locale }) : weight === 2 ? m.b1_gravity_normal({}, { locale }) : m.b1_gravity_low({}, { locale });
       const scoreFields = warnScore !== warnCount
         ? [
-            { name: 'Nombre total de warns', value: `${warnCount}`, inline: true },
-            { name: 'Score pondéré', value: `${warnScore} pts`, inline: true },
-            { name: 'Gravité', value: gravityLabel, inline: true },
+            { name: m.b1_total_warns({}, { locale }), value: `${warnCount}`, inline: true },
+            { name: m.b1_weighted_score({}, { locale }), value: m.b1_points({ score: warnScore }, { locale }), inline: true },
+            { name: m.b1_gravity({}, { locale }), value: gravityLabel, inline: true },
           ]
-        : [{ name: 'Nombre total de warns', value: `${warnCount}`, inline: true }];
+        : [{ name: m.b1_total_warns({}, { locale }), value: `${warnCount}`, inline: true }];
 
       await interaction.reply({
         embeds: [
-          successEmbed('Warn enregistré', `${targetUser} a reçu un avertissement.`).addFields(
-            { name: 'Raison', value: reason },
+          successEmbed(m.b1_warn_saved_title({}, { locale }), m.b1_warn_saved_desc({ user: `${targetUser}` }, { locale })).addFields(
+            { name: m.b1_reason({}, { locale }), value: reason },
             ...scoreFields,
           ),
         ],
@@ -492,18 +501,18 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const reason = interaction.options.getString('raison', true).trim();
 
       if (!targetMember) {
-        await replyError(interaction, 'Membre introuvable', 'Le membre doit être présent sur le serveur pour un timeout.');
+        await replyError(interaction, m.b1_member_not_found({}, { locale }), m.b1_member_must_be_present_timeout({}, { locale }));
         return;
       }
       if (!targetMember.moderatable) {
-        await replyError(interaction, 'Action impossible', 'Le bot ne peut pas appliquer de timeout à ce membre. Vérifie la hiérarchie des rôles.');
+        await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_timeout_member({}, { locale }));
         return;
       }
 
       const durationInput = interaction.options.getString('duree', true);
       const durationMs = parseDurationToMs(durationInput);
       if (!durationMs) {
-        await replyError(interaction, 'Durée invalide', `Format de durée invalide. ${DURATION_HELP}`);
+        await replyError(interaction, m.b1_invalid_duration_title({}, { locale }), m.b1_invalid_duration_desc({ help: m.b1_duration_help({}, { locale }) }, { locale }));
         return;
       }
 
@@ -519,11 +528,11 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
 
       await interaction.reply({
         embeds: [
-          successEmbed('Timeout appliqué', `${targetUser} est en timeout.`).addFields(
-            { name: 'Durée', value: formatDurationFr(durationMs), inline: true },
-            { name: 'Raison', value: reason, inline: false },
-            { name: 'Suivi automatique', value: 'Le bot renouvellera automatiquement le TO si la durée dépasse la limite Discord.', inline: false },
-            { name: 'ID sanction', value: sanction.id, inline: false },
+          successEmbed(m.b1_timeout_applied_title({}, { locale }), m.b1_timeout_applied_desc({ user: `${targetUser}` }, { locale })).addFields(
+            { name: m.b1_duration({}, { locale }), value: formatDurationFr(durationMs), inline: true },
+            { name: m.b1_reason({}, { locale }), value: reason, inline: false },
+            { name: m.b1_auto_followup({}, { locale }), value: m.b1_auto_followup_value({}, { locale }), inline: false },
+            { name: m.b1_sanction_id({}, { locale }), value: sanction.id, inline: false },
           ),
         ],
         components: [buildMemberCaseActionRow(targetUser.id)],
@@ -541,11 +550,11 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const reason = interaction.options.getString('raison', true).trim();
 
       if (!targetMember) {
-        await replyError(interaction, 'Membre introuvable', 'Le membre doit être présent sur le serveur pour être kick.');
+        await replyError(interaction, m.b1_member_not_found({}, { locale }), m.b1_member_must_be_present_kick({}, { locale }));
         return;
       }
       if (!targetMember.kickable) {
-        await replyError(interaction, 'Action impossible', 'Le bot ne peut pas exclure ce membre. Vérifie la hiérarchie des rôles.');
+        await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_kick_member({}, { locale }));
         return;
       }
 
@@ -553,7 +562,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const sanction = await registerKickSanction({ guildId: interaction.guildId, target, moderator, reason, client: interaction.client });
 
       await interaction.reply({
-        embeds: [successEmbed('Kick exécuté', `${targetUser.tag} a été exclu du serveur.`).addFields({ name: 'Raison', value: reason })],
+        embeds: [successEmbed(m.b1_kick_done_title({}, { locale }), m.b1_kick_done_desc({ user: targetUser.tag }, { locale })).addFields({ name: m.b1_reason({}, { locale }), value: reason })],
         components: [buildMemberCaseActionRow(targetUser.id)],
         flags: [MessageFlags.Ephemeral],
       });
@@ -569,7 +578,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const reason = interaction.options.getString('raison', true).trim();
 
       if (targetMember && !targetMember.bannable) {
-        await replyError(interaction, 'Action impossible', 'Le bot ne peut pas bannir ce membre. Vérifie la hiérarchie des rôles.');
+        await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_ban_member({}, { locale }));
         return;
       }
 
@@ -580,7 +589,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const sanction = await registerBanSanction({ guildId: interaction.guildId, target, moderator, reason, client: interaction.client });
 
       await interaction.reply({
-        embeds: [successEmbed('Ban exécuté', `${targetUser.tag} a été banni définitivement.`).addFields({ name: 'Raison', value: reason })],
+        embeds: [successEmbed(m.b1_ban_done_title({}, { locale }), m.b1_ban_done_desc({ user: targetUser.tag }, { locale })).addFields({ name: m.b1_reason({}, { locale }), value: reason })],
         components: [buildMemberCaseActionRow(targetUser.id)],
         flags: [MessageFlags.Ephemeral],
       });
@@ -596,14 +605,14 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const reason = interaction.options.getString('raison', true).trim();
 
       if (targetMember && !targetMember.bannable) {
-        await replyError(interaction, 'Action impossible', 'Le bot ne peut pas bannir ce membre. Vérifie la hiérarchie des rôles.');
+        await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_ban_member({}, { locale }));
         return;
       }
 
       const durationInput = interaction.options.getString('duree', true);
       const durationMs = parseDurationToMs(durationInput);
       if (!durationMs) {
-        await replyError(interaction, 'Durée invalide', `Format de durée invalide. ${DURATION_HELP}`);
+        await replyError(interaction, m.b1_invalid_duration_title({}, { locale }), m.b1_invalid_duration_desc({ help: m.b1_duration_help({}, { locale }) }, { locale }));
         return;
       }
 
@@ -619,10 +628,10 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
 
       await interaction.reply({
         embeds: [
-          successEmbed('Tempban exécuté', `${targetUser.tag} a été banni temporairement.`).addFields(
-            { name: 'Durée', value: formatDurationFr(durationMs), inline: true },
-            { name: 'Raison', value: reason, inline: false },
-            { name: 'Déban auto', value: `<t:${Math.floor((sanction.expiresAt?.getTime() ?? Date.now()) / 1000)}:F>`, inline: false },
+          successEmbed(m.b1_tempban_done_title({}, { locale }), m.b1_tempban_done_desc({ user: targetUser.tag }, { locale })).addFields(
+            { name: m.b1_duration({}, { locale }), value: formatDurationFr(durationMs), inline: true },
+            { name: m.b1_reason({}, { locale }), value: reason, inline: false },
+            { name: m.b1_auto_unban({}, { locale }), value: `<t:${Math.floor((sanction.expiresAt?.getTime() ?? Date.now()) / 1000)}:F>`, inline: false },
           ),
         ],
         components: [buildMemberCaseActionRow(targetUser.id)],
@@ -640,7 +649,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const reason = interaction.options.getString('raison', true).trim();
 
       if (targetMember && !targetMember.bannable) {
-        await replyError(interaction, 'Action impossible', 'Le bot ne peut pas bannir/softban ce membre. Vérifie la hiérarchie des rôles.');
+        await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_softban_member({}, { locale }));
         return;
       }
 
@@ -664,10 +673,10 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
 
       await interaction.reply({
         embeds: [
-          successEmbed('Softban exécuté', `${targetUser.tag} a été softban (banni puis débanni immédiatement).`).addFields(
-            { name: 'Messages supprimés', value: '7 derniers jours', inline: true },
-            { name: 'Raison', value: reason, inline: false },
-            { name: 'ID sanction', value: sanction.id, inline: false }
+          successEmbed(m.b1_softban_done_title({}, { locale }), m.b1_softban_done_desc({ user: targetUser.tag }, { locale })).addFields(
+            { name: m.b1_messages_deleted({}, { locale }), value: m.b1_last_7_days({}, { locale }), inline: true },
+            { name: m.b1_reason({}, { locale }), value: reason, inline: false },
+            { name: m.b1_sanction_id({}, { locale }), value: sanction.id, inline: false }
           ),
         ],
         components: [buildMemberCaseActionRow(targetUser.id)],
@@ -687,7 +696,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
       const bypassLevel = interaction.options.getInteger('bypass');
 
       if (targetUser.bot) {
-        await replyError(interaction, 'Action refusée', 'Impossible de sanctionner un bot.');
+        await replyError(interaction, m.b1_action_refused({}, { locale }), m.b1_cannot_sanction_a_bot({}, { locale }));
         return;
       }
 
@@ -706,18 +715,18 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
           client: interaction.client,
         });
 
-        const actionLabel = sanctionTypeLabel(result.action);
+        const actionLabel = sanctionTypeLabel(result.action, locale);
         const actionEmoji = sanctionTypeEmoji(result.action);
-        const bypassText = bypassLevel ? ` (Tier T${bypassLevel} forcé via bypass)` : '';
+        const bypassText = bypassLevel ? m.b1_bypass_forced({ level: bypassLevel }, { locale }) : '';
 
         const embed = successEmbed(
-          'Sanction progressive appliquée',
-          `${targetUser} a reçu une sanction progressive via le tableau **${result.table.name}**.`
+          m.b1_progressive_applied_title({}, { locale }),
+          m.b1_progressive_applied_desc({ user: `${targetUser}`, table: result.table.name }, { locale })
         ).addFields(
-          { name: 'Sanction appliquée', value: `${actionEmoji} ${actionLabel}${bypassText}`, inline: true },
-          { name: 'Palier atteint', value: `T${result.level}`, inline: true },
-          { name: 'Raison', value: result.sanction.reason, inline: false },
-          { name: 'ID sanction', value: result.sanction.id, inline: false }
+          { name: m.b1_applied_sanction({}, { locale }), value: `${actionEmoji} ${actionLabel}${bypassText}`, inline: true },
+          { name: m.b1_tier_reached({}, { locale }), value: `T${result.level}`, inline: true },
+          { name: m.b1_reason({}, { locale }), value: result.sanction.reason, inline: false },
+          { name: m.b1_sanction_id({}, { locale }), value: result.sanction.id, inline: false }
         );
 
         await interaction.editReply({
@@ -730,19 +739,19 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
           targetLabel: targetUser.tag,
         });
       } catch (err: unknown) {
-        const embed = errorEmbed('Erreur de sanction progressive', errorMessage(err) || "Impossible d'appliquer la sanction progressive.");
+        const embed = errorEmbed(m.b1_progressive_error_title({}, { locale }), errorMessage(err) || m.b1_progressive_error_fallback({}, { locale }));
         await interaction.editReply({ embeds: [embed] });
       }
       return;
     }
 
     await interaction.reply({
-      embeds: [infoEmbed('Sous-commande inconnue', "Cette sous-commande n'est pas encore supportée.")],
+      embeds: [infoEmbed(m.b1_unknown_subcommand_title({}, { locale }), m.b1_unknown_subcommand_desc({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   } catch (error) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', error instanceof Error ? error.message : 'Erreur inconnue')],
+      embeds: [errorEmbed(m.b1_error({}, { locale }), error instanceof Error ? error.message : m.b1_unknown_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -798,8 +807,9 @@ async function autocomplete(interaction: AutocompleteInteraction) {
         return;
       }
 
+      const locale = await getEffectiveLocale(interaction);
       const choices = table.tiers.map((tier) => {
-        const actionLabel = sanctionTypeLabel(tier.action);
+        const actionLabel = sanctionTypeLabel(tier.action, locale);
         const durationLabel = tier.durationSeconds ? ` (${formatDurationFr(tier.durationSeconds * 1000)})` : '';
         const name = `T${tier.level} - ${actionLabel}${durationLabel}`;
         return {

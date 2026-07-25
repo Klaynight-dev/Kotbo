@@ -9,6 +9,8 @@ import prisma from '../../utils/db.js';
 import { infoEmbed, successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { scanGuildMembersForYoungAccounts } from '../../services/moderation/dcDetectionService.js';
 import { scanAndModeratePseudos } from '../../services/moderation/nicknameModerationService.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('rescan')
@@ -88,17 +90,18 @@ async function canUseModerationTools(interaction: ChatInputCommandInteraction): 
 // ---------------------------------------------------------------------------
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
   const guild = interaction.guild;
   if (!guild || !interaction.guildId) {
     return interaction.reply({
-      content: '❌ Cette commande doit être utilisée dans un serveur.',
+      content: m.b4_rescan_guild_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
   }
 
   if (!(await canUseModerationTools(interaction))) {
     return interaction.reply({
-      content: "❌ Tu n'as pas les permissions nécessaires pour lancer ce scan.",
+      content: m.b4_rescan_no_permission({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -118,26 +121,26 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const result = await scanGuildMembersForYoungAccounts(guild, thresholdMs);
     const preview = result.matches
       .slice(0, 10)
-      .map((m) => `• <@${m.userId}> — compte créé ${m.accountAgeLabel} avant l'arrivée`)
+      .map((mt) => m.b4_rescan_dc_preview_line({ userId: mt.userId, ageLabel: mt.accountAgeLabel }, { locale }))
       .join('\n');
 
-    const summaryLines = [
-      `Membres analysés : **${result.scannedCount}**`,
-      `Membres signalés : **${result.flaggedCount}**`,
-      `Seuil : **${thresholdDays} jour${thresholdDays > 1 ? 's' : ''}**`,
+    const summaryLines: string[] = [
+      m.b4_rescan_members_analyzed({ count: result.scannedCount }, { locale }),
+      m.b4_rescan_members_flagged({ count: result.flaggedCount }, { locale }),
+      m.b4_rescan_dc_threshold({ days: thresholdDays, dayWord: thresholdDays > 1 ? m.b4_rescan_days({}, { locale }) : m.b4_rescan_day({}, { locale }) }, { locale }),
     ];
 
     if (result.flaggedCount > 0) {
       summaryLines.push('');
-      summaryLines.push('Premiers signalements :');
+      summaryLines.push(m.b4_rescan_dc_first_flags({}, { locale }));
       summaryLines.push(preview);
       if (result.matches.length > 10) {
-        summaryLines.push(`… et ${result.matches.length - 10} autre(s).`);
+        summaryLines.push(m.b4_rescan_and_others({ count: result.matches.length - 10 }, { locale }));
       }
     }
 
     return interaction.editReply({
-      embeds: [infoEmbed('Scan DC terminé', summaryLines.join('\n'))],
+      embeds: [infoEmbed(m.b4_rescan_dc_done_title({}, { locale }), summaryLines.join('\n'))],
     });
   }
 
@@ -149,33 +152,33 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     const result = await scanAndModeratePseudos(guild);
 
-    const summaryLines = [
-      `Membres analysés : **${result.scannedCount}**`,
-      `Pseudos modérés  : **${result.renamedCount}**`,
-      `Ignorés (bots, owner…) : **${result.skippedCount}**`,
+    const summaryLines: string[] = [
+      m.b4_rescan_members_analyzed({ count: result.scannedCount }, { locale }),
+      m.b4_rescan_pseudo_moderated({ count: result.renamedCount }, { locale }),
+      m.b4_rescan_pseudo_skipped({ count: result.skippedCount }, { locale }),
     ];
 
     if (result.errorCount > 0) {
-      summaryLines.push(`⚠️ Erreurs : **${result.errorCount}**`);
+      summaryLines.push(m.b4_rescan_errors_line({ count: result.errorCount }, { locale }));
     }
 
     if (result.renamedCount > 0) {
       summaryLines.push('');
-      summaryLines.push('Pseudos modérés :');
+      summaryLines.push(m.b4_rescan_pseudo_moderated_header({}, { locale }));
       const preview = result.renamed
         .slice(0, 10)
         .map((r) => `• <@${r.userId}> — \`${r.original}\``)
         .join('\n');
       summaryLines.push(preview);
       if (result.renamed.length > 10) {
-        summaryLines.push(`… et ${result.renamed.length - 10} autre(s).`);
+        summaryLines.push(m.b4_rescan_and_others({ count: result.renamed.length - 10 }, { locale }));
       }
     }
 
     const embed =
       result.renamedCount > 0
-        ? successEmbed('Rescan des pseudos terminé', summaryLines.join('\n'))
-        : infoEmbed('Rescan des pseudos terminé', summaryLines.join('\n'));
+        ? successEmbed(m.b4_rescan_pseudo_done_title({}, { locale }), summaryLines.join('\n'))
+        : infoEmbed(m.b4_rescan_pseudo_done_title({}, { locale }), summaryLines.join('\n'));
 
     return interaction.editReply({ embeds: [embed] });
   }
@@ -195,10 +198,8 @@ async function execute(interaction: ChatInputCommandInteraction) {
       return interaction.editReply({
         embeds: [
           successEmbed(
-            'Scan des Statistiques Lancé',
-            `Le scraping historique des messages a été démarré avec succès en arrière-plan.\n\n` +
-            `• **Mode forcé :** ${force ? 'Oui (recommencer à zéro)' : 'Non'}\n` +
-            `• Vous pouvez suivre l'avancement dans les logs ou via le statut en base de données.`
+            m.b4_rescan_stats_started_title({}, { locale }),
+            m.b4_rescan_stats_started_desc({ forced: force ? m.b4_rescan_stats_forced_yes({}, { locale }) : m.b4_rescan_stats_forced_no({}, { locale }) }, { locale })
           ),
         ],
       });
@@ -207,8 +208,8 @@ async function execute(interaction: ChatInputCommandInteraction) {
       return interaction.editReply({
         embeds: [
           errorEmbed(
-            'Erreur',
-            `Impossible de démarrer le scraping : ${err instanceof Error ? err.message : String(err)}`
+            m.b4_error({}, { locale }),
+            m.b4_rescan_stats_error({ error: err instanceof Error ? err.message : String(err) }, { locale })
           ),
         ],
       });

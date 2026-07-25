@@ -11,55 +11,85 @@ import prisma from '../../utils/db.js';
 import { successEmbed, errorEmbed, COLORS } from '../../utils/embeds.js';
 import { parseDateTimeOrDuration } from '../moderation/transcript.js';
 import { createReminder, deleteReminder } from '../../services/staff/reminderService.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c6_rappel');
+const createMeta = getCommandMetadata('c6_rappel_create');
+const createTempsMeta = getCommandMetadata('c6_rappel_create_temps');
+const createMessageMeta = getCommandMetadata('c6_rappel_create_message');
+const createSalonMeta = getCommandMetadata('c6_rappel_create_salon');
+const createPlanningMeta = getCommandMetadata('c6_rappel_create_planning');
+const listMeta = getCommandMetadata('c6_rappel_list');
+const deleteMeta = getCommandMetadata('c6_rappel_delete');
+const deleteIdMeta = getCommandMetadata('c6_rappel_delete_id');
 
 const data = new SlashCommandBuilder()
-  .setName('rappel')
-  .setDescription('⏰ Gère tes rappels personnels ou liés au planning')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((sub) =>
     sub
-      .setName('creer')
-      .setDescription('Programmer un nouveau rappel')
+      .setName(createMeta.name)
+      .setNameLocalizations(createMeta.nameLocalizations)
+      .setDescription(createMeta.description)
+      .setDescriptionLocalizations(createMeta.descriptionLocalizations)
       .addStringOption((option) =>
         option
-          .setName('temps')
-          .setDescription('Quand ? (ex: 15m, 2h, 12/07/2026-18:00)')
+          .setName(createTempsMeta.name)
+          .setNameLocalizations(createTempsMeta.nameLocalizations)
+          .setDescription(createTempsMeta.description)
+          .setDescriptionLocalizations(createTempsMeta.descriptionLocalizations)
           .setRequired(true)
       )
       .addStringOption((option) =>
         option
-          .setName('message')
-          .setDescription('Le contenu du rappel')
+          .setName(createMessageMeta.name)
+          .setNameLocalizations(createMessageMeta.nameLocalizations)
+          .setDescription(createMessageMeta.description)
+          .setDescriptionLocalizations(createMessageMeta.descriptionLocalizations)
           .setRequired(true)
           .setMaxLength(500)
       )
       .addChannelOption((option) =>
         option
-          .setName('salon')
-          .setDescription('Salon de destination (par défaut : vos Messages Privés)')
+          .setName(createSalonMeta.name)
+          .setNameLocalizations(createSalonMeta.nameLocalizations)
+          .setDescription(createSalonMeta.description)
+          .setDescriptionLocalizations(createSalonMeta.descriptionLocalizations)
           .addChannelTypes(ChannelType.GuildText)
           .setRequired(false)
       )
       .addStringOption((option) =>
         option
-          .setName('planning')
-          .setDescription('Lier ce rappel à un élément du planning')
+          .setName(createPlanningMeta.name)
+          .setNameLocalizations(createPlanningMeta.nameLocalizations)
+          .setDescription(createPlanningMeta.description)
+          .setDescriptionLocalizations(createPlanningMeta.descriptionLocalizations)
           .setAutocomplete(true)
           .setRequired(false)
       )
   )
   .addSubcommand((sub) =>
     sub
-      .setName('liste')
-      .setDescription('Afficher la liste de vos rappels actifs')
+      .setName(listMeta.name)
+      .setNameLocalizations(listMeta.nameLocalizations)
+      .setDescription(listMeta.description)
+      .setDescriptionLocalizations(listMeta.descriptionLocalizations)
   )
   .addSubcommand((sub) =>
     sub
-      .setName('supprimer')
-      .setDescription('Supprimer un rappel planifié')
+      .setName(deleteMeta.name)
+      .setNameLocalizations(deleteMeta.nameLocalizations)
+      .setDescription(deleteMeta.description)
+      .setDescriptionLocalizations(deleteMeta.descriptionLocalizations)
       .addStringOption((option) =>
         option
-          .setName('id')
-          .setDescription('Le rappel à supprimer')
+          .setName(deleteIdMeta.name)
+          .setNameLocalizations(deleteIdMeta.nameLocalizations)
+          .setDescription(deleteIdMeta.description)
+          .setDescriptionLocalizations(deleteIdMeta.descriptionLocalizations)
           .setAutocomplete(true)
           .setRequired(true)
       )
@@ -67,9 +97,10 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction: ChatInputCommandInteraction) {
   const { guildId, user } = interaction;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée sur un serveur.',
+      content: m.c6_rappel_guild_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -77,16 +108,16 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   const subcommand = interaction.options.getSubcommand();
 
-  if (subcommand === 'creer') {
-    const tempsStr = interaction.options.getString('temps', true);
-    const message = interaction.options.getString('message', true);
-    const channel = interaction.options.getChannel('salon', false);
-    const planningItem = interaction.options.getString('planning', false);
+  if (subcommand === createMeta.name) {
+    const tempsStr = interaction.options.getString(createTempsMeta.name, true);
+    const message = interaction.options.getString(createMessageMeta.name, true);
+    const channel = interaction.options.getChannel(createSalonMeta.name, false);
+    const planningItem = interaction.options.getString(createPlanningMeta.name, false);
 
     const targetTimeMs = parseDateTimeOrDuration(tempsStr);
     if (targetTimeMs === null) {
       await interaction.reply({
-        content: '❌ Format de temps invalide. Utilisez par exemple : `15m`, `2h`, `1d`, ou une date/heure `JJ/MM/AAAA-HH:MM`.',
+        content: m.c6_rappel_invalid_time({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -95,7 +126,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const targetTime = new Date(targetTimeMs);
     if (targetTime <= new Date()) {
       await interaction.reply({
-        content: '❌ La date et heure du rappel doit être dans le futur.',
+        content: m.c6_rappel_time_in_past({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -127,27 +158,24 @@ async function execute(interaction: ChatInputCommandInteraction) {
       });
 
       const timeString = `<t:${Math.floor(targetTime.getTime() / 1000)}:F> (<t:${Math.floor(targetTime.getTime() / 1000)}:R>)`;
-      const targetDest = channel ? `${channel}` : 'vos Messages Privés (MP)';
-      
+      const targetDest = channel ? `${channel}` : m.c6_rappel_dm({}, { locale });
+
       await interaction.editReply({
         embeds: [
           successEmbed(
-            '⏰ Rappel programmé',
-            `Votre rappel a été enregistré avec succès.\n\n` +
-            `📝 **Message** : ${message}\n` +
-            `📅 **Date** : ${timeString}\n` +
-            `📍 **Destination** : ${targetDest}`
+            m.c6_rappel_created_title({}, { locale }),
+            m.c6_rappel_created_desc({ message, timeString, targetDest }, { locale })
           )
         ]
       });
     } catch (error) {
       await interaction.editReply({
-        embeds: [errorEmbed('Erreur', 'Impossible de programmer le rappel.')]
+        embeds: [errorEmbed(m.c6_rappel_error_title({}, { locale }), m.c6_rappel_create_error({}, { locale }))]
       });
     }
   }
 
-  else if (subcommand === 'liste') {
+  else if (subcommand === listMeta.name) {
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
@@ -169,25 +197,25 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
       if (reminders.length === 0) {
         await interaction.editReply({
-          content: '⚠️ Vous n\'avez aucun rappel actif planifié pour le moment.'
+          content: m.c6_rappel_none({}, { locale })
         });
         return;
       }
 
       const embed = new EmbedBuilder()
         .setColor(COLORS?.success || 0x2ECC71)
-        .setTitle('⏰ Vos Rappels Planifiés')
+        .setTitle(m.c6_rappel_list_title({}, { locale }))
         .setTimestamp();
 
       const lines = reminders.map((r) => {
         const timeString = `<t:${Math.floor(r.targetTime.getTime() / 1000)}:R>`;
         let detail = '';
-        if (r.task) detail = ` (Lié à la tâche: *${r.task.title}*)`;
-        else if (r.call) detail = ` (Lié au call: *${r.call.title}*)`;
-        else if (r.meeting) detail = ` (Lié à la réunion: *${r.meeting.title}*)`;
+        if (r.task) detail = ` (${m.c6_rappel_linked_task({ title: r.task.title }, { locale })})`;
+        else if (r.call) detail = ` (${m.c6_rappel_linked_call({ title: r.call.title }, { locale })})`;
+        else if (r.meeting) detail = ` (${m.c6_rappel_linked_meeting({ title: r.meeting.title }, { locale })})`;
 
-        const dest = r.channelId ? `<#${r.channelId}>` : 'MP';
-        return `• \`${r.id.slice(-6)}\` · **${r.message}** · ${timeString} · salon: ${dest}${detail}`;
+        const dest = r.channelId ? `<#${r.channelId}>` : m.c6_rappel_dm_short({}, { locale });
+        return `• \`${r.id.slice(-6)}\` · **${r.message}** · ${timeString} · ${m.c6_rappel_channel_label({}, { locale })}: ${dest}${detail}`;
       });
 
       embed.setDescription(lines.join('\n'));
@@ -195,23 +223,23 @@ async function execute(interaction: ChatInputCommandInteraction) {
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       await interaction.editReply({
-        embeds: [errorEmbed('Erreur', 'Impossible de récupérer la liste des rappels.')]
+        embeds: [errorEmbed(m.c6_rappel_error_title({}, { locale }), m.c6_rappel_list_error({}, { locale }))]
       });
     }
   }
 
-  else if (subcommand === 'supprimer') {
-    const reminderId = interaction.options.getString('id', true);
+  else if (subcommand === deleteMeta.name) {
+    const reminderId = interaction.options.getString(deleteIdMeta.name, true);
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
       await deleteReminder(reminderId, user.id);
       await interaction.editReply({
-        embeds: [successEmbed('Rappel supprimé', 'Le rappel a été supprimé avec succès.')]
+        embeds: [successEmbed(m.c6_rappel_deleted_title({}, { locale }), m.c6_rappel_deleted_desc({}, { locale }))]
       });
     } catch (error: any) {
       await interaction.editReply({
-        embeds: [errorEmbed('Erreur', error.message || 'Impossible de supprimer le rappel.')]
+        embeds: [errorEmbed(m.c6_rappel_error_title({}, { locale }), error.message || m.c6_rappel_delete_error({}, { locale }))]
       });
     }
   }
@@ -220,12 +248,13 @@ async function execute(interaction: ChatInputCommandInteraction) {
 async function autocomplete(interaction: AutocompleteInteraction) {
   const { guildId, user } = interaction;
   if (!guildId) return;
+  const locale = await getEffectiveLocale(interaction);
 
   const focused = interaction.options.getFocused(true);
   const focusedOption = String(focused.value).trim();
   const focusedName = focused.name;
 
-  if (focusedName === 'planning') {
+  if (focusedName === createPlanningMeta.name) {
     try {
       // Fetch meetings, calls and tasks matching query
       const [meetings, calls, tasks] = await Promise.all([
@@ -257,14 +286,14 @@ async function autocomplete(interaction: AutocompleteInteraction) {
 
       const choices: { name: string; value: string }[] = [];
 
-      meetings.forEach(m => {
-        choices.push({ name: `📅 [Réunion] ${m.title.slice(0, 80)}`, value: `meeting:${m.id}` });
+      meetings.forEach(mt => {
+        choices.push({ name: `📅 [${m.c6_rappel_ac_meeting({}, { locale })}] ${mt.title.slice(0, 80)}`, value: `meeting:${mt.id}` });
       });
       calls.forEach(c => {
-        choices.push({ name: `📞 [Appel] ${c.title.slice(0, 80)}`, value: `call:${c.id}` });
+        choices.push({ name: `📞 [${m.c6_rappel_ac_call({}, { locale })}] ${c.title.slice(0, 80)}`, value: `call:${c.id}` });
       });
       tasks.forEach(t => {
-        choices.push({ name: `📋 [Tâche] ${t.title.slice(0, 80)}`, value: `task:${t.id}` });
+        choices.push({ name: `📋 [${m.c6_rappel_ac_task({}, { locale })}] ${t.title.slice(0, 80)}`, value: `task:${t.id}` });
       });
 
       await interaction.respond(choices.slice(0, 25));
@@ -274,7 +303,7 @@ async function autocomplete(interaction: AutocompleteInteraction) {
     }
   }
 
-  else if (focusedName === 'id') {
+  else if (focusedName === deleteIdMeta.name) {
     try {
       const reminders = await prisma.staffReminder.findMany({
         where: {
@@ -288,7 +317,7 @@ async function autocomplete(interaction: AutocompleteInteraction) {
       });
 
       const choices = reminders.map(r => {
-        const dateStr = r.targetTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const dateStr = r.targetTime.toLocaleDateString(locale === 'fr' ? 'fr-FR' : 'en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
         return {
           name: `⏰ [${dateStr}] ${r.message.slice(0, 70)}`,
           value: r.id

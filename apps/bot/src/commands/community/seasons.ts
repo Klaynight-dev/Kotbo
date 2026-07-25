@@ -7,35 +7,48 @@ import { E, rankEmoji, buildProgressBar } from '../../utils/emojis.js';
 import { getAllSeasons, getSeasonLeaderboard } from '../../services/progression/seasonService.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { ContainerChild, separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 function formatDate(date: Date | string | null | undefined): string {
   if (!date) return '—';
   return new Date(date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-const STATUS_MAP: Record<string, { icon: string; label: string }> = {
-  ACTIVE: { icon: E.online, label: 'Active' },
-  UPCOMING: { icon: E.idle, label: 'À venir' },
-  ENDED: { icon: E.offline, label: 'Terminée' },
-};
+function statusMap(locale: 'fr' | 'en'): Record<string, { icon: string; label: string }> {
+  return {
+    ACTIVE: { icon: E.online, label: m.c4_seasons_status_active({}, { locale }) },
+    UPCOMING: { icon: E.idle, label: m.c4_seasons_status_upcoming({}, { locale }) },
+    ENDED: { icon: E.offline, label: m.c4_seasons_status_ended({}, { locale }) },
+  };
+}
+
+const meta = getCommandMetadata('c4_seasons');
 
 const data = new SlashCommandBuilder()
-  .setName('seasons')
-  .setDescription('Saisons de progression — classements et récompenses')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((sub) =>
     sub.setName('list')
-      .setDescription('Voir toutes les saisons'))
+      .setDescription(m.c4_seasons_list_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_seasons_list_desc({}, { locale: 'fr' }) }))
   .addSubcommand((sub) =>
     sub.setName('current')
-      .setDescription('Voir la saison en cours et le classement'))
+      .setDescription(m.c4_seasons_current_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_seasons_current_desc({}, { locale: 'fr' }) }))
   .addSubcommand((sub) =>
     sub.setName('leaderboard')
-      .setDescription('Classement d\'une saison')
-      .addStringOption((opt) => opt.setName('saison').setDescription('ID de la saison').setRequired(true)));
+      .setDescription(m.c4_seasons_leaderboard_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c4_seasons_leaderboard_desc({}, { locale: 'fr' }) })
+      .addStringOption((opt) => opt.setName('saison').setDescription(m.c4_seasons_opt_saison({}, { locale: 'en' })).setDescriptionLocalizations({ fr: m.c4_seasons_opt_saison({}, { locale: 'fr' }) }).setRequired(true)));
 
 async function execute(interaction: ChatInputCommandInteraction) {
   const subcommand = interaction.options.getSubcommand();
   const guildId = interaction.guildId!;
+  const locale = await getEffectiveLocale(interaction);
+  const STATUS_MAP = statusMap(locale);
 
   if (subcommand === 'list') {
     await interaction.deferReply();
@@ -45,11 +58,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
       await interaction.editReply(v2Message(
         kotboContainer({
           color: 'dark',
-          title: `${E.trophy} Saisons`,
+          title: `${E.trophy} ${m.c4_seasons_title({}, { locale })}`,
           fields: [
-            `${E.info} Aucune saison configurée pour le moment.`
+            `${E.info} ${m.c4_seasons_none({}, { locale })}`
           ],
-          footerTitle: 'Saisons'
+          footerTitle: m.c4_seasons_title({}, { locale })
         })
       ));
       return;
@@ -58,18 +71,19 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const lines = seasons.map((s) => {
       const status = STATUS_MAP[s.status] ?? { icon: E.dot, label: s.status };
       const snapCount = s._count?.snapshots ?? 0;
-      return `${status.icon} **Saison #${s.number}** · ${s.name}\n${E.dot} ${formatDate(s.startDate)} → ${formatDate(s.endDate)} · ${status.label}${snapCount > 0 ? ` · ${snapCount} participants` : ''}`;
+      const participants = snapCount > 0 ? ` · ${m.c4_seasons_participants({ count: snapCount }, { locale })}` : '';
+      return `${status.icon} **${m.c4_seasons_number({ number: s.number }, { locale })}** · ${s.name}\n${E.dot} ${formatDate(s.startDate)} → ${formatDate(s.endDate)} · ${status.label}${participants}`;
     });
 
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.trophy} Saisons`,
+        title: `${E.trophy} ${m.c4_seasons_title({}, { locale })}`,
         fields: [
           separator({ divider: true, spacing: 'small' }),
           lines.join('\n\n')
         ],
-        footerTitle: `${seasons.length} saison${seasons.length > 1 ? 's' : ''}`
+        footerTitle: m.c4_seasons_footer_count({ count: seasons.length }, { locale })
       })
     ));
   }
@@ -83,11 +97,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
       await interaction.editReply(v2Message(
         kotboContainer({
           color: 'dark',
-          title: `${E.trophy} Saison en cours`,
+          title: `${E.trophy} ${m.c4_seasons_current_title({}, { locale })}`,
           fields: [
-            `${E.info} Aucune saison active pour le moment.`
+            `${E.info} ${m.c4_seasons_no_active({}, { locale })}`
           ],
-          footerTitle: 'Saisons'
+          footerTitle: m.c4_seasons_title({}, { locale })
         })
       ));
       return;
@@ -106,9 +120,9 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const fields: ContainerChild[] = [
       separator({ divider: true, spacing: 'small' }),
       [
-        `${E.arrow} **Période** · ${formatDate(active.startDate)} → ${formatDate(active.endDate)}`,
-        `${E.arrow} **Progression** · ${buildProgressBar(progressPct, 8)} \`${Math.round(progressPct)}%\``,
-        `${E.arrow} **Temps restant** · ${daysLeft} jour(s)`,
+        `${E.arrow} **${m.c4_seasons_field_period({}, { locale })}** · ${formatDate(active.startDate)} → ${formatDate(active.endDate)}`,
+        `${E.arrow} **${m.c4_seasons_field_progress({}, { locale })}** · ${buildProgressBar(progressPct, 8)} \`${Math.round(progressPct)}%\``,
+        `${E.arrow} **${m.c4_seasons_field_time_left({}, { locale })}** · ${m.c4_seasons_days_left({ days: daysLeft }, { locale })}`,
       ].join('\n')
     ]
 
@@ -121,7 +135,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
       fields.push(
         separator({ divider: true, spacing: 'small' }),
-        `**${E.level} Classement**`,
+        `**${E.level} ${m.c4_seasons_field_ranking({}, { locale })}**`,
         lbLines.join('\n')
       )
     }
@@ -129,9 +143,9 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.trophy} Saison #${active.number} · ${active.name}`,
+        title: `${E.trophy} ${m.c4_seasons_number({ number: active.number }, { locale })} · ${active.name}`,
         fields,
-        footerTitle: 'Saisons'
+        footerTitle: m.c4_seasons_title({}, { locale })
       })
     ));
   }
@@ -144,7 +158,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (lb.length === 0) {
       await interaction.editReply(v2Message(
-        errorContainer('Aucun résultat', 'Aucun classement trouvé pour cette saison.'),
+        errorContainer(m.c4_seasons_leaderboard_none_title({}, { locale }), m.c4_seasons_leaderboard_none_desc({}, { locale })),
       ));
       return;
     }
@@ -157,12 +171,12 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.trophy} Classement Saison`,
+        title: `${E.trophy} ${m.c4_seasons_leaderboard_title({}, { locale })}`,
         fields: [
           separator({ divider: true, spacing: 'small' }),
           lines.join('\n')
         ],
-        footerTitle: `${lb.length} participant${lb.length > 1 ? 's' : ''}`
+        footerTitle: m.c4_seasons_footer_participants({ count: lb.length }, { locale })
       })
     ));
   }

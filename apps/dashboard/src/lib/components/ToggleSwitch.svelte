@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { m } from '../i18n';
+
   let {
     checked = false,
     disabled = false,
@@ -6,7 +8,7 @@
     size = 'md',
     activeClass = '',
     id = undefined,
-    ariaLabel = 'Bouton de basculement'
+    ariaLabel = undefined
   }: {
     checked?: boolean;
     disabled?: boolean;
@@ -14,7 +16,7 @@
     size?: 'sm' | 'md' | 'lg';
     activeClass?: string;
     id?: string | undefined;
-    ariaLabel?: string;
+    ariaLabel?: string | undefined;
   } = $props();
 
   const sizeClasses = {
@@ -30,7 +32,7 @@
   type="button"
   role="switch"
   aria-checked={checked}
-  aria-label={ariaLabel}
+  aria-label={ariaLabel ?? m.e6_toggle_switch_aria_label()}
   {id}
   {disabled}
   onclick={() => { if (!disabled) onToggle(!checked); }}

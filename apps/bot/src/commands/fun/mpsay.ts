@@ -10,6 +10,8 @@ import {
 } from 'discord.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('mpsay')
@@ -30,9 +32,11 @@ const data = new SlashCommandBuilder()
   );
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
+
   if (!interaction.guildId) {
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', 'Cette commande ne peut être utilisée que dans un serveur.')],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_guild_only({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -46,7 +50,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     const button = new ButtonBuilder()
       .setCustomId('mpsay_server_origin')
-      .setLabel(`Envoyé depuis : ${serverName}`)
+      .setLabel(m.b2_mpsay_sent_from({ server: serverName }, { locale }))
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true);
 
@@ -58,7 +62,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
     });
 
     await interaction.reply({
-      embeds: [successEmbed('Message envoyé', `Le message privé a bien été envoyé à ${targetUser.tag}.`)],
+      embeds: [successEmbed(m.b2_mpsay_sent_title({}, { locale }), m.b2_mpsay_sent_desc({ tag: targetUser.tag }, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
 
@@ -66,7 +70,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
   } catch (error) {
     logger.error('Mpsay', `Impossible d'envoyer le message privé à ${targetUser.tag} :`, error);
     await interaction.reply({
-      embeds: [errorEmbed('Erreur', `Impossible d'envoyer le message privé à ${targetUser.tag}. Ses messages privés sont probablement fermés ou il a bloqué le bot.`)],
+      embeds: [errorEmbed(m.b2_err_title({}, { locale }), m.b2_mpsay_failed_desc({ tag: targetUser.tag }, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   }

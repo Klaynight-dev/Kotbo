@@ -16,6 +16,7 @@ import { giveawayCommand } from './commands/fun/giveaway.js';
 import { helpCommand } from './commands/utility/help.js';
 import { infoCommand } from './commands/utility/info.js';
 import { invitesCommand } from './commands/utility/invites.js';
+import { languageCommand } from './commands/utility/language.js';
 import { leaderboardCommand } from './commands/profile/leaderboard.js';
 import { meetingCommand } from './commands/admin/meeting.js';
 import { noteCommand, noteContextCommand } from './commands/moderation/note.js';
@@ -102,6 +103,7 @@ export const commands: SlashCommandDefinition[] = [
   setupCommand,
   configCommand,
   pingCommand,
+  languageCommand,
   infoCommand,
   excuseCommand,
   epochCommand,

@@ -2,6 +2,7 @@
   import { portal } from '../../actions/portal';
   import Papicon from '../Papicon.svelte';
   import Chart from '../charts/Chart.svelte';
+  import { m } from '../../i18n';
 
   let {
     open = false,
@@ -98,7 +99,7 @@
           </div>
           <div>
             <h3 class="text-xl md:text-2xl font-semibold text-on-surface">{title}</h3>
-            <p class="text-xs font-bold text-on-surface-variant/60">{subtitle} ({filteredData.length} résultats sur {data.length})</p>
+            <p class="text-xs font-bold text-on-surface-variant/60">{subtitle} {m.d7_dam_results_of({ count: filteredData.length, total: data.length })}</p>
           </div>
         </div>
         <button 
@@ -127,7 +128,7 @@
             <input 
               type="text" 
               bind:value={searchQuery}
-              placeholder="Rechercher par nom, tag, ou raison..." 
+              placeholder={m.d7_dam_search_placeholder()}
               class="w-full bg-surface-container-high/40 text-on-surface text-sm font-bold rounded-lg pl-12 pr-4 py-3 border border-outline-variant/5 focus:border-primary/50 focus:outline-none transition-colors placeholder:text-on-surface-variant/40"
             />
           </div>
@@ -136,8 +137,8 @@
               bind:value={sortKey}
               class="bg-surface-container-high/40 text-on-surface text-sm font-bold rounded-lg px-4 py-3 border border-outline-variant/5 focus:border-primary/50 focus:outline-none transition-colors appearance-none cursor-pointer"
             >
-              <option value="volume">Volume / Date</option>
-              <option value="name">Alphabétique</option>
+              <option value="volume">{m.d7_dam_sort_volume()}</option>
+              <option value="name">{m.d7_dam_sort_alpha()}</option>
             </select>
             <button 
               onclick={() => sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'}
@@ -169,7 +170,7 @@
                 </div>
                 <div class="flex items-center gap-6">
                   <div class="text-right">
-                    <p class="text-[10px] font-semibold {type === 'messages' ? 'text-primary' : 'text-emerald-500'} uppercase tracking-widest">{type === 'messages' ? 'Messages' : 'Minutes'}</p>
+                    <p class="text-[10px] font-semibold {type === 'messages' ? 'text-primary' : 'text-emerald-500'} uppercase tracking-widest">{type === 'messages' ? m.d7_dam_messages() : m.d7_dam_minutes()}</p>
                     <p class="text-base font-semibold text-on-surface">{(type === 'messages' ? item.messageCount : Math.round(item.voiceTimeSeconds / 60)).toLocaleString('fr-FR')}</p>
                   </div>
                   <Papicon icon="ArrowRight" size={16} class="opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -187,7 +188,7 @@
                   <p class="text-base font-semibold text-on-surface">#{item.channelName || item.name || item.channelId}</p>
                 </div>
                 <div class="text-right">
-                  <p class="text-[10px] font-semibold text-secondary uppercase tracking-widest">Volume</p>
+                  <p class="text-[10px] font-semibold text-secondary uppercase tracking-widest">{m.d7_dam_volume()}</p>
                   <p class="text-base font-semibold text-on-surface">{(item.messagesCount || item.count).toLocaleString('fr-FR')}</p>
                 </div>
               </div>
@@ -204,7 +205,7 @@
                   <p class="text-base font-semibold text-on-surface">@{item.moderatorTag}</p>
                 </div>
                 <div class="text-right">
-                  <p class="text-[10px] font-semibold text-primary uppercase tracking-widest">Actions</p>
+                  <p class="text-[10px] font-semibold text-primary uppercase tracking-widest">{m.d7_dam_actions()}</p>
                   <p class="text-base font-semibold text-on-surface">{item.count}</p>
                 </div>
               </button>
@@ -221,7 +222,7 @@
                   <p class="text-base font-semibold text-on-surface">@{item.targetTag}</p>
                 </div>
                 <div class="text-right">
-                  <p class="text-[10px] font-semibold text-rose-500 uppercase tracking-widest">Sanctions</p>
+                  <p class="text-[10px] font-semibold text-rose-500 uppercase tracking-widest">{m.d7_dam_sanctions()}</p>
                   <p class="text-base font-semibold text-on-surface">{item.count}</p>
                 </div>
               </button>
@@ -241,20 +242,20 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <span class="text-base font-semibold text-on-surface block truncate">{item.name}</span>
-                  <span class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{item.grade || 'Staff'}</span>
+                  <span class="text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">{item.grade || m.d7_staff()}</span>
                 </div>
                 <div class="hidden md:flex items-center gap-6 mr-4 shrink-0">
                   <div class="text-right">
-                    <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">Messages</p>
+                    <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">{m.d7_dam_messages()}</p>
                     <p class="text-xs font-bold text-on-surface">{fmt?.(item.messages)}</p>
                   </div>
                   <div class="text-right">
-                    <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">Vocal</p>
+                    <p class="text-[11px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">{m.d7_dam_voice()}</p>
                     <p class="text-xs font-bold text-on-surface">{fmtH?.(item.voiceMinutes)}</p>
                   </div>
                 </div>
                 <div class="text-right pl-4 border-l border-outline-variant/10 shrink-0">
-                  <p class="text-[11px] font-semibold text-primary uppercase tracking-widest">Score</p>
+                  <p class="text-[11px] font-semibold text-primary uppercase tracking-widest">{m.d7_dam_score()}</p>
                   <p class="text-lg font-semibold text-primary">{fmt?.(item.score)}</p>
                 </div>
               </button>
@@ -277,13 +278,13 @@
                         <span class="px-2 py-0.5 rounded-lg text-[11px] font-semibold tracking-widest uppercase" style="background: {getSanctionColor(item.type)}20; color: {getSanctionColor(item.type)}">{item.type}</span>
                       {/if}
                     </div>
-                    <p class="text-xs font-medium text-on-surface-variant/60 mt-0.5 line-clamp-1">{item.reason || 'Aucune raison spécifiée'}</p>
+                    <p class="text-xs font-medium text-on-surface-variant/60 mt-0.5 line-clamp-1">{item.reason || m.d7_dam_no_reason()}</p>
                     <p class="text-[10px] text-on-surface-variant/40 mt-1">{new Date(item.createdAt).toLocaleString('fr-FR')}</p>
                   </div>
                 </div>
                 <div class="flex items-center justify-between md:justify-end gap-6 border-t md:border-t-0 border-outline-variant/5 pt-3 md:pt-0 shrink-0">
                   <div class="text-right">
-                    <p class="text-[11px] font-semibold text-on-surface-variant/40 uppercase tracking-widest">Modérateur</p>
+                    <p class="text-[11px] font-semibold text-on-surface-variant/40 uppercase tracking-widest">{m.d7_dam_moderator()}</p>
                     <div class="flex items-center gap-2 mt-0.5">
                       <img src={getAvatar(item.moderatorAvatarUrl)} alt="" class="w-5 h-5 rounded-md object-cover" />
                       <p class="text-xs font-bold text-on-surface">@{item.moderatorTag}</p>
@@ -298,7 +299,7 @@
           {#if paginatedData.length === 0}
             <div class="py-20 text-center opacity-40">
               <Papicon icon="Ghost" size={48} class="mx-auto mb-4" />
-              <p class="text-sm font-bold">Aucune donnée trouvée</p>
+              <p class="text-sm font-bold">{m.d7_no_data_found()}</p>
             </div>
           {/if}
         </div>
@@ -312,15 +313,15 @@
               class="px-4 py-2 rounded-xl bg-surface-container-high/40 hover:bg-surface-container-high text-xs font-bold text-on-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <Papicon icon="CaretLeft" size={14} />
-              Précédent
+              {m.d7_dam_prev()}
             </button>
-            <span class="text-xs font-bold text-on-surface-variant/60">Page {currentPage} sur {totalPages}</span>
+            <span class="text-xs font-bold text-on-surface-variant/60">{m.d7_dam_page({ current: currentPage, total: totalPages })}</span>
             <button 
               onclick={() => currentPage = Math.min(totalPages, currentPage + 1)}
               disabled={currentPage === totalPages}
               class="px-4 py-2 rounded-xl bg-surface-container-high/40 hover:bg-surface-container-high text-xs font-bold text-on-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              Suivant
+              {m.d7_dam_next()}
               <Papicon icon="CaretRight" size={14} />
             </button>
           </div>

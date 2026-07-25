@@ -4,6 +4,8 @@ import { getOrCreateRpgProfile, getOrCreateEconomyConfig } from '../../services/
 import { errorContainer, kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('coins')
@@ -18,11 +20,12 @@ const data = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const targetUser = interaction.options.getUser('membre') ?? interaction.user;
+  const locale = await getEffectiveLocale(interaction);
 
   if (targetUser.bot) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Erreur', "Les bots n'ont pas de compte en banque !"),
+      errorContainer(m.b3_error_title({}, { locale }), m.b3_coins_bot_error({}, { locale })),
     ));
     return;
   }
@@ -34,17 +37,17 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await interaction.reply(v2Message(
       kotboContainer({
         color: 'primary',
-        title: `${E.coins} Portefeuille — ${targetUser.displayName}`,
+        title: m.b3_coins_title({ coins: E.coins, name: targetUser.displayName }, { locale }),
         titleThumbnail: { url: targetUser.displayAvatarURL({ size: 128 }) },
         fields: [
-          `<@${targetUser.id}> possède actuellement **${profile.balance}** ${config.currencyEmoji} **${config.currencyName}**.`,
+          m.b3_coins_balance({ userId: targetUser.id, balance: profile.balance, currencyEmoji: config.currencyEmoji, currencyName: config.currencyName }, { locale }),
         ],
       }),
     ));
   } catch (err: unknown) {
     await interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral },
-      errorContainer('Erreur', err instanceof Error ? err.message : 'Impossible de consulter le solde.'),
+      errorContainer(m.b3_error_title({}, { locale }), err instanceof Error ? err.message : m.b3_coins_error_desc({}, { locale })),
     ));
   }
 }

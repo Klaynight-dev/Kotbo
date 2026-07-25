@@ -11,24 +11,32 @@ import { isGuildActivated, activateGuild } from '../../utils/activation.js';
 import { initializeAutoBackup } from '../../services/system/autoBackupService.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c1_activate');
 
 const data = new SlashCommandBuilder()
-  .setName('activate')
-  .setDescription("Activer le bot sur ce serveur à l'aide d'un code d'activation")
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption((option) =>
     option
       .setName('code')
-      .setDescription("Le code d'activation fourni par l'administrateur global")
+      .setDescription(m.c1_activate_code_opt({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c1_activate_code_opt({}, { locale: 'fr' }) })
       .setRequired(true)
   );
 
 async function execute(interaction: ChatInputCommandInteraction) {
+  const locale = await getEffectiveLocale(interaction);
   const guildId = interaction.guildId;
   if (!guildId) {
     return interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral},
-      errorContainer('Erreur', 'Cette commande ne peut être exécutée que sur un serveur.')
+      errorContainer(m.c1_activate_error_title({}, { locale }), m.c1_activate_guild_only({}, { locale }))
     ));
   }
 
@@ -36,7 +44,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
   if (isGuildActivated(guildId)) {
     return interaction.reply(v2Message(
       { flags: MessageFlags.Ephemeral},
-      errorContainer('Déjà activé', 'Ce serveur est déjà activé et pleinement opérationnel !')
+      errorContainer(m.c1_activate_already_title({}, { locale }), m.c1_activate_already_desc({}, { locale }))
     ));
   }
 
@@ -56,7 +64,7 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     if (!activationCode) {
       return interaction.editReply(v2Message(
-        errorContainer('Code Invalide', "Le code d'activation fourni est invalide, expiré ou déjà utilisé.")
+        errorContainer(m.c1_activate_invalid_code_title({}, { locale }), m.c1_activate_invalid_code_desc({}, { locale }))
       )
       );
     }
@@ -79,14 +87,14 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
     await interaction.editReply(v2Message(
       successContainer(
-        `${E.fire} Serveur Activé !`,
-        `Kotbo a été activé avec succès sur votre serveur !\n\nToutes les fonctionnalités (modération, police du code, logs avancés, dashboard) sont désormais déverrouillées et opérationnelles.`,
+        `${E.fire} ${m.c1_activate_success_title({}, { locale })}`,
+        m.c1_activate_success_desc({}, { locale }),
       )
     ));
   } catch (error) {
     console.error('Command activate error:', error);
     await interaction.editReply(v2Message(
-      errorContainer('Erreur Système', "Une erreur est survenue lors de l'activation de votre serveur. Veuillez contacter un administrateur.")
+      errorContainer(m.c1_activate_system_error_title({}, { locale }), m.c1_activate_system_error_desc({}, { locale }))
     ));
   }
 }

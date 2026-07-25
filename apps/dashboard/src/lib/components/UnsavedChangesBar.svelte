@@ -1,5 +1,6 @@
 <script lang="ts">
   import { unsavedChanges } from '../stores/unsavedChanges.svelte';
+  import { m } from '../i18n';
 
   // Whether we're animating the bar in
   let visible = $derived(unsavedChanges.isDirty);
@@ -10,7 +11,7 @@
   <div
     class="unsaved-bar"
     role="alertdialog"
-    aria-label="Modifications non sauvegardées"
+    aria-label={m.d4_unsaved_title()}
     aria-live="polite"
   >
     <div class="unsaved-bar__inner">
@@ -24,7 +25,7 @@
           </svg>
         </div>
         <div>
-          <p class="unsaved-bar__title">Modifications non sauvegardées</p>
+          <p class="unsaved-bar__title">{m.d4_unsaved_title()}</p>
           {#if unsavedChanges.pageLabel}
             <p class="unsaved-bar__subtitle">{unsavedChanges.pageLabel}</p>
           {/if}
@@ -40,7 +41,7 @@
           disabled={unsavedChanges.saving}
           class="unsaved-bar__btn unsaved-bar__btn--reset"
         >
-          Réinitialiser
+          {m.d4_reset()}
         </button>
         <button
           id="unsaved-save-btn"
@@ -53,12 +54,12 @@
             <svg class="unsaved-bar__spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="40" stroke-dashoffset="10"/>
             </svg>
-            Enregistrement…
+            {m.d4_saving()}
           {:else}
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12"/>
             </svg>
-            Enregistrer
+            {m.d4_save()}
           {/if}
         </button>
       </div>

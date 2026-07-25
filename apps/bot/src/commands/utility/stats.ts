@@ -5,6 +5,8 @@ import { generateMemberStatsImage } from '../../services/core/imageService.js';
 import { kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import { mediaGallery, v2Message } from '@arcscord/components';
+import { getEffectiveLocale } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
 
 const data = new SlashCommandBuilder()
   .setName('stats')
@@ -26,9 +28,10 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: `${E.error} Cette commande doit être utilisée dans un serveur.`,
+      content: `${E.error} ${m.b2_guild_only_short({}, { locale })}`,
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -69,7 +72,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         color: 'primary',
         fields: [
           mediaGallery({ items: [{ media: { url: 'attachment://stats.png' } }] }),
-          `-# Kotbo Analytics · Requis par ${interaction.user.username}`,
+          `-# ${m.b2_stats_footer({ user: interaction.user.username }, { locale })}`,
         ],
       }),
     ),

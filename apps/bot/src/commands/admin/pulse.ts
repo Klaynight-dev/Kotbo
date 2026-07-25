@@ -7,6 +7,10 @@ import { COLORS_RAW, kotboContainer } from '../../utils/embeds.js';
 import { E, buildProgressBar } from '../../utils/emojis.js';
 import { getPulseDashboardData } from '../../services/analytics/pulseService.js';
 import { ContainerChild, separator, v2Message } from '@arcscord/components';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c1_pulse');
 
 function scoreColor(score: number): number {
   if (score >= 75) return COLORS_RAW.success;
@@ -15,10 +19,10 @@ function scoreColor(score: number): number {
   return COLORS_RAW.danger;
 }
 
-function trendLabel(trend: string, delta: number): string {
-  if (trend === 'UP') return `${E.success} +${delta} pts`;
-  if (trend === 'DOWN') return `${E.error} ${delta} pts`;
-  return `${E.dot} Stable`;
+function trendLabel(trend: string, delta: number, locale: 'fr' | 'en'): string {
+  if (trend === 'UP') return `${E.success} +${delta} ${m.c1_pulse_pts({}, { locale })}`;
+  if (trend === 'DOWN') return `${E.error} ${delta} ${m.c1_pulse_pts({}, { locale })}`;
+  return `${E.dot} ${m.c1_pulse_stable({}, { locale })}`;
 }
 
 function scoreBar(label: string, score: number): string {
@@ -32,11 +36,14 @@ const ALERT_ICONS: Record<string, string> = {
 };
 
 const data = new SlashCommandBuilder()
-  .setName('pulse')
-  .setDescription('Pouls du serveur — score de santé et métriques clés');
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations);
 
 async function execute(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
+  const locale = await getEffectiveLocale(interaction);
 
   const guildId = interaction.guildId;
   if (!guildId) return;
@@ -44,25 +51,27 @@ async function execute(interaction: ChatInputCommandInteraction) {
   const pulse = await getPulseDashboardData(guildId);
   const { current, metrics } = pulse;
 
+  const localeTag = locale === 'fr' ? 'fr-FR' : 'en-US';
+
   const fields: ContainerChild[] = [
     separator({ divider: true, spacing: 'small' }),
     [
-      `**Score global** · **${current.score}**/100 ${trendLabel(current.trend, current.trendDelta)}`,
+      `**${m.c1_pulse_global_score({}, { locale })}** · **${current.score}**/100 ${trendLabel(current.trend, current.trendDelta, locale)}`,
       '',
-      scoreBar('Activité', current.activityScore),
-      scoreBar('Engagement', current.engagementScore),
-      scoreBar('Croissance', current.growthScore),
-      scoreBar('Modération', current.moderationScore),
-      scoreBar('Santé', current.healthScore),
+      scoreBar(m.c1_pulse_activity({}, { locale }), current.activityScore),
+      scoreBar(m.c1_pulse_engagement({}, { locale }), current.engagementScore),
+      scoreBar(m.c1_pulse_growth({}, { locale }), current.growthScore),
+      scoreBar(m.c1_pulse_moderation({}, { locale }), current.moderationScore),
+      scoreBar(m.c1_pulse_health({}, { locale }), current.healthScore),
     ].join('\n'),
     separator({ divider: true, spacing: 'small' }),
     [
-      `**${E.messages} Métriques du jour**`,
-      `${E.dot} Messages: **${metrics.totalMessages.toLocaleString('fr-FR')}** · Vocal: **${metrics.totalVoiceMinutes.toLocaleString('fr-FR')} min**`,
-      `${E.dot} Membres actifs: **${metrics.activeMembers}**/${metrics.totalMembers}`,
-      `${E.dot} Arrivées: **+${metrics.membersJoined}** · Départs: **-${metrics.membersLeft}**`,
-      `${E.dot} Sanctions: **${metrics.sanctionsCount}** · Tickets: ${E.success} **${metrics.ticketsResolved}** / ${E.clock} **${metrics.ticketsOpen}**`,
-      `${E.dot} Salons: ${E.online} **${metrics.channelsHealthy}** sains · ${E.dnd} **${metrics.channelsUnhealthy}** à surveiller`,
+      `**${E.messages} ${m.c1_pulse_today_metrics({}, { locale })}**`,
+      `${E.dot} ${m.c1_pulse_messages({}, { locale })}: **${metrics.totalMessages.toLocaleString(localeTag)}** · ${m.c1_pulse_voice({}, { locale })}: **${metrics.totalVoiceMinutes.toLocaleString(localeTag)} ${m.c1_pulse_min({}, { locale })}**`,
+      `${E.dot} ${m.c1_pulse_active_members({}, { locale })}: **${metrics.activeMembers}**/${metrics.totalMembers}`,
+      `${E.dot} ${m.c1_pulse_joins({}, { locale })}: **+${metrics.membersJoined}** · ${m.c1_pulse_leaves({}, { locale })}: **-${metrics.membersLeft}**`,
+      `${E.dot} ${m.c1_pulse_sanctions({}, { locale })}: **${metrics.sanctionsCount}** · ${m.c1_pulse_tickets({}, { locale })}: ${E.success} **${metrics.ticketsResolved}** / ${E.clock} **${metrics.ticketsOpen}**`,
+      `${E.dot} ${m.c1_pulse_channels({}, { locale })}: ${E.online} **${metrics.channelsHealthy}** ${m.c1_pulse_healthy({}, { locale })} · ${E.dnd} **${metrics.channelsUnhealthy}** ${m.c1_pulse_to_watch({}, { locale })}`,
     ].join('\n'),
   ];
 
@@ -73,14 +82,14 @@ async function execute(interaction: ChatInputCommandInteraction) {
     });
     fields.push(
       separator({ divider: true, spacing: 'small' }),
-      `**${E.warning} Alertes**\n${alertLines.join('\n')}`,
+      `**${E.warning} ${m.c1_pulse_alerts({}, { locale })}**\n${alertLines.join('\n')}`,
     );
   }
 
   await interaction.editReply(v2Message(
     kotboContainer({
       color: scoreColor(current.score),
-      title: `${E.stats} Pouls du Serveur`,
+      title: `${E.stats} ${m.c1_pulse_dashboard_title({}, { locale })}`,
       fields,
       footerTitle: 'Pulse',
     }),

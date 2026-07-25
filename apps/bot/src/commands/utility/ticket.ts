@@ -7,79 +7,101 @@ import { buildMemberCasePanel } from '../../services/moderation/memberCaseServic
 import { generateTranscript } from '../../services/features/transcriptService.js';
 import { successEmbed } from '../../utils/embeds.js';
 import { isGuildActivated } from '../../utils/activation.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('c7_ticket');
 
 const data = new SlashCommandBuilder()
-  .setName('ticket')
-  .setDescription('🎫 Gère le ticket en cours')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addSubcommand((subcommand) =>
     subcommand
       .setName('open')
-      .setDescription('Ouvrir un ticket (utilisable en MP)')
+      .setDescription(m.c7_ticket_open_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_open_desc({}, { locale: 'fr' }) })
       .addStringOption((opt) =>
-        opt.setName('serveur').setDescription('ID du serveur (requis en MP)'),
+        opt
+          .setName('serveur')
+          .setDescription(m.c7_ticket_open_opt_serveur_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_open_opt_serveur_desc({}, { locale: 'fr' }) }),
       ),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('claim')
-      .setDescription('Prend en charge le ticket courant')
+      .setDescription(m.c7_ticket_claim_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_claim_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('info')
-      .setDescription('Affiche les informations du membre lié au ticket')
+      .setDescription(m.c7_ticket_info_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_info_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('close')
-      .setDescription('Ferme le ticket courant')
+      .setDescription(m.c7_ticket_close_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_close_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('reopen')
-      .setDescription('Réouvre le ticket courant')
+      .setDescription(m.c7_ticket_reopen_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_reopen_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('delete')
-      .setDescription('Supprime le ticket courant avec transcription')
+      .setDescription(m.c7_ticket_delete_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_delete_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('rename')
-      .setDescription('Renomme le salon du ticket courant')
+      .setDescription(m.c7_ticket_rename_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_rename_desc({}, { locale: 'fr' }) })
       .addStringOption((option) =>
         option
           .setName('nom')
-          .setDescription('Nouveau nom du salon du ticket')
+          .setDescription(m.c7_ticket_rename_opt_nom_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_rename_opt_nom_desc({}, { locale: 'fr' }) })
           .setRequired(true)
       )
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('add')
-      .setDescription('Ajoute un membre ou un rôle au ticket')
+      .setDescription(m.c7_ticket_add_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_add_desc({}, { locale: 'fr' }) })
       .addMentionableOption((option) =>
         option
           .setName('cible')
-          .setDescription('Le membre ou le rôle à ajouter')
+          .setDescription(m.c7_ticket_add_opt_cible_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_add_opt_cible_desc({}, { locale: 'fr' }) })
           .setRequired(true)
       )
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName('remove')
-      .setDescription('Retire un membre ou un rôle du ticket')
+      .setDescription(m.c7_ticket_remove_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_remove_desc({}, { locale: 'fr' }) })
       .addMentionableOption((option) =>
         option
           .setName('cible')
-          .setDescription('Le membre ou le rôle à retirer')
+          .setDescription(m.c7_ticket_remove_opt_cible_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_remove_opt_cible_desc({}, { locale: 'fr' }) })
           .setRequired(true)
       )
   );
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand();
+  const locale = await getEffectiveLocale(interaction);
 
   // ─── /ticket open — fonctionne en DM et en serveur ───────
   if (subcommand === 'open') {
@@ -91,7 +113,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (!guildId || !channel || !(channel instanceof TextChannel)) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée dans un salon de ticket textuel.',
+      content: m.c7_ticket_err_not_text_channel({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -100,7 +122,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   const guildConfig = await prisma.guild.findUnique({ where: { id: guildId } });
   if (!guildConfig) {
     await interaction.reply({
-      content: '❌ Configuration du serveur introuvable.',
+      content: m.c7_ticket_err_no_guild_config({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -115,7 +137,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (!ticket) {
     await interaction.reply({
-      content: "❌ Aucun ticket n'est associé à ce salon.",
+      content: m.c7_ticket_err_no_ticket({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -139,7 +161,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'claim') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent prendre en charge un ticket.',
+        content: m.c7_ticket_claim_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -151,7 +173,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     if (ticket.status === 'CLAIMED') {
       if (!allowOverclaim || overclaimPermission === 'NONE') {
         await interaction.reply({
-          content: `⚠️ Ce ticket est déjà pris en charge par <@${ticket.claimedById}>. La sur-revendication est désactivée.`,
+          content: m.c7_ticket_claim_err_already_claimed({ claimedById: ticket.claimedById ?? '' }, { locale }),
           flags: [MessageFlags.Ephemeral],
         });
         return;
@@ -159,7 +181,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
       if (ticket.claimedById === interaction.user.id) {
         await interaction.reply({
-          content: '⚠️ Vous prenez déjà en charge ce ticket.',
+          content: m.c7_ticket_claim_err_self_claimed({}, { locale }),
           flags: [MessageFlags.Ephemeral],
         });
         return;
@@ -175,7 +197,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
           if (claimantLevel < currentLevel) {
             await interaction.reply({
-              content: '❌ Vous ne pouvez pas sur-revendiquer ce ticket car le grade actuel est supérieur au vôtre.',
+              content: m.c7_ticket_claim_err_insufficient_grade({}, { locale }),
               flags: [MessageFlags.Ephemeral],
             });
             return;
@@ -194,11 +216,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     });
 
     await channel.send({
-      embeds: [successEmbed('Pris en charge', `Ce ticket est désormais pris en charge par <@${interaction.user.id}>.`)],
+      embeds: [successEmbed(m.c7_ticket_claim_embed_title({}, { locale }), m.c7_ticket_claim_embed_desc({ userId: interaction.user.id }, { locale }))],
     }).catch(() => null);
 
     await interaction.reply({
-      content: '✅ Ticket pris en charge.',
+      content: m.c7_ticket_claim_success({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -207,7 +229,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'info') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent consulter cette fiche.',
+        content: m.c7_ticket_info_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -224,7 +246,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       });
     } catch {
       await interaction.editReply({
-        content: '❌ Impossible de générer la fiche du membre.',
+        content: m.c7_ticket_info_err_failed({}, { locale }),
       });
     }
     return;
@@ -233,7 +255,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'close') {
     if (!isOpener && !isStaff) {
       await interaction.reply({
-        content: "❌ Vous n'avez pas la permission de fermer ce ticket.",
+        content: m.c7_ticket_close_err_no_permission({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -241,7 +263,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (ticket.status === 'CLOSED') {
       await interaction.reply({
-        content: '⚠️ Le ticket est déjà fermé.',
+        content: m.c7_ticket_close_err_already_closed({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -250,7 +272,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await closeTicket(interaction.client, ticket.id, interaction.user.id, interaction.user.username);
 
     await interaction.reply({
-      content: '✅ Ticket fermé.',
+      content: m.c7_ticket_close_success({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -259,7 +281,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'reopen') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent réouvrir un ticket.',
+        content: m.c7_ticket_reopen_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -267,7 +289,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (ticket.status !== 'CLOSED') {
       await interaction.reply({
-        content: "⚠️ Le ticket n'est pas fermé.",
+        content: m.c7_ticket_reopen_err_not_closed({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -292,11 +314,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     await renameChannelToOpen(interaction.client, channel.id).catch(() => null);
 
     await channel.send({
-      embeds: [successEmbed('Ticket Réouvert', `Le ticket a été réouvert par <@${interaction.user.id}>.`)],
+      embeds: [successEmbed(m.c7_ticket_reopen_embed_title({}, { locale }), m.c7_ticket_reopen_embed_desc({ userId: interaction.user.id }, { locale }))],
     }).catch(() => null);
 
     await interaction.reply({
-      content: '✅ Ticket réouvert.',
+      content: m.c7_ticket_reopen_success({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -305,7 +327,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'delete') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent supprimer un ticket.',
+        content: m.c7_ticket_delete_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -332,11 +354,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       const publicLink = `${dashboardUrl}/transcripts/${transcriptData.id}`;
 
       await channel.send({
-        embeds: [successEmbed('Transcription créée', `Le transcript est disponible ici : ${publicLink}`)],
+        embeds: [successEmbed(m.c7_ticket_delete_embed_title({}, { locale }), m.c7_ticket_delete_embed_desc({ link: publicLink }, { locale }))],
       }).catch(() => null);
 
       await interaction.editReply({
-        content: `✅ Ticket supprimé. Transcript : ${publicLink}`,
+        content: m.c7_ticket_delete_success({ link: publicLink }, { locale }),
       });
 
       setTimeout(async () => {
@@ -344,7 +366,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       }, 3000);
     } catch (error: unknown) {
       await interaction.editReply({
-        content: `❌ Impossible de supprimer le ticket : ${errorMessage(error) || 'erreur inconnue'}`,
+        content: m.c7_ticket_delete_err_failed({ error: errorMessage(error) || m.c7_ticket_unknown_error({}, { locale }) }, { locale }),
       });
     }
     return;
@@ -353,7 +375,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'add') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent gérer les accès du ticket.',
+        content: m.c7_ticket_access_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -364,7 +386,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (!targetId) {
       await interaction.reply({
-        content: '❌ Cible invalide.',
+        content: m.c7_ticket_err_invalid_target({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -385,16 +407,16 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       const mentionString = isRole ? `<@&${targetId}>` : `<@${targetId}>`;
 
       await channel.send({
-        embeds: [successEmbed('Accès ajouté', `${mentionString} a été ajouté au ticket par <@${interaction.user.id}>.`)],
+        embeds: [successEmbed(m.c7_ticket_add_embed_title({}, { locale }), m.c7_ticket_add_embed_desc({ mention: mentionString, userId: interaction.user.id }, { locale }))],
       }).catch(() => null);
 
       await interaction.editReply({
-        content: `✅ Accès accordé à ${mentionString}.`,
+        content: m.c7_ticket_add_success({ mention: mentionString }, { locale }),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'erreur inconnue';
+      const message = error instanceof Error ? error.message : m.c7_ticket_unknown_error({}, { locale });
       await interaction.editReply({
-        content: `❌ Impossible d'ajouter la cible : ${message}`,
+        content: m.c7_ticket_add_err_failed({ error: message }, { locale }),
       });
     }
     return;
@@ -403,7 +425,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
   if (subcommand === 'remove') {
     if (!isStaff) {
       await interaction.reply({
-        content: '❌ Seuls les membres du personnel peuvent gérer les accès du ticket.',
+        content: m.c7_ticket_access_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -414,7 +436,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (!targetId) {
       await interaction.reply({
-        content: '❌ Cible invalide.',
+        content: m.c7_ticket_err_invalid_target({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -422,7 +444,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     if (targetId === ticket.userId) {
       await interaction.reply({
-        content: '❌ Vous ne pouvez pas retirer le créateur du ticket.',
+        content: m.c7_ticket_remove_err_owner({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -437,16 +459,16 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       const mentionString = isRole ? `<@&${targetId}>` : `<@${targetId}>`;
 
       await channel.send({
-        embeds: [successEmbed('Accès retiré', `${mentionString} a été retiré du ticket par <@${interaction.user.id}>.`)],
+        embeds: [successEmbed(m.c7_ticket_remove_embed_title({}, { locale }), m.c7_ticket_remove_embed_desc({ mention: mentionString, userId: interaction.user.id }, { locale }))],
       }).catch(() => null);
 
       await interaction.editReply({
-        content: `✅ Accès retiré pour ${mentionString}.`,
+        content: m.c7_ticket_remove_success({ mention: mentionString }, { locale }),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'erreur inconnue';
+      const message = error instanceof Error ? error.message : m.c7_ticket_unknown_error({}, { locale });
       await interaction.editReply({
-        content: `❌ Impossible de retirer la cible : ${message}`,
+        content: m.c7_ticket_remove_err_failed({ error: message }, { locale }),
       });
     }
     return;
@@ -454,7 +476,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (subcommand !== 'rename') {
     await interaction.reply({
-      content: '❌ Sous-commande inconnue.',
+      content: m.c7_ticket_err_unknown_subcommand({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -462,7 +484,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
   if (!canRename) {
     await interaction.reply({
-      content: "❌ Vous n'avez pas la permission de renommer ce ticket.",
+      content: m.c7_ticket_rename_err_no_permission({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -485,16 +507,17 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     );
 
     await interaction.editReply({
-      content: `✅ Le ticket a été renommé en **#${finalName}**.`,
+      content: m.c7_ticket_rename_success({ name: finalName }, { locale }),
     });
   } catch (error: unknown) {
     await interaction.editReply({
-      content: `❌ Impossible de renommer le ticket : ${errorMessage(error) || 'erreur inconnue'}`,
+      content: m.c7_ticket_rename_err_failed({ error: errorMessage(error) || m.c7_ticket_unknown_error({}, { locale }) }, { locale }),
     });
   }
 }
 
 async function handleOpen(interaction: ChatInputCommandInteraction): Promise<void> {
+  const locale = await getEffectiveLocale(interaction);
   const isDM = !interaction.guildId;
   const explicitGuildId = interaction.options.getString('serveur');
 
@@ -510,7 +533,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
 
       if (activatedGuilds.length === 0) {
         await interaction.reply({
-          content: '❌ Aucun serveur trouvé. Précisez l\'ID du serveur avec l\'option `serveur`.',
+          content: m.c7_ticket_open_err_no_guild_found({}, { locale }),
           flags: [MessageFlags.Ephemeral],
         });
         return;
@@ -522,18 +545,18 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
         const options = activatedGuilds.slice(0, 25).map((g) => ({
           label: g.name.slice(0, 100),
           value: g.id,
-          description: `${g.memberCount} membres`,
+          description: m.c7_ticket_open_select_option_desc({ count: g.memberCount }, { locale }),
         }));
 
         const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId('ticket:dm_guild_select')
-            .setPlaceholder('Choisir un serveur')
+            .setPlaceholder(m.c7_ticket_open_select_placeholder({}, { locale }))
             .addOptions(options),
         );
 
         await interaction.reply({
-          content: '🎫 Sur quel serveur souhaitez-vous ouvrir un ticket ?',
+          content: m.c7_ticket_open_select_prompt({}, { locale }),
           components: [selectRow],
           flags: [MessageFlags.Ephemeral],
         });
@@ -549,7 +572,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
   const guild = interaction.client.guilds.cache.get(targetGuildId!);
   if (!guild) {
     await interaction.reply({
-      content: '❌ Le bot n\'est pas présent sur ce serveur.',
+      content: m.c7_ticket_open_err_bot_not_present({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -558,7 +581,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
   const guildConfig = await prisma.guild.findUnique({ where: { id: targetGuildId! } });
   if (!guildConfig) {
     await interaction.reply({
-      content: '❌ Ce serveur n\'est pas configuré.',
+      content: m.c7_ticket_open_err_guild_not_configured({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -574,7 +597,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
 
   if (existingTicket) {
     await interaction.reply({
-      content: `⚠️ Vous avez déjà un ticket ouvert sur **${guild.name}**.`,
+      content: m.c7_ticket_open_err_existing_ticket({ guildName: guild.name }, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -582,21 +605,21 @@ async function handleOpen(interaction: ChatInputCommandInteraction): Promise<voi
 
   const modal = new ModalBuilder()
     .setCustomId(`modal:ticket:open:dm_direct:${targetGuildId}`)
-    .setTitle(`Ticket · ${guild.name}`.slice(0, 45));
+    .setTitle(m.c7_ticket_open_modal_title({ guildName: guild.name }, { locale }).slice(0, 45));
 
   const reasonInput = new TextInputBuilder()
     .setCustomId('reason')
-    .setLabel('Sujet du ticket')
+    .setLabel(m.c7_ticket_open_modal_reason_label({}, { locale }))
     .setStyle(TextInputStyle.Short)
-    .setPlaceholder('Ex: Problème de rôles')
+    .setPlaceholder(m.c7_ticket_open_modal_reason_placeholder({}, { locale }))
     .setMaxLength(100)
     .setRequired(true);
 
   const descInput = new TextInputBuilder()
     .setCustomId('description')
-    .setLabel('Description détaillée')
+    .setLabel(m.c7_ticket_open_modal_desc_label({}, { locale }))
     .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('Décrivez votre problème en détail...')
+    .setPlaceholder(m.c7_ticket_open_modal_desc_placeholder({}, { locale }))
     .setMaxLength(1000)
     .setRequired(true);
 

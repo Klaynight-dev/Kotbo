@@ -5,6 +5,7 @@
   import { updateModuleStatus } from '../api';
   import { createAsyncActionState } from '../asyncAction.svelte';
   import InlineFeedback from './InlineFeedback.svelte';
+  import { m } from '../i18n';
 
   let { 
     title = '', 
@@ -27,10 +28,10 @@
     
     await saveAction.run(async () => {
       const ok = await updateModuleStatus(featureKey, newStatus);
-      if (!ok) throw new Error('Erreur API');
+      if (!ok) throw new Error(m.d7_api_error());
       await dashboardStore.refresh();
       return true;
-    }, { successMessage: `Module ${newStatus === 'active' ? 'activé' : 'désactivé'}.` });
+    }, { successMessage: newStatus === 'active' ? m.d7_module_enabled() : m.d7_module_disabled() });
   }
 </script>
 
@@ -60,7 +61,7 @@
         <div class="h-8 w-px bg-outline-variant/20 mx-1 hidden md:block"></div>
         <div class="flex items-center gap-2.5 px-3 py-1.5 bg-surface-container-low/40 rounded-lg border border-outline-variant/10">
           <span class="text-xs font-medium {isModuleEnabled ? 'text-primary' : 'text-on-surface-variant/40'}">
-            {isModuleEnabled ? 'Activé' : 'Désactivé'}
+            {isModuleEnabled ? m.d7_enabled() : m.d7_disabled()}
           </span>
           <ToggleSwitch
             checked={isModuleEnabled}

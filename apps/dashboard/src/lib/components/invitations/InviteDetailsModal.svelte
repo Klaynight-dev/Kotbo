@@ -16,6 +16,7 @@
     purgeInviterMembers,
     deleteInvitation
   } from '../../api';
+  import { m } from '../../i18n';
 
   let details = $state<any>(null);
   let loading = $state(false);
@@ -52,7 +53,7 @@
       const daysValue = Number(days) || 30;
       details = await fetchInvitationDetails(inviteCode, { days: daysValue });
     } catch (err: any) {
-      error = err?.message || 'Erreur lors du chargement des détails.';
+      error = err?.message || m.d7_inv_load_error();
       details = null;
     } finally {
       loading = false;
@@ -64,7 +65,7 @@
   }
 
   function formatDate(value: string | null | undefined) {
-    if (!value) return 'Jamais';
+    if (!value) return m.d7_never();
     return new Date(value).toLocaleDateString('fr-FR', {
       day: '2-digit',
       month: 'short',
@@ -73,7 +74,7 @@
   }
 
   function formatDateTime(value: string | null | undefined) {
-    if (!value) return 'Inconnu';
+    if (!value) return m.d7_unknown();
     return new Date(value).toLocaleString('fr-FR');
   }
 
@@ -81,50 +82,50 @@
     if (!details?.invite) return;
     try {
       await toggleInvitationSuspension(details.invite.code, !details.invite.isSuspended);
-      toast.success(details.invite.isSuspended ? 'Invitation restaurée.' : 'Invitation suspendue.');
+      toast.success(details.invite.isSuspended ? m.d7_inv_restored() : m.d7_inv_suspended());
       await loadDetails();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la modification.');
+      toast.error(err?.message || m.d7_inv_modify_error());
     }
   }
 
   async function purgeInvite() {
     if (!details?.invite) return;
-    const ok = await confirmDialog.danger(`Purger les membres invités via ${details.invite.code} ?`, '', 'Purger');
+    const ok = await confirmDialog.danger(m.d7_inv_purge_confirm({ code: details.invite.code }), '', m.d7_purge());
     if (!ok) return;
     try {
       const result = await purgeInvitationMembers(details.invite.code);
-      toast.success(`Purge terminée (${result?.purgedCount ?? 0} exclus).`);
+      toast.success(m.d7_inv_purge_done({ count: result?.purgedCount ?? 0 }));
       await loadDetails();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la purge.');
+      toast.error(err?.message || m.d7_inv_purge_error());
     }
   }
 
   async function purgeInviter() {
     const inviterId = details?.invite?.inviterId;
     if (!inviterId) return;
-    const ok = await confirmDialog.danger('Purger en cascade ?', 'Tous les membres invités par ce créateur seront purgés.', 'Purger');
+    const ok = await confirmDialog.danger(m.d7_inv_cascade_confirm(), m.d7_inv_cascade_desc(), m.d7_purge());
     if (!ok) return;
     try {
       const result = await purgeInviterMembers(inviterId);
-      toast.success(`Purge cascade terminée (${result?.purgedCount ?? 0} exclus).`);
+      toast.success(m.d7_inv_cascade_done({ count: result?.purgedCount ?? 0 }));
       await loadDetails();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la purge cascade.');
+      toast.error(err?.message || m.d7_inv_cascade_error());
     }
   }
 
   async function deleteInvite() {
     if (!details?.invite) return;
-    const ok = await confirmDialog.danger(`Supprimer l'invitation ${details.invite.code} ?`, 'Cette suppression est définitive.');
+    const ok = await confirmDialog.danger(m.d7_inv_delete_confirm({ code: details.invite.code }), m.d7_inv_delete_permanent());
     if (!ok) return;
     try {
       await deleteInvitation(details.invite.code);
-      toast.success('Invitation supprimée.');
+      toast.success(m.d7_inv_deleted());
       closeModal();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la suppression.');
+      toast.error(err?.message || m.d7_inv_delete_error());
     }
   }
 
@@ -132,8 +133,8 @@
     if (!details?.invite?.code) return;
     const link = `https://discord.gg/${details.invite.code}`;
     navigator.clipboard.writeText(link)
-      .then(() => toast.success('Lien copié.'))
-      .catch(() => toast.warning('Impossible de copier le lien.'));
+      .then(() => toast.success(m.d7_inv_link_copied()))
+      .catch(() => toast.warning(m.d7_inv_link_copy_fail()));
   }
 
   function openMember(userId: string) {
@@ -153,7 +154,7 @@
         labels,
         datasets: [
           {
-            label: 'Arrivees',
+            label: m.d7_inv_arrivals(),
             data: trend.counts || [],
             borderColor: 'var(--color-emerald-500)',
             backgroundColor: 'transparent',
@@ -180,7 +181,7 @@
     use:portal
     class="modal-backdrop"
     role="button"
-    aria-label="Fermer la vue invitation"
+    aria-label={m.d7_inv_close_view()}
     tabindex="0"
     onclick={(e) => e.currentTarget === e.target && closeModal()}
     onkeydown={(e) => {
@@ -194,8 +195,8 @@
     <div class="modal-panel modal-panel-xl space-y-0 p-0 font-body">
       <div class="p-6 border-b border-outline-variant/30 flex items-center justify-between">
         <div>
-          <h3 class="text-2xl font-semibold">Invitation {inviteCode}</h3>
-          <p class="text-sm text-on-surface-variant">Vue modération centralisée</p>
+          <h3 class="text-2xl font-semibold">{m.d7_inv_title({ code: inviteCode })}</h3>
+          <p class="text-sm text-on-surface-variant">{m.d7_inv_moderation_view()}</p>
         </div>
         <button
           type="button"
@@ -210,7 +211,7 @@
         {#if loading}
           <div class="flex items-center justify-center py-12 gap-3 text-on-surface-variant/60">
             <div class="h-6 w-6 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-            <span class="text-sm font-bold">Chargement des détails...</span>
+            <span class="text-sm font-bold">{m.d7_inv_loading_details()}</span>
           </div>
         {:else if error}
           <div class="p-4 rounded-lg bg-red-500/10 text-red-500 text-sm font-bold">{error}</div>
@@ -224,14 +225,14 @@
                     <Papicon icon="TrendingUp" size={18} />
                   </div>
                   <div>
-                    <h4 class="text-sm font-semibold uppercase tracking-widest text-on-surface-variant/60">TENDANCE DES JOINS</h4>
-                    <p class="text-xs text-on-surface-variant/40">Évolution sur la période sélectionnée</p>
+                    <h4 class="text-sm font-semibold uppercase tracking-widest text-on-surface-variant/60">{m.d7_inv_joins_trend()}</h4>
+                    <p class="text-xs text-on-surface-variant/40">{m.d7_inv_period_evolution()}</p>
                   </div>
                 </div>
                 <select bind:value={days} onchange={loadDetails} class="px-3 py-2 rounded-xl bg-surface-container-high/40 text-xs font-bold border border-outline-variant/20">
-                  <option value="7">7 jours</option>
-                  <option value="30">30 jours</option>
-                  <option value="90">90 jours</option>
+                  <option value="7">{m.d7_inv_days_7()}</option>
+                  <option value="30">{m.d7_inv_days_30()}</option>
+                  <option value="90">{m.d7_inv_days_90()}</option>
                 </select>
               </div>
               <div class="h-56">
@@ -239,7 +240,7 @@
                   <Chart data={trendData.data} options={trendData.options} type="line" height={200} />
                 {:else}
                   <div class="flex items-center justify-center h-full text-on-surface-variant/60 text-sm">
-                    Aucune donnée disponible
+                    {m.d7_inv_no_data_available()}
                   </div>
                 {/if}
               </div>
@@ -248,20 +249,20 @@
             <div class="premium-card p-5 rounded-xl space-y-4">
               <div class="grid grid-cols-1 gap-4">
                 <div>
-                  <p class="text-xs font-medium text-on-surface-variant/50">JOINS</p>
+                  <p class="text-xs font-medium text-on-surface-variant/50">{m.d7_inv_joins()}</p>
                   <p class="text-lg font-semibold text-emerald-500">{details.trend?.totalJoined ?? 0}</p>
                 </div>
                 <div>
-                  <p class="text-xs font-medium text-on-surface-variant/50">DEPARTS</p>
+                  <p class="text-xs font-medium text-on-surface-variant/50">{m.d7_inv_departures()}</p>
                   <p class="text-lg font-semibold text-orange-500">{details.trend?.totalLeft ?? 0}</p>
                 </div>
                 <div>
-                  <p class="text-xs font-medium text-on-surface-variant/50">RESTANTS</p>
+                  <p class="text-xs font-medium text-on-surface-variant/50">{m.d7_inv_remaining()}</p>
                   <p class="text-lg font-semibold text-cyan-500">{details.trend?.totalStayed ?? 0}</p>
                 </div>
                 <div class="pt-2 border-t border-outline-variant/10">
-                  <p class="text-xs font-medium text-on-surface-variant/50">EXPIRE</p>
-                  <p class="text-sm font-bold text-on-surface-variant/70">{details.invite?.expiresAt ? formatDate(details.invite.expiresAt) : 'Jamais'}</p>
+                  <p class="text-xs font-medium text-on-surface-variant/50">{m.d7_inv_expires()}</p>
+                  <p class="text-sm font-bold text-on-surface-variant/70">{details.invite?.expiresAt ? formatDate(details.invite.expiresAt) : m.d7_never()}</p>
                 </div>
               </div>
             </div>
@@ -274,32 +275,32 @@
                 <div class="p-2 rounded-xl bg-surface-container-high/40 text-on-surface-variant">
                   <Papicon icon="Info" size={18} />
                 </div>
-                <h4 class="text-sm font-semibold">META</h4>
+                <h4 class="text-sm font-semibold">{m.d7_inv_meta()}</h4>
               </div>
               <div class="space-y-2">
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Créée le</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_created_on()}</span>
                   <span class="font-bold text-on-surface">{formatDate(details.invite?.createdAt)}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Uses</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_uses()}</span>
                   <span class="font-bold text-on-surface">{details.invite?.uses ?? 0}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Max</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_max()}</span>
                   <span class="font-bold text-on-surface">{details.invite?.maxUses ?? '∞'}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Temporaire</span>
-                  <span class="font-bold {details.invite?.isTemporary ? 'text-amber-500' : 'text-on-surface-variant/70'}">{details.invite?.isTemporary ? 'Oui' : 'Non'}</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_temporary()}</span>
+                  <span class="font-bold {details.invite?.isTemporary ? 'text-amber-500' : 'text-on-surface-variant/70'}">{details.invite?.isTemporary ? m.d7_yes() : m.d7_no()}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Suspendue</span>
-                  <span class="font-bold {details.invite?.isSuspended ? 'text-amber-500' : 'text-on-surface-variant/70'}">{details.invite?.isSuspended ? 'Oui' : 'Non'}</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_suspended_label()}</span>
+                  <span class="font-bold {details.invite?.isSuspended ? 'text-amber-500' : 'text-on-surface-variant/70'}">{details.invite?.isSuspended ? m.d7_yes() : m.d7_no()}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Supprimée</span>
-                  <span class="font-bold {details.invite?.isDeleted ? 'text-red-500' : 'text-on-surface-variant/70'}">{details.invite?.isDeleted ? 'Oui' : 'Non'}</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_deleted_label()}</span>
+                  <span class="font-bold {details.invite?.isDeleted ? 'text-red-500' : 'text-on-surface-variant/70'}">{details.invite?.isDeleted ? m.d7_yes() : m.d7_no()}</span>
                 </div>
               </div>
             </div>
@@ -309,21 +310,21 @@
                 <div class="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
                   <Papicon icon="User" size={18} />
                 </div>
-                <h4 class="text-sm font-semibold">CRÉATEUR</h4>
+                <h4 class="text-sm font-semibold">{m.d7_inv_creator()}</h4>
               </div>
               <div class="space-y-2">
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">Tag</span>
-                  <span class="font-bold text-on-surface">{details.invite?.inviterTag || 'Inconnu'}</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_tag()}</span>
+                  <span class="font-bold text-on-surface">{details.invite?.inviterTag || m.d7_unknown()}</span>
                 </div>
                 <div class="flex justify-between text-xs">
-                  <span class="text-on-surface-variant/60">ID</span>
+                  <span class="text-on-surface-variant/60">{m.d7_inv_id()}</span>
                   <span class="font-bold text-on-surface font-mono text-xs">{details.invite?.inviterId || '—'}</span>
                 </div>
               </div>
               {#if canModerate && details.invite?.inviterId}
                 <div class="mt-2">
-                  <ActionButton label="PURGER EN CASCADE" icon="Trash" size="md" variant="danger" onClick={purgeInviter} />
+                  <ActionButton label={m.d7_inv_purge_cascade_btn()} icon="Trash" size="md" variant="danger" onClick={purgeInviter} />
                 </div>
               {/if}
             </div>
@@ -333,20 +334,20 @@
                 <div class="p-2 rounded-xl bg-primary/10 text-primary">
                   <Papicon icon="Settings" size={18} />
                 </div>
-                <h4 class="text-sm font-semibold">ACTIONS</h4>
+                <h4 class="text-sm font-semibold">{m.d7_inv_actions()}</h4>
               </div>
               <div class="space-y-2">
-                <ActionButton label="COPIER LIEN" icon="Copy" size="md" variant="muted" onClick={copyInvite} />
+                <ActionButton label={m.d7_inv_copy_link()} icon="Copy" size="md" variant="muted" onClick={copyInvite} />
                 {#if canModerate}
                   <ActionButton
-                    label={details.invite?.isSuspended ? 'RESTAURER' : 'SUSPENDRE'}
+                    label={details.invite?.isSuspended ? m.d7_inv_restore_btn() : m.d7_inv_suspend_btn()}
                     icon={details.invite?.isSuspended ? 'Play' : 'Pause'}
                     size="md"
                     variant={details.invite?.isSuspended ? 'success' : 'muted'}
                     onClick={toggleSuspend}
                   />
-                  <ActionButton label="PURGER" icon="Trash" size="md" variant="danger" onClick={purgeInvite} />
-                  <ActionButton label="SUPPRIMER" icon="X" size="md" variant="danger" onClick={deleteInvite} />
+                  <ActionButton label={m.d7_inv_purge_btn()} icon="Trash" size="md" variant="danger" onClick={purgeInvite} />
+                  <ActionButton label={m.d7_inv_delete_btn()} icon="X" size="md" variant="danger" onClick={deleteInvite} />
                 {/if}
               </div>
             </div>
@@ -360,11 +361,11 @@
                   <Papicon icon="Users" size={18} />
                 </div>
                 <div>
-                  <h4 class="text-sm font-semibold">PERSONNES INVITÉES</h4>
-                  <p class="text-xs text-on-surface-variant/60">Cliquez pour ouvrir la fiche membre</p>
+                  <h4 class="text-sm font-semibold">{m.d7_inv_invited_people()}</h4>
+                  <p class="text-xs text-on-surface-variant/60">{m.d7_inv_click_to_open()}</p>
                 </div>
               </div>
-              <span class="px-3 py-1 rounded-full text-xs font-semibold bg-surface-container-high/40 text-on-surface-variant/70">{details.joins?.length ?? 0} entrées</span>
+              <span class="px-3 py-1 rounded-full text-xs font-semibold bg-surface-container-high/40 text-on-surface-variant/70">{m.d7_inv_entries({ count: details.joins?.length ?? 0 })}</span>
             </div>
 
             <div class="space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
@@ -381,16 +382,16 @@
                     </div>
                   </div>
                   <div class="text-right">
-                    <p class="text-xs font-medium text-on-surface-variant/40">Statut</p>
+                    <p class="text-xs font-medium text-on-surface-variant/40">{m.d7_inv_status()}</p>
                     <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-semibold {join.leftAt ? 'bg-red-500/10 text-red-500' : 'bg-emerald-500/10 text-emerald-500'}">
-                      {join.leftAt ? 'Parti' : 'Présent'}
+                      {join.leftAt ? m.d7_inv_left() : m.d7_inv_present()}
                     </span>
                   </div>
                 </button>
               {/each}
               {#if (details.joins?.length ?? 0) === 0}
                 <div class="text-center py-8 text-on-surface-variant/60 text-sm">
-                  Aucune personne invitée pour le moment
+                  {m.d7_inv_no_invited()}
                 </div>
               {/if}
             </div>

@@ -11,21 +11,29 @@ import {
 import { errorEmbed } from '../../utils/embeds.js';
 import { renderPanelTarget } from '../../utils/interactionResponses.js';
 import { buildMemberCasePanel } from '../../services/moderation/memberCaseService.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_casier');
 
 const data = new SlashCommandBuilder()
-  .setName('casier')
-  .setDescription('📁 Ouvre le casier utilisateur complet')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
   .addSubcommand((sub) =>
     sub
       .setName('voir')
-      .setDescription("Affiche le casier d'un membre ou d'un ID Discord")
-      .addUserOption((option) => option.setName('membre').setDescription('Membre à consulter').setRequired(false))
-      .addStringOption((option) => option.setName('id').setDescription("ID Discord à consulter si le membre n'est plus présent").setRequired(false)),
+      .setDescription(m.b5_casier_voir_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_casier_voir_desc({}, { locale: 'fr' }) })
+      .addUserOption((option) => option.setName('membre').setDescription(m.b5_casier_opt_member({}, { locale: 'en' })).setDescriptionLocalizations({ fr: m.b5_casier_opt_member({}, { locale: 'fr' }) }).setRequired(false))
+      .addStringOption((option) => option.setName('id').setDescription(m.b5_casier_opt_id({}, { locale: 'en' })).setDescriptionLocalizations({ fr: m.b5_casier_opt_id({}, { locale: 'fr' }) }).setRequired(false)),
   );
 
 const contextData = new ContextMenuCommandBuilder()
-  .setName('Voir le Casier')
+  .setName(m.b5_casier_context_name({}, { locale: 'en' }))
+  .setNameLocalizations({ fr: m.b5_casier_context_name({}, { locale: 'fr' }) })
   .setType(ApplicationCommandType.User)
   .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers);
 
@@ -43,6 +51,7 @@ async function replyError(interaction: ChatInputCommandInteraction, title: strin
 
 async function execute(interaction: ChatInputCommandInteraction | UserContextMenuCommandInteraction): Promise<void> {
   if (!interaction.inCachedGuild()) return;
+  const locale = await getEffectiveLocale(interaction);
 
   const targetUserId = interaction.isChatInputCommand()
     ? (interaction.options.getUser('membre', false)?.id ?? (interaction.options.getString('id', false) ? extractUserId(interaction.options.getString('id', false)!) : null))
@@ -50,7 +59,7 @@ async function execute(interaction: ChatInputCommandInteraction | UserContextMen
 
   if (!targetUserId) {
     if (interaction.isChatInputCommand()) {
-      await replyError(interaction, 'Cible manquante', 'Indique un membre ou un ID Discord valide.');
+      await replyError(interaction, m.b5_casier_missing_target_title({}, { locale }), m.b5_casier_missing_target_desc({}, { locale }));
     }
     return;
   }
@@ -66,7 +75,7 @@ async function execute(interaction: ChatInputCommandInteraction | UserContextMen
     });
   } catch (error) {
     await renderPanelTarget(interaction, {
-      embeds: [errorEmbed('Casier indisponible', error instanceof Error ? error.message : 'Impossible de charger le casier.')],
+      embeds: [errorEmbed(m.b5_casier_unavailable_title({}, { locale }), error instanceof Error ? error.message : m.b5_casier_load_error({}, { locale }))],
       flags: [MessageFlags.Ephemeral],
     });
   }

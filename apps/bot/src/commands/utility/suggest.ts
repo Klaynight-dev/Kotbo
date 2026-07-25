@@ -2,22 +2,30 @@ import { errorMessage } from '../../utils/errors.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { SlashCommandBuilder, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { createSuggestion } from '../../services/features/suggestionService.js';
+import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import * as m from '../../lib/paraglide/messages.js';
+
+const meta = getCommandMetadata('b5_suggest');
 
 const data = new SlashCommandBuilder()
-  .setName('suggest')
-  .setDescription('💡 Soumettre une suggestion ou une idée pour le serveur')
+  .setName(meta.name)
+  .setNameLocalizations(meta.nameLocalizations)
+  .setDescription(meta.description)
+  .setDescriptionLocalizations(meta.descriptionLocalizations)
   .addStringOption((o) =>
     o
       .setName('suggestion')
-      .setDescription('Votre idée ou suggestion détaillée')
+      .setDescription(m.b5_suggest_option_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.b5_suggest_option_desc({}, { locale: 'fr' }) })
       .setRequired(true)
   );
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
+  const locale = await getEffectiveLocale(interaction);
   if (!guildId) {
     await interaction.reply({
-      content: '❌ Cette commande doit être utilisée sur un serveur.',
+      content: m.b5_guild_only({}, { locale }),
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -35,9 +43,9 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       content,
       interaction.client
     );
-    await interaction.editReply(`💡 Votre suggestion a été publiée avec succès ! (ID : \`${suggestion.id}\`)`);
+    await interaction.editReply(m.b5_suggest_success({ id: suggestion.id }, { locale }));
   } catch (err: unknown) {
-    await interaction.editReply(`❌ Impossible de publier la suggestion : ${errorMessage(err) || 'erreur inconnue'}`);
+    await interaction.editReply(m.b5_suggest_error({ error: errorMessage(err) || m.b5_unknown_error({}, { locale }) }, { locale }));
   }
 }
 
