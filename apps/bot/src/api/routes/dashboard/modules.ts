@@ -4256,6 +4256,8 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
           channelId: null
         });
 
+        broadcastDashboardStateChange(guildId, 'daily_algo_problems_updated');
+
         json(res, 201, problem);
       } catch (err) {
         logger.error('DailyAlgoAPI', 'Error creating daily algo problem:', err);
@@ -4327,6 +4329,8 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
           channelId: null
         });
 
+        broadcastDashboardStateChange(guildId, 'daily_algo_problems_updated');
+
         json(res, 200, updated);
       } catch (err) {
         logger.error('DailyAlgoAPI', `Error updating daily algo problem ${problemId}:`, err);
@@ -4369,6 +4373,8 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
           details: `Exercice "${existing.title}" supprimé.`,
           channelId: null
         });
+
+        broadcastDashboardStateChange(guildId, 'daily_algo_problems_updated');
 
         json(res, 200, { success: true });
       } catch (err) {
@@ -4777,6 +4783,7 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
         const parsedDaysForward = Number(body?.daysForward ?? url.searchParams.get('daysForward') ?? '21');
         const daysForward = Number.isFinite(parsedDaysForward) ? parsedDaysForward : 21;
         const result = await ensureDailyAlgoScheduleRuns(guildId, daysForward);
+        broadcastDashboardStateChange(guildId, 'daily_algo_schedule_updated');
         json(res, 200, { ok: true, ...result });
       } catch (err) {
         logger.error('DailyAlgoAPI', 'Erreur lors de la génération du planning Daily Algo:', err);
@@ -4869,8 +4876,6 @@ function verifyMagicBytes(buffer: Buffer, mimeType: string): boolean {
           details: `Semaine ${result.weekKey} clôturée : ${result.participants} participant(s), ${result.xpGranted} XP versée, ${result.rolesAssigned} rôle(s) attribué(s).`,
           channelId: null,
         });
-
-        broadcastDashboardStateChange(guildId, 'daily_algo_week_closed');
 
         json(res, 200, { ok: true, ...result });
       } catch (err) {

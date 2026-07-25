@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { COLORS, truncate } from '../../utils/embeds.js';
 import { addXp } from './levelingService.js';
 import { getGuildDailyAlgoRanking } from './dailyAlgoService.js';
+import { broadcastDashboardStateChange } from '../../api/shared.js';
 import {
   convertToClanPoints,
   formatWeekRangeLabel,
@@ -430,6 +431,7 @@ export async function closeDailyAlgoWeek(params: {
     });
 
     logger.info('DailyAlgoWeek', `Semaine ${weekKey} clôturée pour ${params.guildId} sans récompenses (option désactivée).`);
+    broadcastDashboardStateChange(params.guildId, 'daily_algo_week_closed');
     return {
       status: isResuming ? 'resumed' : 'closed',
       weekKey,
@@ -475,6 +477,8 @@ export async function closeDailyAlgoWeek(params: {
     'DailyAlgoWeek',
     `Semaine ${weekKey} clôturée pour ${params.guildId} : ${ranking.length} participant(s), ${xpGranted} XP, ${rolesAssigned} rôle(s), ${clanPointsGranted} point(s) de clan.`,
   );
+
+  broadcastDashboardStateChange(params.guildId, 'daily_algo_week_closed');
 
   return {
     status: isResuming ? 'resumed' : 'closed',

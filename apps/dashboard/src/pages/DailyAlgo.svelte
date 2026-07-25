@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import {
     API_BASE_URL,
@@ -184,7 +184,9 @@
   let loadingConfig = $state(false);
 
   // ── Semaine compétitive & administration ────────────────────────────────────
-  let activeTab = $state<'defis' | 'semaine' | 'admin'>('defis');
+  // `bareme` regroupe tout ce qui pilote les points (barème, podium, clans) ;
+  // `admin` ne garde que les gestes d'exploitation (clôture, sanctions).
+  let activeTab = $state<'defis' | 'semaine' | 'bareme' | 'admin'>('defis');
   let currentWeek = $state<any | null>(null);
   let weekHistory = $state<any[]>([]);
   let isFetchingWeek = $state(false);
@@ -299,8 +301,13 @@
       const ok = await updateGlobalSettings({ ...weekSettings });
       if (!ok) return false;
 
-      await dashboardStore.refresh();
-      syncWeekSettingsFromStore();
+      // L'enregistrement est acquis dès que le PATCH répond. Le rafraîchissement
+      // complet de l'état de guilde (salons, rôles, catégories, modules — une
+      // grosse réponse construite depuis le cache Discord) ne fait que relire ce
+      // qu'on vient d'écrire : l'attendre ici immobilisait le bouton une bonne
+      // seconde après que tout était déjà sauvegardé. On le laisse tourner
+      // derrière, il ne sert qu'à réafficher les valeurs bornées côté serveur.
+      void dashboardStore.refresh().then(syncWeekSettingsFromStore);
       return true;
     }, {
       successMessage: 'Réglages enregistrés.',
@@ -345,7 +352,54 @@
     }
   }
 
+  /**
+   * Temps réel : le bot diffuse déjà ses changements d'état sur la socket du
+   * dashboard (`kotbo-ws-message`). On se contente d'écouter les raisons qui
+   * concernent le Daily Algo et de recharger le strict nécessaire, pour qu'une
+   * soumission postée sur Discord apparaisse sans que le staff clique
+   * « Actualiser ».
+   */
+  let wsReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleWsMessage(event: Event) {
+    const detail = (event as CustomEvent).detail;
+    if (detail?.type !== 'dashboard_state_changed') return;
+    if (detail?.guildId !== authStore.selectedGuildId) return;
+
+    const reason = String(detail?.reason ?? '');
+    if (!reason.startsWith('daily_algo')) return;
+
+    // Une rafale de soumissions déclenche une rafale d'évènements : on regroupe
+    // les rechargements pour ne pas marteler l'API.
+    if (wsReloadTimer) clearTimeout(wsReloadTimer);
+    wsReloadTimer = setTimeout(() => {
+      wsReloadTimer = null;
+
+      if (reason === 'daily_algo_week_closed') {
+        void loadWeekData();
+        return;
+      }
+
+      if (reason === 'daily_algo_problems_updated') {
+        void loadDailyAlgoProblems();
+        return;
+      }
+
+      if (reason === 'daily_algo_schedule_updated') {
+        void loadDailyAlgoSchedule();
+        void loadTodayDailyAlgoSubmissions();
+        return;
+      }
+
+      // Soumission créée ou notée : le classement de la semaine bouge aussi.
+      void loadTodayDailyAlgoSubmissions();
+      void loadDailyAlgoHistory();
+      void loadWeekData();
+    }, 400);
+  }
+
   onMount(async () => {
+    window.addEventListener('kotbo-ws-message', handleWsMessage);
     await dashboardStore.refresh();
     syncWeekSettingsFromStore();
     await Promise.all([
@@ -358,6 +412,11 @@
       loadWeekData(),
       loadClansEnabled()
     ]);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener('kotbo-ws-message', handleWsMessage);
+    if (wsReloadTimer) clearTimeout(wsReloadTimer);
   });
 
   async function loadDailyAlgoProblems() {
@@ -511,6 +570,12 @@
       <Papicon icon="Award" size={15} /> Semaine & Podium
     </button>
     <button
+      class="px-5 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer inline-flex items-center gap-2 {activeTab === 'bareme' ? 'border-primary text-primary font-bold bg-primary/5 rounded-t-lg' : 'border-transparent text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-low/30'}"
+      onclick={() => activeTab = 'bareme'}
+    >
+      <Papicon icon="Sparkles" size={15} /> Barème & récompenses
+    </button>
+    <button
       class="px-5 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer inline-flex items-center gap-2 {activeTab === 'admin' ? 'border-primary text-primary font-bold bg-primary/5 rounded-t-lg' : 'border-transparent text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-low/30'}"
       onclick={() => activeTab = 'admin'}
     >
@@ -652,7 +717,7 @@
         <Skeleton height="220px" />
       {:else if !currentWeek || currentWeek.ranking.length === 0}
         <section class="bg-surface-container-low/30 border border-outline-variant/10 rounded-xl p-10 text-center">
-          <span class="text-3xl">🗓️</span>
+          <Papicon icon="Calendar" size={24} class="text-on-surface-variant/40" />
           <h4 class="text-sm font-semibold text-on-surface mt-3">Aucune participation cette semaine</h4>
           <p class="text-xs text-on-surface-variant/60 mt-1 max-w-md mx-auto">
             Le classement se remplit à mesure que le staff note les soumissions. Toute
@@ -676,12 +741,12 @@
                 {#each currentWeek.ranking as entry (entry.userId)}
                   <tr class="text-sm border-b border-outline-variant/5 last:border-0">
                     <td class="px-6 py-3 font-bold text-on-surface-variant/70">
-                      {entry.rank === 1 ? '🥇' : entry.rank === 2 ? '🥈' : entry.rank === 3 ? '🥉' : `#${entry.rank}`}
+                      #{entry.rank}
                     </td>
                     <td class="px-6 py-3 font-semibold text-on-surface">{entry.userName}</td>
                     <td class="px-6 py-3 text-right text-on-surface-variant/70">{entry.participations}</td>
                     <td class="px-6 py-3 text-right text-on-surface-variant/70">
-                      {entry.bonusPoints > 0 ? `✨ +${entry.bonusPoints}` : '—'}
+                      {entry.bonusPoints > 0 ? `+${entry.bonusPoints}` : '—'}
                     </td>
                     <td class="px-6 py-3 text-right font-black text-primary">{entry.points}</td>
                   </tr>
@@ -714,7 +779,7 @@
                   <div class="space-y-1 pt-2 border-t border-outline-variant/10">
                     {#each week.podium as entry (entry.rank)}
                       <p class="text-xs text-on-surface-variant/80 flex items-center justify-between gap-2">
-                        <span>{entry.rank === 1 ? '🥇' : entry.rank === 2 ? '🥈' : '🥉'} <code class="text-[10px]">{entry.userId}</code></span>
+                        <span>#{entry.rank} <code class="text-[10px]">{entry.userId}</code></span>
                         <span class="font-bold">{entry.points} pts{entry.xpGranted > 0 ? ` · ${entry.xpGranted} XP` : ''}{entry.clanPointsGranted > 0 ? ` · ${entry.clanPointsGranted} pts clan` : ''}</span>
                       </p>
                     {/each}
@@ -731,102 +796,20 @@
     </div>
   {/if}
 
-  <!-- ═══ Onglet Administration ═══ -->
-  {#if activeTab === 'admin'}
+  <!-- ═══ Onglet Barème & récompenses ═══ -->
+  {#if activeTab === 'bareme'}
     <div class="space-y-10 pb-20">
       <InlineFeedback state={weekSettingsAction} />
 
       {#if !canManageSettings}
         <section class="bg-surface-container-high/20 rounded-xl border border-outline-variant/10 p-10 flex flex-col items-center text-center gap-3">
-          <span class="text-3xl">🔒</span>
+          <Papicon icon="Lock" size={24} class="text-on-surface-variant/40" />
           <h4 class="text-sm font-semibold text-on-surface">Réservé aux administrateurs</h4>
           <p class="text-xs text-on-surface-variant/70 max-w-md">
-            Vous n'avez pas la permission de configurer ce module.
+            Vous n'avez pas la permission de configurer le barème de ce module.
           </p>
         </section>
       {:else}
-        <!-- Clôture anticipée -->
-        <section class="bg-surface-container-low/30 border border-outline-variant/10 p-8 rounded-xl space-y-6">
-          <h3 class="text-xl font-semibold flex items-center gap-3">
-            <Papicon icon="Award" size={20} class="text-amber-500" />
-            Clôturer la semaine maintenant
-          </h3>
-          <p class="text-xs text-on-surface-variant/70 max-w-2xl">
-            Déclenche immédiatement ce que fait le cron du lundi : le classement est figé,
-            les récompenses versées, les rôles du podium attribués et l'annonce publiée.
-            Utile pour tester le cycle complet sans attendre sept jours.
-            <strong class="text-on-surface">Cette action ne s'annule pas.</strong>
-          </p>
-
-          {#if currentWeek?.status === 'CLOSED'}
-            <div class="p-4 bg-surface-container-high/20 rounded-lg border border-outline-variant/10 text-xs text-on-surface-variant/70 space-y-3">
-              <p>
-                La semaine <strong>{currentWeek.weekKey}</strong> est déjà clôturée.
-                Les participations arrivées depuis seront rattrapées par le cron du
-                lundi, ou tout de suite avec le bouton ci-dessous.
-              </p>
-              <button
-                onclick={confirmCloseWeek}
-                disabled={isClosingWeek}
-                class="px-5 py-2.5 bg-surface-container-high rounded-lg text-[13px] font-medium border border-outline-variant/10 disabled:opacity-50"
-              >
-                {isClosingWeek ? 'Rattrapage en cours…' : '♻️ Rattraper les points de la semaine'}
-              </button>
-            </div>
-          {:else if !closeWeekConfirmOpen}
-            <button
-              onclick={() => closeWeekConfirmOpen = true}
-              disabled={!currentWeek}
-              class="px-6 py-3 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 rounded-lg text-[13px] font-medium transition-colors hover:bg-amber-500/20 disabled:opacity-50"
-            >
-              🏁 Clôturer la semaine {currentWeek?.weekKey ?? ''}
-            </button>
-          {:else}
-            <div class="p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-4">
-              <p class="text-sm font-semibold text-on-surface">
-                Confirmer la clôture de {currentWeek?.weekKey} ?
-              </p>
-              <ul class="text-xs text-on-surface-variant/70 space-y-1 list-disc list-inside">
-                <li>{currentWeek?.ranking?.length ?? 0} participant(s) seront récompensés</li>
-                <li>
-                  {#if weekSettings.dailyAlgoWeeklyRewardsEnabled}
-                    XP et rôles du podium attribués
-                  {:else}
-                    Récompenses désactivées : le classement sera seulement archivé
-                  {/if}
-                </li>
-                <li>
-                  {#if clansEnabled && weekSettings.clanPointsFromDailyAlgo}
-                    Les points de la semaine seront convertis en points de clan
-                  {:else}
-                    Aucun point de clan ne sera versé
-                  {/if}
-                </li>
-                <li>
-                  Les participations qui arriveront d'ici dimanche seront rattrapées
-                  par le cron du lundi — rien ne sera perdu
-                </li>
-              </ul>
-              <div class="flex gap-3">
-                <button
-                  onclick={confirmCloseWeek}
-                  disabled={isClosingWeek}
-                  class="px-5 py-2.5 bg-amber-500 text-white rounded-lg text-[13px] font-medium disabled:opacity-50"
-                >
-                  {isClosingWeek ? 'Clôture en cours…' : 'Oui, clôturer'}
-                </button>
-                <button
-                  onclick={() => closeWeekConfirmOpen = false}
-                  disabled={isClosingWeek}
-                  class="px-5 py-2.5 bg-surface-container-high rounded-lg text-[13px] font-medium border border-outline-variant/10 disabled:opacity-50"
-                >
-                  Annuler
-                </button>
-              </div>
-            </div>
-          {/if}
-        </section>
-
         <!-- Barème & points -->
         <section class="bg-surface-container-low/30 border border-outline-variant/10 p-8 rounded-xl space-y-6">
           <h3 class="text-xl font-semibold flex items-center gap-3">
@@ -889,7 +872,7 @@
 
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
                 <div class="space-y-1.5">
-                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">🥇 Rôle 1er</span>
+                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">Rôle 1er</span>
                   <SearchableSelect
                     bind:value={weekSettings.dailyAlgoWeekRole1Id}
                     options={roleOptions}
@@ -899,7 +882,7 @@
                   />
                 </div>
                 <div class="space-y-1.5">
-                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">🥈 Rôle 2e</span>
+                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">Rôle 2e</span>
                   <SearchableSelect
                     bind:value={weekSettings.dailyAlgoWeekRole2Id}
                     options={roleOptions}
@@ -909,7 +892,7 @@
                   />
                 </div>
                 <div class="space-y-1.5">
-                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">🥉 Rôle 3e</span>
+                  <span class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">Rôle 3e</span>
                   <SearchableSelect
                     bind:value={weekSettings.dailyAlgoWeekRole3Id}
                     options={roleOptions}
@@ -981,7 +964,7 @@
 
           {#if !clansEnabled}
             <div class="p-6 bg-surface-container-high/20 rounded-xl border border-outline-variant/10 flex flex-col items-center justify-center text-center space-y-3">
-              <span class="text-3xl">🔒</span>
+              <Papicon icon="Lock" size={24} class="text-on-surface-variant/40" />
               <div>
                 <h4 class="text-sm font-semibold text-on-surface">Les clans ne sont pas activés</h4>
                 <p class="text-xs text-on-surface-variant/70 max-w-md mt-1">
@@ -1032,6 +1015,115 @@
                   passage de niveau.
                 </p>
               {/if}
+            </div>
+          {/if}
+        </section>
+
+        <div class="flex justify-end">
+          <button
+            onclick={saveWeekSettings}
+            disabled={weekSettingsAction.state.loading}
+            class="px-8 py-3 bg-primary text-on-primary rounded-xl font-medium text-[13px] transition-transform disabled:opacity-50"
+          >
+            {weekSettingsAction.state.loading ? 'Enregistrement…' : 'Enregistrer les réglages'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ═══ Onglet Administration ═══ -->
+  {#if activeTab === 'admin'}
+    <div class="space-y-10 pb-20">
+      <InlineFeedback state={weekSettingsAction} />
+
+      {#if !canManageSettings}
+        <section class="bg-surface-container-high/20 rounded-xl border border-outline-variant/10 p-10 flex flex-col items-center text-center gap-3">
+          <Papicon icon="Lock" size={24} class="text-on-surface-variant/40" />
+          <h4 class="text-sm font-semibold text-on-surface">Réservé aux administrateurs</h4>
+          <p class="text-xs text-on-surface-variant/70 max-w-md">
+            Vous n'avez pas la permission de configurer ce module.
+          </p>
+        </section>
+      {:else}
+        <!-- Clôture anticipée -->
+        <section class="bg-surface-container-low/30 border border-outline-variant/10 p-8 rounded-xl space-y-6">
+          <h3 class="text-xl font-semibold flex items-center gap-3">
+            <Papicon icon="Award" size={20} class="text-amber-500" />
+            Clôturer la semaine maintenant
+          </h3>
+          <p class="text-xs text-on-surface-variant/70 max-w-2xl">
+            Déclenche immédiatement ce que fait le cron du lundi : le classement est figé,
+            les récompenses versées, les rôles du podium attribués et l'annonce publiée.
+            Utile pour tester le cycle complet sans attendre sept jours.
+            <strong class="text-on-surface">Cette action ne s'annule pas.</strong>
+          </p>
+
+          {#if currentWeek?.status === 'CLOSED'}
+            <div class="p-4 bg-surface-container-high/20 rounded-lg border border-outline-variant/10 text-xs text-on-surface-variant/70 space-y-3">
+              <p>
+                La semaine <strong>{currentWeek.weekKey}</strong> est déjà clôturée.
+                Les participations arrivées depuis seront rattrapées par le cron du
+                lundi, ou tout de suite avec le bouton ci-dessous.
+              </p>
+              <button
+                onclick={confirmCloseWeek}
+                disabled={isClosingWeek}
+                class="px-5 py-2.5 bg-surface-container-high rounded-lg text-[13px] font-medium border border-outline-variant/10 disabled:opacity-50"
+              >
+                {isClosingWeek ? 'Rattrapage en cours…' : 'Rattraper les points de la semaine'}
+              </button>
+            </div>
+          {:else if !closeWeekConfirmOpen}
+            <button
+              onclick={() => closeWeekConfirmOpen = true}
+              disabled={!currentWeek}
+              class="px-6 py-3 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 rounded-lg text-[13px] font-medium transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              Clôturer la semaine {currentWeek?.weekKey ?? ''}
+            </button>
+          {:else}
+            <div class="p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-4">
+              <p class="text-sm font-semibold text-on-surface">
+                Confirmer la clôture de {currentWeek?.weekKey} ?
+              </p>
+              <ul class="text-xs text-on-surface-variant/70 space-y-1 list-disc list-inside">
+                <li>{currentWeek?.ranking?.length ?? 0} participant(s) seront récompensés</li>
+                <li>
+                  {#if weekSettings.dailyAlgoWeeklyRewardsEnabled}
+                    XP et rôles du podium attribués
+                  {:else}
+                    Récompenses désactivées : le classement sera seulement archivé
+                  {/if}
+                </li>
+                <li>
+                  {#if clansEnabled && weekSettings.clanPointsFromDailyAlgo}
+                    Les points de la semaine seront convertis en points de clan
+                  {:else}
+                    Aucun point de clan ne sera versé
+                  {/if}
+                </li>
+                <li>
+                  Les participations qui arriveront d'ici dimanche seront rattrapées
+                  par le cron du lundi — rien ne sera perdu
+                </li>
+              </ul>
+              <div class="flex gap-3">
+                <button
+                  onclick={confirmCloseWeek}
+                  disabled={isClosingWeek}
+                  class="px-5 py-2.5 bg-amber-500 text-white rounded-lg text-[13px] font-medium disabled:opacity-50"
+                >
+                  {isClosingWeek ? 'Clôture en cours…' : 'Oui, clôturer'}
+                </button>
+                <button
+                  onclick={() => closeWeekConfirmOpen = false}
+                  disabled={isClosingWeek}
+                  class="px-5 py-2.5 bg-surface-container-high rounded-lg text-[13px] font-medium border border-outline-variant/10 disabled:opacity-50"
+                >
+                  Annuler
+                </button>
+              </div>
             </div>
           {/if}
         </section>

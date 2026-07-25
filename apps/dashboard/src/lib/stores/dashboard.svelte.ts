@@ -108,7 +108,19 @@ class DashboardStore {
     error: null
   });
 
-  private isRefreshing = false;
+  /**
+   * Rafraichissement en cours, partage entre tous les appelants concurrents.
+   *
+   * `refresh()` rendait la main immediatement quand un autre rafraichissement
+   * etait deja en vol : un `await dashboardStore.refresh()` pouvait donc se
+   * terminer sans qu'aucune donnee ait ete relue. Un appelant qui enchaine sur
+   * une relecture du store (formulaire d'options resynchronise apres un
+   * enregistrement) reaffichait alors les anciennes valeurs, et l'utilisateur
+   * voyait ses reglages "revenir en arriere" alors qu'ils etaient bien ecrits
+   * en base. On rend desormais la promesse en cours, pour que l'attente
+   * signifie toujours "les donnees sont a jour".
+   */
+  private refreshPromise: Promise<void> | null = null;
   /**
    * Guild pour laquelle un `refresh()` a deja abouti. Sert a distinguer le
    * premier chargement (qui doit afficher un etat d'attente) des
@@ -143,18 +155,30 @@ class DashboardStore {
       .slice(0, 1000); // Keep reasonable history
   }
 
-  async refresh() {
-    if (this.isRefreshing) return;
+  async refresh(): Promise<void> {
+    if (this.refreshPromise) return this.refreshPromise;
     if (!authStore.token || !authStore.selectedGuildId) {
       this.state.loading = false;
       return;
     }
+
+    const pending = this.runRefresh();
+    this.refreshPromise = pending;
+    try {
+      await pending;
+    } finally {
+      // Ne libere le verrou que s'il s'agit toujours du notre : un appel parti
+      // entre-temps garde la main sur le sien.
+      if (this.refreshPromise === pending) this.refreshPromise = null;
+    }
+  }
+
+  private async runRefresh(): Promise<void> {
     // Fige la guild visee pour toute la duree de l'appel : si l'utilisateur
     // change de serveur pendant la requete, on ne doit pas marquer la nouvelle
     // guild comme chargee avec les donnees de l'ancienne.
     const requestedGuildId = authStore.selectedGuildId;
 
-    this.isRefreshing = true;
     // `loading` ne vaut `true` que tant qu'aucune donnee n'est affichable.
     // Les rafraichissements suivants (message WebSocket, cycle de 10 min,
     // bouton "actualiser") se font en arriere-plan : remettre `loading` a true
@@ -276,7 +300,6 @@ class DashboardStore {
       }
     } finally {
       this.state.loading = false;
-      this.isRefreshing = false;
     }
   }
 
