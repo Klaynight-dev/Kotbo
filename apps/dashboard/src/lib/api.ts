@@ -493,12 +493,18 @@ export async function fetchDailyAlgoSchedule(daysBack = 7, daysForward = 21, gui
   });
 }
 
-export async function ensureDailyAlgoSchedule(daysForward = 21, guildId = authStore.selectedGuildId) {
+/**
+ * `silent` : cette route est aussi appelee automatiquement a l'ouverture de la
+ * page Daily Algo. Une generation de planning declenchee par personne n'a pas a
+ * afficher un « Operation reussie » ; on ne le garde que pour le bouton explicite.
+ */
+export async function ensureDailyAlgoSchedule(daysForward = 21, guildId = authStore.selectedGuildId, silent = false) {
   const safeDaysForward = Math.max(1, Math.trunc(daysForward || 1));
   return dashboardRequest('/daily-algo-runs/schedule/ensure', {
     method: 'POST',
     payload: { daysForward: safeDaysForward },
     guildId,
+    silent,
     errorContext: 'API Error (Ensure Daily Algo Schedule):'
   });
 }

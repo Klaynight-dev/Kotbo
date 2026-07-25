@@ -301,13 +301,11 @@
       const ok = await updateGlobalSettings({ ...weekSettings });
       if (!ok) return false;
 
-      // L'enregistrement est acquis dès que le PATCH répond. Le rafraîchissement
-      // complet de l'état de guilde (salons, rôles, catégories, modules — une
-      // grosse réponse construite depuis le cache Discord) ne fait que relire ce
-      // qu'on vient d'écrire : l'attendre ici immobilisait le bouton une bonne
-      // seconde après que tout était déjà sauvegardé. On le laisse tourner
-      // derrière, il ne sert qu'à réafficher les valeurs bornées côté serveur.
-      void dashboardStore.refresh().then(syncWeekSettingsFromStore);
+      // Un clic = une requête. Le PATCH a répondu, c'est écrit : on recopie les
+      // valeurs dans le store au lieu de redemander au serveur tout l'état de la
+      // guilde (salons, rôles, catégories, modules) juste pour relire les vingt
+      // champs qu'on vient d'envoyer.
+      Object.assign(dashboardStore.state, { ...weekSettings });
       return true;
     }, {
       successMessage: 'Réglages enregistrés.',
@@ -386,7 +384,7 @@
       }
 
       if (reason === 'daily_algo_schedule_updated') {
-        void loadDailyAlgoSchedule();
+        void refreshDailyAlgoScheduleView();
         void loadTodayDailyAlgoSubmissions();
         return;
       }
@@ -441,13 +439,23 @@
     } finally { isFetchingAlgoHistory = false; }
   }
 
-  async function loadDailyAlgoSchedule() {
+  /** Relecture seule du planning. Ne declenche aucune ecriture. */
+  async function refreshDailyAlgoScheduleView() {
     isFetchingAlgoSchedule = true;
     try {
-      if (canManageSettings) await ensureDailyAlgoSchedule(21);
       const payload = await fetchDailyAlgoSchedule(7, 21);
       dailyAlgoSchedule = Array.isArray(payload?.runs) ? payload.runs : [];
     } finally { isFetchingAlgoSchedule = false; }
+  }
+
+  /**
+   * Genere les jours manquants puis relit. A ne jamais appeler depuis un
+   * evenement WebSocket : la generation previent les clients, qui regenereraient
+   * a leur tour — la page tournerait en boucle sur elle-meme.
+   */
+  async function loadDailyAlgoSchedule() {
+    if (canManageSettings) await ensureDailyAlgoSchedule(21, undefined, true);
+    await refreshDailyAlgoScheduleView();
   }
 
   async function loadMyApiKeys() {
@@ -1200,7 +1208,7 @@
               </div>
               <p class="text-on-surface-variant/60 font-bold">Aucun programme généré pour l'instant.</p>
               <button 
-                onclick={loadDailyAlgoSchedule}
+                onclick={() => ensureDailyAlgoSchedule(21).then(refreshDailyAlgoScheduleView)}
                 class="mt-6 px-4 py-2 bg-primary text-on-primary rounded-lg font-medium text-[13px]"
               >
                 Générer le planning
@@ -1242,7 +1250,7 @@
         {#if canManageSettings}
           <footer class="p-8 bg-surface-container-high/30 border-t border-outline-variant/5">
             <button 
-              onclick={() => ensureDailyAlgoSchedule(21).then(loadDailyAlgoSchedule)}
+              onclick={() => ensureDailyAlgoSchedule(21).then(refreshDailyAlgoScheduleView)}
               class="w-full py-4 bg-primary text-on-primary rounded-xl font-medium text-[13px] shadow-sm shadow-primary/20 hover: transition-transform flex items-center justify-center gap-3"
             >
               <Papicon icon="RefreshCw" size={14} />
