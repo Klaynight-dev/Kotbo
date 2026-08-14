@@ -233,7 +233,7 @@
   title={m.ba_page_title()}
   description={m.ba_page_desc()}
   icon="gavel"
-  featureKey="ban_appeals"
+  featureKey="sanctions"
 >
   {#snippet actions()}
     <button onclick={copyPublicUrl}
