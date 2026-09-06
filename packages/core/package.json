@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "@kotbo/database": "workspace:*",
-    "@prisma/client": "^7.8.0"
+    "@prisma/client": "^7.10.0"
   }
 }
