@@ -566,7 +566,7 @@ avec liste actionnable liée à la page Facturation.
 d'activation, type de communauté, pistes, âge, langue, fuseau, instance) :
 serveurs, taux de conversion, MRR, ARPA, churn. Plus un tableau croisé
 palier de taille × plan qui met en évidence les serveurs hors palier — un
-STARTER au-dessus de 1 000 membres ou un PRO au-dessus de 10 000 est une
+PLUS au-dessus de 1 000 membres ou un PRO au-dessus de 10 000 est une
 conversation commerciale, pas une anomalie technique.
 
 **Onglet Rétention & produit** — courbes de rétention par cohorte ; matrice ;

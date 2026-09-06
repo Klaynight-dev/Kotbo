@@ -8,7 +8,7 @@
  * quelle offre : le palier est décidé par la taille du serveur, pas par un
  * panier de fonctionnalités.
  *
- *   jusqu'à 1 000 membres       → Starter
+ *   jusqu'à 1 000 membres       → Plus
  *   de 1 001 à 10 000 membres   → Pro
  *   de 10 001 à 100 000 membres → Ultimate
  *   au-delà de 100 000 membres  → Sur mesure (rendez-vous commercial)
@@ -37,7 +37,7 @@ import { MODULE_REGISTRY } from './modules.js';
  *
  * - `FREE`     : état d'un serveur sans abonnement. Aucun module ouvert : le
  *                bot est présent mais inerte tant que rien n'est souscrit.
- * - `STARTER`  : offre des petits serveurs, jusqu'à 1 000 membres. Même produit
+ * - `PLUS`     : offre des petits serveurs, jusqu'à 1 000 membres. Même produit
  *                que les autres, au tarif de leur taille : c'est l'entrée de
  *                gamme, pas une version amputée.
  * - `PRO`      : offre des serveurs de 1 001 à 10 000 membres, en libre-service.
@@ -46,7 +46,7 @@ import { MODULE_REGISTRY } from './modules.js';
  *                partenariat). Jamais vendu par Stripe en libre-service : il est
  *                posé à la main depuis l'administration.
  */
-export const PLAN_KEYS = ['FREE', 'STARTER', 'PRO', 'ULTIMATE', 'CUSTOM'] as const;
+export const PLAN_KEYS = ['FREE', 'PLUS', 'PRO', 'ULTIMATE', 'CUSTOM'] as const;
 export type PlanKey = (typeof PLAN_KEYS)[number];
 
 /** Offres payantes, celles qu'un palier de taille peut désigner. */
@@ -119,14 +119,14 @@ export const PLAN_REGISTRY: PlanDefinition[] = [
     selfServe: false,
   },
   {
-    key: 'STARTER',
-    name: 'Starter',
+    key: 'PLUS',
+    name: 'Plus',
     tagline: 'Tout Kotbo, pour un serveur jusqu\'à 1 000 membres.',
     description:
       "Le catalogue complet, au tarif d'un petit serveur : quelques centaines de membres n'ont pas à payer le prix d'une communauté de dix mille. Exactement les mêmes modules que Pro et Ultimate, rien n'est réservé au palier au-dessus.",
     modules: 'all',
     memberRange: { min: 0, max: 1_000 },
-    priceEnv: { month: 'STRIPE_PRICE_STARTER_MONTHLY', year: 'STRIPE_PRICE_STARTER_YEARLY' },
+    priceEnv: { month: 'STRIPE_PRICE_PLUS_MONTHLY', year: 'STRIPE_PRICE_PLUS_YEARLY' },
     displayPriceCents: { month: 500, year: 3_000 },
     selfServe: true,
   },
@@ -180,7 +180,7 @@ const PLAN_BY_KEY = new Map(PLAN_REGISTRY.map((plan) => [plan.key, plan]));
 /** Rang d'une offre dans l'échelle. Sert aux comparaisons « au moins ». */
 const PLAN_RANK: Record<PlanKey, number> = {
   FREE: 0,
-  STARTER: 1,
+  PLUS: 1,
   PRO: 2,
   ULTIMATE: 3,
   // Un accord sur mesure débloque tout : il se compare comme le sommet de
@@ -217,7 +217,7 @@ export function comparePlans(a: PlanKey, b: PlanKey): number {
  * deux doivent dire la même chose.
  */
 export const PLAN_MEMBER_THRESHOLDS = {
-  /** Au-delà de ce nombre de membres, Starter ne suffit plus. */
+  /** Au-delà de ce nombre de membres, Plus ne suffit plus. */
   PRO: 1_000,
   /** Au-delà de ce nombre de membres, Pro ne suffit plus. */
   ULTIMATE: 10_000,
@@ -241,7 +241,7 @@ export function planForMemberCount(memberCount: number | null | undefined): Paid
   if (memberCount > PLAN_MEMBER_THRESHOLDS.CUSTOM) return 'CUSTOM';
   if (memberCount > PLAN_MEMBER_THRESHOLDS.ULTIMATE) return 'ULTIMATE';
   if (memberCount > PLAN_MEMBER_THRESHOLDS.PRO) return 'PRO';
-  return 'STARTER';
+  return 'PLUS';
 }
 
 /**
@@ -292,7 +292,7 @@ export function planIncludesModule(plan: PlanKey, moduleKey: string): boolean {
  * Offre la plus basse qui ouvre ce module. `null` si le module est déjà ouvert
  * sans abonnement - ce qui, désormais, ne concerne que les modules du cœur.
  *
- * Les offres payantes étant identiques, la réponse est toujours `STARTER` pour
+ * Les offres payantes étant identiques, la réponse est toujours `PLUS` pour
  * un module verrouillé. Le dashboard n'affiche pas cette valeur telle quelle : il
  * propose l'offre correspondant à la taille du serveur (`planForMemberCount`),
  * seule réellement achetable.

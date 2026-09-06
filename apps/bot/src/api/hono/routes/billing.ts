@@ -89,7 +89,7 @@ declare module 'hono' {
 }
 
 /** Offres achetables en ligne. `CUSTOM` se négocie, il n'est pas proposé ici. */
-const PurchasablePlan = z.enum(['STARTER', 'PRO', 'ULTIMATE']);
+const PurchasablePlan = z.enum(['PLUS', 'PRO', 'ULTIMATE']);
 const Interval = z.enum(['month', 'year']);
 
 export function createBillingRouter(client: Client): OpenAPIHono {

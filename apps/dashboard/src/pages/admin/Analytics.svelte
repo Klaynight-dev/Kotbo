@@ -638,7 +638,7 @@
       <!-- Répartitions Offres & Intervalles -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         <!-- Par Offre -->
-        <AdminCard title="Répartition par Offre" description="STARTER, PRO, ULTIMATE et CUSTOM">
+        <AdminCard title="Répartition par Offre" description="PLUS, PRO, ULTIMATE et CUSTOM">
           <div class="space-y-3 py-2">
             {#each Object.entries(revenueData.byPlan ?? {}) as [plan, item]}
               {@const totalMrr = revenueData.mrrCents || 1}

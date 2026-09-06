@@ -568,7 +568,7 @@ export async function getRevenueStats(options: {
     year: { count: 0, mrrCents: 0 },
   };
   const byPlan: Record<string, { count: number; mrrCents: number }> = {
-    STARTER: { count: 0, mrrCents: 0 },
+    PLUS: { count: 0, mrrCents: 0 },
     PRO: { count: 0, mrrCents: 0 },
     ULTIMATE: { count: 0, mrrCents: 0 },
     CUSTOM: { count: 0, mrrCents: 0 },
@@ -941,7 +941,7 @@ export async function getSegmentsStats(options: {
     churnRate: data.guilds > 0 ? round1((data.churned / data.guilds) * 100) : 0,
   }));
 
-  const columns = ['FREE', 'STARTER', 'PRO', 'ULTIMATE', 'CUSTOM'];
+  const columns = ['FREE', 'PLUS', 'PRO', 'ULTIMATE', 'CUSTOM'];
   const sizeKeys: SizeBucketKey[] = ['0-100', '100-1k', '1k-10k', '10k-100k', '100k+'];
 
   const matrixData: Record<SizeBucketKey, Record<string, CrossMatrixCell>> = {} as never;
@@ -1209,7 +1209,7 @@ export async function getGuildsExplorer(
     where.churnedAt = { not: null };
   } else if (options.filter === 'out_of_tier') {
     where.OR = [
-      { plan: 'STARTER', memberCount: { gt: PLAN_MEMBER_THRESHOLDS.PRO } },
+      { plan: 'PLUS', memberCount: { gt: PLAN_MEMBER_THRESHOLDS.PRO } },
       { plan: 'PRO', memberCount: { gt: PLAN_MEMBER_THRESHOLDS.ULTIMATE } },
       { plan: 'ULTIMATE', memberCount: { gt: PLAN_MEMBER_THRESHOLDS.CUSTOM } },
     ];

@@ -56,7 +56,7 @@
   const planLabel = (key?: string | null) => {
     if (!key) return m.mc_plan_paid();
     if (key === 'CUSTOM') return m.mc_plan_custom();
-    return key === 'STARTER' ? 'Starter' : key === 'PRO' ? 'Pro' : key === 'ULTIMATE' ? 'Ultimate' : key;
+    return key === 'PLUS' ? 'Plus' : key === 'PRO' ? 'Pro' : key === 'ULTIMATE' ? 'Ultimate' : key;
   };
 
   const CATEGORY_LABELS: Record<string, () => string> = {

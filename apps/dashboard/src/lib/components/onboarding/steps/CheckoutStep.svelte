@@ -60,7 +60,7 @@
   async function goToCheckout() {
     if (onboardingData.busy || !offer) return;
     onboardingData.busy = true;
-    const url = await startCheckout(offer.key as 'STARTER' | 'PRO' | 'ULTIMATE', 'month');
+    const url = await startCheckout(offer.key as 'PLUS' | 'PRO' | 'ULTIMATE', 'month');
     onboardingData.busy = false;
     if (!url) {
       toast.error("La page de paiement n'a pas pu être ouverte. Réessayez dans un instant.");

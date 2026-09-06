@@ -2,7 +2,7 @@
 import { authStore } from '../stores/auth.svelte';
 import { dashboardRequest } from './client';
 
-export type PlanKey = 'FREE' | 'STARTER' | 'PRO' | 'ULTIMATE' | 'CUSTOM';
+export type PlanKey = 'FREE' | 'PLUS' | 'PRO' | 'ULTIMATE' | 'CUSTOM';
 export type BillingInterval = 'month' | 'year';
 
 export interface PlanCard {

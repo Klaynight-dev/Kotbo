@@ -99,7 +99,7 @@ model BillingGift {
   /// Code à transmettre au bénéficiaire, pour les cadeaux sans destinataire.
   /// Null pour un cadeau direct ou administratif : il n'y a rien à activer.
   code           String?  @unique
-  /// Offre offerte (`STARTER`, `PRO`, `ULTIMATE`…) et durée, en mois.
+  /// Offre offerte (`PLUS`, `PRO`, `ULTIMATE`…) et durée, en mois.
   plan           String
   months         Int
   /// Qui offre. Compte Discord de l'acheteur, ou de l'administrateur Kotbo qui

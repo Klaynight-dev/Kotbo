@@ -71,7 +71,7 @@ describe('modules ouverts par une offre', () => {
   });
 
   test("l'echelle est monotone : une offre superieure n'enleve jamais rien", () => {
-    const ladder: PlanKey[] = ['FREE', 'STARTER', 'PRO', 'ULTIMATE'];
+    const ladder: PlanKey[] = ['FREE', 'PLUS', 'PRO', 'ULTIMATE'];
     for (let i = 1; i < ladder.length; i++) {
       const lower = new Set(modulesForPlan(ladder[i - 1]!));
       const higher = new Set(modulesForPlan(ladder[i]!));
@@ -85,7 +85,7 @@ describe('modules ouverts par une offre', () => {
     // La promesse commerciale est « rien n est en option » : un palier qui
     // ouvrirait moins que le suivant la contredirait, quel que soit son prix.
     const all = MODULE_REGISTRY.length;
-    for (const key of ['STARTER', 'PRO', 'ULTIMATE', 'CUSTOM'] as PlanKey[]) {
+    for (const key of ['PLUS', 'PRO', 'ULTIMATE', 'CUSTOM'] as PlanKey[]) {
       expect(modulesForPlan(key).length).toBe(all);
     }
   });
@@ -108,7 +108,7 @@ describe('modules ouverts par une offre', () => {
 describe('comparaison et normalisation', () => {
   test("l'echelle est ordonnee", () => {
     expect(comparePlans('FREE', 'PRO')).toBeLessThan(0);
-    expect(comparePlans('STARTER', 'PRO')).toBeLessThan(0);
+    expect(comparePlans('PLUS', 'PRO')).toBeLessThan(0);
     expect(comparePlans('ULTIMATE', 'PRO')).toBeGreaterThan(0);
     expect(comparePlans('PRO', 'PRO')).toBe(0);
     expect(comparePlans('CUSTOM', 'ULTIMATE')).toBeGreaterThan(0);
@@ -133,9 +133,9 @@ describe('palier decide par la taille du serveur', () => {
   test('chaque tranche renvoie son offre, bornes comprises', () => {
     // Les bornes sont ce qui casse en silence : un `>` mis pour un `>=` fait
     // basculer tout un palier de serveurs sur le mauvais tarif.
-    expect(planForMemberCount(0)).toBe('STARTER');
-    expect(planForMemberCount(1)).toBe('STARTER');
-    expect(planForMemberCount(PLAN_MEMBER_THRESHOLDS.PRO)).toBe('STARTER');
+    expect(planForMemberCount(0)).toBe('PLUS');
+    expect(planForMemberCount(1)).toBe('PLUS');
+    expect(planForMemberCount(PLAN_MEMBER_THRESHOLDS.PRO)).toBe('PLUS');
     expect(planForMemberCount(PLAN_MEMBER_THRESHOLDS.PRO + 1)).toBe('PRO');
     expect(planForMemberCount(PLAN_MEMBER_THRESHOLDS.ULTIMATE)).toBe('PRO');
     expect(planForMemberCount(PLAN_MEMBER_THRESHOLDS.ULTIMATE + 1)).toBe('ULTIMATE');
@@ -165,9 +165,9 @@ describe('palier decide par la taille du serveur', () => {
   });
 
   test('un serveur ne peut acheter que le palier de sa taille', () => {
-    expect(canPurchasePlan('STARTER', 300)).toBe(true);
+    expect(canPurchasePlan('PLUS', 300)).toBe(true);
     expect(canPurchasePlan('PRO', 300)).toBe(false);
-    expect(canPurchasePlan('STARTER', 5_000)).toBe(false);
+    expect(canPurchasePlan('PLUS', 5_000)).toBe(false);
     // CUSTOM passe par un rendez-vous, jamais par Stripe.
     expect(canPurchasePlan('CUSTOM', 200_000)).toBe(false);
   });
@@ -195,7 +195,7 @@ describe("offre a proposer pour debloquer un module", () => {
     expect(locked.length).toBeGreaterThan(0);
 
     for (const mod of locked) {
-      expect(lowestPlanWithModule(mod.key)).toBe('STARTER');
+      expect(lowestPlanWithModule(mod.key)).toBe('PLUS');
     }
   });
 
@@ -214,7 +214,7 @@ describe('essai gratuit', () => {
   });
 
   test('seules les offres vendues en ligne ouvrent droit a l essai', () => {
-    expect(planAllowsTrial('STARTER')).toBe(true);
+    expect(planAllowsTrial('PLUS')).toBe(true);
     expect(planAllowsTrial('PRO')).toBe(true);
     expect(planAllowsTrial('ULTIMATE')).toBe(true);
     // FREE n a rien a essayer, CUSTOM se negocie periode de decouverte comprise.

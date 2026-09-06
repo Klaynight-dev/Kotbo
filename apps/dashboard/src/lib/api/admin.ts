@@ -37,7 +37,7 @@ export async function fetchAdminGuilds() {
 
 // ── Facturation globale ───────────────────────────────────────────────────────────────
 
-export type AdminPlanKey = 'FREE' | 'STARTER' | 'PRO' | 'ULTIMATE' | 'CUSTOM';
+export type AdminPlanKey = 'FREE' | 'PLUS' | 'PRO' | 'ULTIMATE' | 'CUSTOM';
 
 export interface AdminBillingGuild {
   id: string;

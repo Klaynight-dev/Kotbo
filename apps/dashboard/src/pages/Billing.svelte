@@ -27,7 +27,7 @@
   /** Offre dont le bouton est en cours de traitement, pour ne pas figer toute la page. */
   let pending = $state<PlanKey | 'portal' | null>(null);
 
-  const PLAN_ORDER: PlanKey[] = ['FREE', 'STARTER', 'PRO', 'ULTIMATE', 'CUSTOM'];
+  const PLAN_ORDER: PlanKey[] = ['FREE', 'PLUS', 'PRO', 'ULTIMATE', 'CUSTOM'];
 
   const currentPlan = $derived(status?.plan ?? 'FREE');
   const orderedPlans = $derived(
