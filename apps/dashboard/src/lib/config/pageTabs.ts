@@ -203,6 +203,12 @@ export const PAGE_TABS: Record<string, PageTabConfig[]> = {
   ],
 
   // ── Configuration ─────────────────────────────────────────────────────────
+  '/management': [
+    { id: 'apercu', label: () => m.mgmt_nav_overview(), icon: 'grid' },
+    { id: 'salons', label: () => m.mgmt_tab_channels_roles(), icon: 'hash' },
+    { id: 'acces', label: () => m.mgmt_nav_access(), icon: 'shield' },
+  ],
+
   '/channel-health': [
     { id: 'accueil', label: () => m.channel_health_tab_presets(), icon: 'sliders-horizontal' },
     { id: 'overview', label: () => m.channel_health_tab_overview(), icon: 'pie-chart' },

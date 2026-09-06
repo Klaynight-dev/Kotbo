@@ -5,7 +5,7 @@
 
   export let id: string = '';
   export let value: string | null = null;
-  export let options: Array<{ id: string; name: string }> = [];
+  export let options: Array<{ id: string; name: string; color?: string | null; icon?: string }> = [];
   export let placeholder: string = '';
   export let className: string = '';
   export let clearable: boolean = true;
@@ -106,6 +106,9 @@
     dispatch('input', { value });
   }
 
+  $: selected = options.find((o) => o.id === value) ?? null;
+  $: adorned = !!(selected && (selected.color || selected.icon));
+
   // Synchronise le texte affiché dès que `value` ou `options` changent.
   // onMount ne suffit pas car les options peuvent arriver après le montage (chargement asynchrone).
   $: {
@@ -120,6 +123,16 @@
 </script>
 
 <div class={className} style="position:relative" bind:this={wrapper}>
+  {#if adorned}
+    <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 flex items-center text-on-surface-variant">
+      {#if selected?.icon}
+        <Papicon icon={selected.icon} size={14} />
+      {:else}
+        <span class="h-2.5 w-2.5 rounded-full" style="background-color:{selected?.color}"></span>
+      {/if}
+    </span>
+  {/if}
+
   <input
     {id}
     type="text"
@@ -129,7 +142,7 @@
     on:focus={() => !disabled && (open = true)}
     on:blur={() => setTimeout(() => (open = false), 150)}
     on:keydown={handleKeydown}
-    class="w-full bg-surface-container-high text-on-surface text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+    class="w-full bg-surface-container-high text-on-surface text-sm {adorned ? 'pl-9 pr-4' : 'px-4'} py-2.5 rounded-xl border border-outline-variant/10 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
     autocomplete="off"
     disabled={disabled}
   />
@@ -160,7 +173,14 @@
           on:click={() => select(opt)}
           on:mouseenter={() => (highlighted = i)}
         >
-          <span class="font-bold">{opt.name}</span>
+          <span class="flex items-center gap-2 min-w-0">
+            {#if opt.icon}
+              <Papicon icon={opt.icon} size={14} class="shrink-0 text-on-surface-variant" />
+            {:else if opt.color}
+              <span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background-color:{opt.color}"></span>
+            {/if}
+            <span class="font-bold truncate">{opt.name}</span>
+          </span>
           <span class="text-xs text-on-surface-variant">{opt.id}</span>
         </button>
       {/each}

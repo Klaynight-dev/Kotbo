@@ -52,19 +52,19 @@
 
 <div class="space-y-10">
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-    <button type="button" class="stat" onclick={() => onNavigate('features')}>
+    <a href="/modules" class="stat">
       <span class="stat__icon bg-primary/10 text-primary"><Papicon icon="Package" size={20} /></span>
       <span class="stat__label">{m.mgmt_active_modules()}</span>
       <span class="stat__value">{enabledCount} <span class="stat__unit">/ {togglableModules.length}</span></span>
-    </button>
+    </a>
 
-    <button type="button" class="stat" onclick={() => onNavigate('access')}>
+    <button type="button" class="stat" onclick={() => onNavigate('acces')}>
       <span class="stat__icon bg-tertiary/10 text-tertiary"><Papicon icon="Shield" size={20} /></span>
       <span class="stat__label">{m.mgmt_restricted_modules()}</span>
       <span class="stat__value">{restrictedCount} <span class="stat__unit">/ {features.length}</span></span>
     </button>
 
-    <button type="button" class="stat" onclick={() => onNavigate('channels')}>
+    <button type="button" class="stat" onclick={() => onNavigate('salons')}>
       <span class="stat__icon {healthTone.icon}"><Papicon icon="HeartBeat" size={20} /></span>
       <span class="stat__label">{m.mgmt_health_score()}</span>
       <span class="stat__value {healthTone.value}">{healthScore}%</span>
@@ -75,7 +75,7 @@
     <button
       type="button"
       class="w-full flex items-start gap-4 p-5 rounded-xl bg-amber-500/5 border border-amber-500/20 text-left hover:bg-amber-500/10 transition-colors"
-      onclick={() => onNavigate('channels')}
+      onclick={() => onNavigate('salons')}
     >
       <span class="bg-amber-500/10 p-2 rounded-lg text-amber-500 shrink-0"><Papicon icon="Warning" size={18} /></span>
       <span>
@@ -128,6 +128,8 @@
     background: color-mix(in srgb, var(--surface-container-low) 40%, transparent);
     border: 1px solid color-mix(in srgb, var(--outline-variant) 20%, transparent);
     text-align: left;
+    color: inherit;
+    text-decoration: none;
     cursor: pointer;
     transition: border-color 0.15s ease, background 0.15s ease;
   }

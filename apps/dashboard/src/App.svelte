@@ -814,7 +814,7 @@
             />
             {#if canManageSettings}
               <LazyRoute
-                path="/management"
+                path="/management/*"
                 load={() => import("./pages/ManagementCenter.svelte")}
               />
               <LazyRoute

@@ -4,6 +4,7 @@
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { updateCommandAccessSettings } from '../lib/api';
+  import { roleDotColor } from '../lib/discordVisuals';
   import InlineFeedback from '../lib/components/InlineFeedback.svelte';
   import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
@@ -137,9 +138,6 @@
 
   const roleName = (id: string) => availableRoles.find((role: any) => role.id === id)?.name || id;
   const channelName = (id: string) => availableChannels.find((channel: any) => channel.id === id)?.name || id;
-
-  /** Discord renvoie #000000 pour "pas de couleur" : on neutralise la pastille. */
-  const roleDot = (color?: string) => (!color || color === '#000000' ? 'var(--outline)' : color);
 
   function summaryFor(ids: string[], resolve: (id: string) => string, fallback: string) {
     if (ids.length === 0) return fallback;
@@ -406,7 +404,7 @@
                               <Papicon icon="Check" size={11} />
                             {/if}
                           </span>
-                          <span class="cmd-dot" style="background-color: {roleDot(role.color)};"></span>
+                          <span class="cmd-dot" style="background-color: {roleDotColor(role.color)};"></span>
                           <span class="truncate">{role.name}</span>
                         </button>
                       {/each}
@@ -487,7 +485,7 @@
                                   <Papicon icon="Check" size={11} />
                                 {/if}
                               </span>
-                              <span class="cmd-dot" style="background-color: {roleDot(role.color)};"></span>
+                              <span class="cmd-dot" style="background-color: {roleDotColor(role.color)};"></span>
                               <span class="truncate">{role.name}</span>
                             </button>
                           {/each}
