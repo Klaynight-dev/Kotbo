@@ -333,7 +333,7 @@
             <p class="text-sm text-on-surface-variant/70 max-w-lg mx-auto mb-8 font-bold leading-relaxed">
               Connectez-vous à votre compte Discord pour accéder aux dossiers internes, statistiques détaillées d'activité, absences et outils d'administration.
             </p>
-            <a href={`${API_BASE_URL}/api/auth/discord/login`} class="inline-flex items-center gap-3 rounded-lg bg-primary hover:bg-primary-hover px-10 py-5 text-sm font-semibold uppercase tracking-widest text-on-primary shadow-sm shadow-primary/20 hover: active:scale-[0.98] transition-all">
+            <a href={`${API_BASE_URL}/api/auth/discord/login?returnTo=${encodeURIComponent(window.location.pathname)}`} class="inline-flex items-center gap-3 rounded-lg bg-primary hover:bg-primary-hover px-10 py-5 text-sm font-semibold uppercase tracking-widest text-on-primary shadow-sm shadow-primary/20 hover: active:scale-[0.98] transition-all">
               <Papicon icon="Lock" size={18} />
               Se connecter avec Discord
             </a>

@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { __testing, type PredictionObservation } from '../../services/analytics/predictionService.js';
 import { dateKeyWeekday, dateKeyRange, shiftDateKey, toDateKey } from '../../services/analytics/dateKeys.js';
+import { BucketZoner } from '../../services/analytics/zonedBuckets.js';
+
+// Les creneaux sont stockes en UTC : un lecteur UTC les retrouve inchanges,
+// ce qui garde ces cas de test focalises sur le calcul de saisonnalite.
+const UTC = new BucketZoner('UTC');
 
 const { weightedFit, weeklyIndices, robustSigma, projectSeries, buildSeasonality, buildGrowthForecast, buildAnomalyAlerts } =
   __testing;
@@ -272,7 +277,7 @@ describe('saisonnalité', () => {
       messagesCount: dateKeyWeekday(dateKey) === 2 ? 50 : 100,
     }));
 
-    const profile = buildSeasonality(stats, []);
+    const profile = buildSeasonality(stats, [], UTC);
     expect(profile.quietestDay).toBe('Mardi');
     expect(profile.weekdayAverages[2]).toBeCloseTo(50, 6);
   });
@@ -281,11 +286,12 @@ describe('saisonnalité', () => {
     const stats = keys.map((dateKey) => ({ dateKey, messagesCount: 100 }));
     // Seules les heures 8 à 23 ont des lignes : 0 à 7 sont absentes de la base.
     const buckets = Array.from({ length: 16 }, (_, i) => ({
+      dateKey: END,
       hour: i + 8,
       _sum: { messagesCount: 300 + i },
     }));
 
-    const profile = buildSeasonality(stats, buckets);
+    const profile = buildSeasonality(stats, buckets, UTC);
     // L'ancienne version ne regardait que les heures présentes et ne pouvait
     // donc jamais désigner une heure réellement morte.
     expect(profile.quietestHour).toBeLessThan(8);
@@ -295,19 +301,31 @@ describe('saisonnalité', () => {
 
   test('les moyennes horaires sont rapportées au nombre de jours observés', () => {
     const stats = keys.map((dateKey) => ({ dateKey, messagesCount: 100 }));
-    const profile = buildSeasonality(stats, [{ hour: 12, _sum: { messagesCount: 600 } }]);
+    const profile = buildSeasonality(stats, [{ dateKey: END, hour: 12, _sum: { messagesCount: 600 } }], UTC);
     expect(profile.hourlyAverages[12]).toBeCloseTo(20, 6);
+  });
+
+  test('les heures sont ramenees au fuseau du serveur', () => {
+    // Meme creneau, meme volume : seul le fuseau de lecture change. En juin,
+    // Paris est a UTC+2, donc le pic de 12h UTC est le pic de 14h.
+    const stats = keys.map((dateKey) => ({ dateKey, messagesCount: 100 }));
+    const buckets = [{ dateKey: END, hour: 12, _sum: { messagesCount: 600 } }];
+
+    const paris = buildSeasonality(stats, buckets, new BucketZoner('Europe/Paris'));
+    expect(paris.busiestHour).toBe(14);
+    expect(paris.hourlyAverages[12]).toBe(0);
+    expect(buildSeasonality(stats, buckets, UTC).busiestHour).toBe(12);
   });
 
   test('un échantillon court est explicitement marqué peu fiable', () => {
     const short = dateKeyRange(END, 5).map((dateKey) => ({ dateKey, messagesCount: 10 }));
-    expect(buildSeasonality(short, []).lowConfidence).toBe(true);
-    expect(buildSeasonality(keys.map((dateKey) => ({ dateKey, messagesCount: 10 })), []).lowConfidence).toBe(false);
+    expect(buildSeasonality(short, [], UTC).lowConfidence).toBe(true);
+    expect(buildSeasonality(keys.map((dateKey) => ({ dateKey, messagesCount: 10 })), [], UTC).lowConfidence).toBe(false);
   });
 
   test('des compteurs nuls en base sont tolérés', () => {
     const stats = keys.map((dateKey) => ({ dateKey, messagesCount: 0 }));
-    const profile = buildSeasonality(stats, [{ hour: 3, _sum: { messagesCount: null } }]);
+    const profile = buildSeasonality(stats, [{ dateKey: END, hour: 3, _sum: { messagesCount: null } }], UTC);
     expect(profile.hourlyAverages[3]).toBe(0);
     expect(Number.isFinite(profile.weekdayAverages[0])).toBe(true);
   });

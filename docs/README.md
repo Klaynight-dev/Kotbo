@@ -8,6 +8,11 @@ Documentation technique et fonctionnelle du bot Kotbo.
   doubles comptes, analyse comportementale intelligente, vérification OAuth,
   commandes, dashboard et modèle de données.
 
+## Facturation
+
+- [`stripe.md`](./stripe.md) - Mise en place de Stripe de zéro : comptes, clés,
+  produits et prix, webhook, passage en production, exploitation et dépannage.
+
 ## Gouvernance des données
 
 - [`privacy/`](./privacy/) - Registre des traitements, intérêts légitimes,

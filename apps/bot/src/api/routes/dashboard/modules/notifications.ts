@@ -30,7 +30,6 @@ export async function handleNotificationsRoutes(ctx: ModuleRouteContext): Promis
     const featureKey = parts[6];
     try {
       const body = await readJsonBody<{
-        enabled?: boolean;
         channelId?: string | null;
         secondaryChannelId?: string | null;
         requiredRoleId?: string | null;
@@ -44,6 +43,20 @@ export async function handleNotificationsRoutes(ctx: ModuleRouteContext): Promis
 
       if (!body) {
         json(res, 400, { error: 'Payload de configuration invalide' });
+        return true;
+      }
+
+      // Cette route ecrit la ligne de configuration, rien d'autre. Y accepter
+      // `enabled` en faisait une seconde porte pour allumer un module : la
+      // colonne changeait, mais sans la cascade des dependances, sans le
+      // controle de l'offre, sans les tables propres au module et sans purge du
+      // cache d'etats - la page disait une chose et le bot en faisait une autre.
+      // L'activation passe par PUT /modules/:moduleId, qui fait les cinq.
+      if (Object.prototype.hasOwnProperty.call(body, 'enabled')) {
+        json(res, 400, {
+          error: "L'activation d'un module ne s'ecrit pas ici. Utiliser PUT /modules/:moduleId.",
+          code: 'use_module_route',
+        });
         return true;
       }
 

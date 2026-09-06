@@ -1,0 +1,271 @@
+// ============================================================================
+// TUNNEL D'ACQUISITION ET STATISTIQUES COMMERCIALES
+// ============================================================================
+//
+// Trois trous structurants motivent ces modèles, et il faut les avoir en tête
+// pour comprendre pourquoi ils ne ressemblent pas aux tables d'analytics
+// existantes :
+//
+//   - le départ d'un serveur ne laissait aucune trace (`GuildDelete` écrivait
+//     une ligne de journal), donc aucun churn n'était mesurable ;
+//   - aucun montant réellement encaissé n'était conservé, seuls les tarifs
+//     indicatifs de `PLAN_REGISTRY` ;
+//   - `Guild` ne porte que l'état courant : un serveur passé de PRO à FREE ne
+//     laisse rien derrière lui, et `onboardingCompletedAt` dit qu'on a fini,
+//     jamais par où l'on est passé.
+//
+// ── Pourquoi aucune relation vers `Guild` ───────────────────────────────────
+//
+// Toutes les relations de `Guild` sont en `onDelete: Cascade`. Brancher le
+// journal du tunnel dessus effacerait l'historique d'un serveur au moment
+// précis où il devient intéressant : son départ. Les `guildId` sont donc des
+// colonnes libres, volontairement non contraintes. C'est le seul endroit du
+// schéma où cette entorse est délibérée.
+//
+// Spécification complète : docs/acquisition-analytics-spec.md
+
+/// Journal du tunnel : une ligne par franchissement d'étape.
+///
+/// Seule table à fort volume de l'ensemble. Elle est purgée à treize mois
+/// (`ACQUISITION_EVENT_RETENTION_DAYS`) - treize et non douze, pour qu'une
+/// comparaison d'un mois à celui de l'année précédente ait encore ses deux
+/// termes. Ce qui doit survivre à cette purge vit dans `GuildLifecycle` ou dans
+/// les instantanés agrégés, qui ne portent aucun identifiant.
+model AcquisitionEvent {
+  id String @id @default(cuid())
+
+  /// Étape franchie. Valeurs closes, cf. `ACQUISITION_STEPS` (@kotbo/contracts).
+  /// Un `String` plutôt qu'un `enum` Prisma : la liste bouge à chaque écran
+  /// ajouté au parcours, et une migration par étape rendrait le tunnel coûteux
+  /// à faire évoluer. La validation est faite à l'entrée, par `isAcquisitionStep`.
+  step String
+
+  /// Serveur concerné. Null en amont du tunnel : une visite du site et un clic
+  /// sur « Ajouter » n'ont pas encore de serveur auquel se rattacher.
+  guildId String?
+
+  /// Personne, pseudonymisée : HMAC-SHA256 de l'identifiant Discord avec un
+  /// secret d'instance. Jamais l'identifiant en clair - le hachage suffit à
+  /// compter des parcours distincts et à recoller les étapes d'une même
+  /// personne, sans constituer un fichier d'utilisateurs identifiés.
+  actorHash String?
+
+  /// Visiteur anonyme, le temps de sa session. Seul moyen de relier « a lu les
+  /// tarifs » à « a posé le bot » avant qu'un serveur n'existe. Purgé à trente
+  /// jours : c'est cette brièveté qui maintient la mesure dans l'exemption de
+  /// consentement prévue par la CNIL pour la mesure d'audience.
+  visitorId String?
+
+  /// Surface d'où vient le clic (`landing`, `docs`, `discord`, `dashboard`).
+  source String?
+  /// Campagne, quand il y en a une.
+  campaign String?
+  /// Emplacement précis du clic sur la landing (`hero`, `pricing`, `faq`…).
+  /// C'est ce champ qui répond à « quel bouton convertit », que le seul
+  /// `utm_source` ne permettait pas de distinguer.
+  content String?
+
+  /// Contexte de l'étape : étape d'onboarding visée, offre, périodicité,
+  /// montant, motif de départ, canal du référent. Jamais de contenu Discord.
+  /// En JSON parce que ce contexte diffère d'une étape à l'autre et qu'une
+  /// colonne par cas rendrait la table illisible.
+  metadata Json?
+
+  occurredAt DateTime @default(now())
+
+  @@index([step, occurredAt])
+  @@index([guildId, occurredAt])
+  @@index([visitorId])
+  @@index([occurredAt])
+  @@map("acquisition_events")
+}
+
+/// Où en est chaque serveur de son parcours, et ce qu'il rapporte.
+///
+/// Dérivé du journal, mis à jour à chaque événement. Deux raisons de le tenir
+/// à part plutôt que de tout recalculer :
+///
+///   - une cohorte de rétention qui rescanne le journal entier à chaque
+///     affichage ne tient pas la charge, alors qu'ici c'est une seule requête ;
+///   - il survit à la purge des événements. Un serveur parti il y a deux ans
+///     doit rester comptable dans les courbes historiques, même quand les
+///     lignes qui racontent son départ ont disparu.
+///
+/// Ne contient aucune donnée personnelle : des dates, des montants, un plan.
+model GuildLifecycle {
+  guildId String @id
+
+  // ── Provenance ────────────────────────────────────────────────────────────
+  /// Canal d'entrée, tel que `classifyReferrer` l'a déduit (`google`,
+  /// `discord`…). C'est la réponse à « d'où viennent les serveurs qui paient ».
+  source   String?
+  campaign String?
+  /// Bouton qui a produit le clic d'invitation.
+  content  String?
+  /// SELF_SERVE | CODE | STAFF_LINK | GIFT | ADMIN. Distinct de `source` : un
+  /// serveur peut arriver par Google puis être activé par un code partenaire.
+  activationOrigin String?
+  /// Instance white-label, pour isoler ou agréger selon la question posée.
+  instanceId String?
+
+  // ── Horodatage du tunnel ──────────────────────────────────────────────────
+  invitedAt              DateTime?
+  dashboardFirstOpenedAt DateTime?
+  onboardingStartedAt    DateTime?
+  onboardingCompletedAt  DateTime?
+  /// Dernière étape atteinte du parcours de configuration.
+  onboardingLastStep     String?
+  /// Toutes les étapes vues, avec leur horodatage. Sert à mesurer le temps
+  /// passé par écran et à repérer les allers-retours.
+  onboardingSteps        Json?
+  /// Temps total passé dans le parcours, en secondes.
+  onboardingSeconds      Int?
+
+  pricingViewedAt     DateTime?
+  checkoutStartedAt   DateTime?
+  checkoutAbandonedAt DateTime?
+  trialStartedAt      DateTime?
+  trialEndsAt         DateTime?
+  trialConvertedAt    DateTime?
+  firstPaidAt         DateTime?
+
+  // ── État commercial courant ───────────────────────────────────────────────
+  plan     String  @default("FREE")
+  interval String?
+  /// Revenu mensuel normalisé, en centimes : un abonnement annuel est ramené au
+  /// mois. Recalculé à partir du dernier montant réellement facturé, jamais du
+  /// tarif affiché - une remise, un cadeau ou un prix négocié rendrait le
+  /// second faux.
+  mrrCents Int     @default(0)
+  /// Total encaissé depuis le début, en centimes. Base de la valeur vie client.
+  lifetimeCents Int @default(0)
+
+  // ── Sortie ────────────────────────────────────────────────────────────────
+  churnedAt   DateTime?
+  /// VOLUNTARY | PAYMENT_FAILED | TRIAL_EXPIRED | BOT_REMOVED | DOWNGRADE
+  churnReason String?
+  botRemovedAt DateTime?
+  /// Un serveur qui remet le bot après l'avoir retiré : compté, pas écrasé.
+  /// Sans ce compteur, une réinstallation ressemblerait à une acquisition
+  /// neuve et gonflerait le haut du tunnel.
+  reinstallCount Int @default(0)
+
+  // ── Segmentation ──────────────────────────────────────────────────────────
+  /// Effectif à l'arrivée et effectif courant. Le palier tarifaire se lit sur
+  /// le second, la cohorte sur le premier : un serveur qui a triplé de taille
+  /// depuis son arrivée ne doit pas changer de cohorte rétroactivement.
+  memberCountAtInvite Int?
+  memberCount         Int?
+  /// Type de communauté déclaré à l'étape Kind du parcours, et pistes choisies
+  /// à l'étape Tracks. Dit à quel public Kotbo se vend réellement.
+  serverKind String?
+  tracks     String[] @default([])
+  locale     String?
+  timezone   String?
+
+  updatedAt DateTime @updatedAt
+
+  @@index([plan, churnedAt])
+  @@index([source])
+  @@index([firstPaidAt])
+  @@index([churnedAt])
+  @@index([invitedAt])
+  @@map("guild_lifecycles")
+}
+
+/// Facture Stripe, recopiée localement.
+///
+/// `BillingEvent` garde les webhooks bruts trois jours, le temps de servir de
+/// verrou d'idempotence : ce n'est pas un historique comptable. Sans cette
+/// table, le seul chiffre d'affaires disponible serait une estimation à partir
+/// de `displayPriceCents`, fausse dès qu'intervient une remise, une taxe, un
+/// prix négocié ou un remboursement.
+///
+/// Alimentée par le webhook `invoice.paid` et rattrapée par le cron
+/// `billing-invoice-sync`, qui va rechercher ce que le webhook a manqué.
+model BillingInvoice {
+  /// `in_...` de Stripe. L'identité vient de Stripe : rejouer un webhook ou
+  /// relancer la reprise ne crée pas de doublon.
+  id String @id
+
+  guildId        String?
+  customerId     String?
+  subscriptionId String?
+
+  plan     String
+  interval String?
+  /// paid | open | void | uncollectible | draft
+  status   String
+
+  currency            String @default("eur")
+  subtotalCents       Int    @default(0)
+  discountCents       Int    @default(0)
+  taxCents            Int    @default(0)
+  totalCents          Int    @default(0)
+  amountPaidCents     Int    @default(0)
+  amountRefundedCents Int    @default(0)
+
+  periodStart DateTime?
+  periodEnd   DateTime?
+  issuedAt    DateTime
+  paidAt      DateTime?
+
+  /// `webhook` ou `backfill`. Distingue ce qui a été observé en direct de ce
+  /// qui a été rattrapé après coup, quand les deux chemins se recouvrent.
+  ingestedBy String @default("webhook")
+
+  @@index([guildId, issuedAt])
+  @@index([issuedAt])
+  @@index([status])
+  @@index([subscriptionId])
+  @@map("billing_invoices")
+}
+
+/// Instantané quotidien agrégé, conservé sans limite de durée.
+///
+/// Une table pour tous les axes plutôt qu'une par axe, et un `Json` pour les
+/// compteurs plutôt qu'une colonne par métrique : ajouter un axe de découpage
+/// ou une métrique ne demande alors aucune migration. Le compromis est assumé -
+/// on perd le typage fort sur `metrics`, on gagne un schéma qui ne bouge pas à
+/// chaque question nouvelle posée aux données.
+///
+/// Ne porte aucun identifiant : c'est ce qui permet de le garder indéfiniment
+/// quand le journal détaillé, lui, est purgé à treize mois.
+model AnalyticsDailySnapshot {
+  id      String @id @default(cuid())
+  /// YYYY-MM-DD, dans le fuseau Europe/Paris. Le process tourne en UTC : sans
+  /// fuseau de référence explicite, la frontière d'un jour se déplacerait deux
+  /// fois par an.
+  dateKey String
+
+  /// Axe de découpage, cf. `ANALYTICS_DIMENSIONS`.
+  dimension String
+  /// Valeur dans cet axe (`PRO`, `1k-10k`, `google`…). Chaîne vide pour `global`.
+  bucket    String
+
+  /// Compteurs du jour pour ce découpage : serveurs, arrivées, départs, MRR,
+  /// encaissé, essais, conversions.
+  metrics Json
+
+  createdAt DateTime @default(now())
+
+  @@unique([dateKey, dimension, bucket])
+  @@index([dimension, dateKey])
+  @@map("analytics_daily_snapshots")
+}
+
+/// Mémoire des alertes commerciales.
+///
+/// Sans elle, une alerte de churn se répéterait à chaque passage du cron tant
+/// que le seuil reste franchi - et une alerte qui se répète est une alerte
+/// qu'on finit par ignorer.
+model AcquisitionAlertState {
+  /// Identifiant de l'alerte : `churn-rate`, `past-due:<guildId>`…
+  key         String   @id
+  lastFiredAt DateTime
+  /// Valeur au moment du déclenchement, pour n'alerter à nouveau que si la
+  /// situation s'est réellement aggravée.
+  lastValue   Float?
+
+  @@map("acquisition_alert_states")
+}

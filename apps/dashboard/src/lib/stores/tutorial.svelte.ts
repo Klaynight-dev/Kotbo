@@ -110,8 +110,8 @@ export const checklistTasks: ChecklistTask[] = [
     title: m.chk_configure_settings_title(),
     description: m.chk_configure_settings_desc(),
     icon: 'settings',
-    route: '/settings',
-    autoCompleteRoute: '/settings',
+    route: '/management',
+    autoCompleteRoute: '/management',
   },
   {
     id: 'try-shortcuts',
@@ -279,15 +279,6 @@ export const setupTasks: SetupTask[] = [
     icon: 'rss',
     route: '/news',
     autoCompleteRoute: '/news',
-    essential: false,
-  },
-  {
-    id: 'setup-dailyalgo',
-    title: m.stp_setup_dailyalgo_title(),
-    description: m.stp_setup_dailyalgo_desc(),
-    icon: 'code',
-    route: '/dailyalgo',
-    autoCompleteRoute: '/dailyalgo',
     essential: false,
   },
   {
@@ -647,18 +638,6 @@ export const pageTips: PageTip[] = [
     icon: 'package',
   },
   {
-    pageId: 'settings',
-    routes: ['/settings'],
-    title: m.tip_settings_title(),
-    description: m.tip_settings_desc(),
-    highlights: [
-      m.tip_settings_h1(),
-      m.tip_settings_h2(),
-      m.tip_settings_h3(),
-    ],
-    icon: 'settings',
-  },
-  {
     pageId: 'channels-management',
     routes: ['/channels-management'],
     title: m.tip_channels_management_title(),
@@ -681,18 +660,6 @@ export const pageTips: PageTip[] = [
       m.tip_command_access_h3(),
     ],
     icon: 'terminal',
-  },
-  {
-    pageId: 'dailyalgo',
-    routes: ['/dailyalgo'],
-    title: m.tip_dailyalgo_title(),
-    description: m.tip_dailyalgo_desc(),
-    highlights: [
-      m.tip_dailyalgo_h1(),
-      m.tip_dailyalgo_h2(),
-      m.tip_dailyalgo_h3(),
-    ],
-    icon: 'code',
   },
   {
     pageId: 'nickname-moderation',

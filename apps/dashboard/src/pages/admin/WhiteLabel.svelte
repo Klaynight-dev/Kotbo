@@ -13,7 +13,7 @@
     fetchAdminGuilds,
   } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
 
   interface WLInstance {
     id: string;
@@ -154,7 +154,7 @@
   }
 </script>
 
-<AdminLayout>
+<AdminShell title="Marque blanche" description="Instances white-label et serveurs qui leur sont rattachés.">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex items-center justify-between">
@@ -436,4 +436,4 @@
       </div>
     </div>
   {/if}
-</AdminLayout>
+</AdminShell>

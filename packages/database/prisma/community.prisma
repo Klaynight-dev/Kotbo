@@ -4,6 +4,11 @@ model FunGameState {
   countingLastUserId String?
   oneWordStoryLastUserId String?
   guessNumberTarget  Int      @default(0)
+  wordChainLastWord    String?
+  wordChainLastUserId  String?
+  /** Rébus courant, ex. "🦁👑" - résolu contre `emojiRiddleAnswer` (JSON des réponses acceptées). */
+  emojiRiddleEmojis    String?
+  emojiRiddleAnswer    String?
 
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 

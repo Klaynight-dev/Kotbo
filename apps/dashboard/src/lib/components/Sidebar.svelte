@@ -223,6 +223,22 @@
         {/if}
       </div>
 
+      {#if navigationStore.isAdmin}
+        <a
+          href="/management"
+          title={m.mgmt_page_title()}
+          aria-label={m.mgmt_page_title()}
+          aria-current={isActiveNavItem('/management') ? 'page' : undefined}
+          onmouseenter={() => prefetchRoute('/management')}
+          onfocus={() => prefetchRoute('/management')}
+          class="flex items-center justify-center w-8 h-8 shrink-0 rounded-md transition-colors {isActiveNavItem('/management')
+            ? 'text-primary bg-primary/10'
+            : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'}"
+        >
+          <Papicon icon="settings" size={16} />
+        </a>
+      {/if}
+
       <button
         type="button"
         onclick={() => sidebarStore.closeMobile?.()}
@@ -509,6 +525,33 @@
         <Papicon icon="lock" size={isCollapsed ? 18 : 16} class="shrink-0" />
         {#if !isCollapsed}
           <span class="text-[13px]">{m.nav_administration()}</span>
+        {/if}
+      </a>
+    {/if}
+
+    <!-- Facturation : au-dessus du profil et hors des groupes de modules, comme
+         l'entrée Administration. Elle n'apparaît que pour ceux qui ont à la
+         voir - l'administrateur, celui qui paie, ou tout le staff quand le
+         serveur a choisi de leur ouvrir (`billingAccess`, calculé par l'API). -->
+    {#if navigationStore.canViewBilling}
+      <a
+        href="/billing"
+        onmouseenter={(e) => showTooltip(e, m.nav_billing())}
+        onmouseleave={hideTooltip}
+        aria-label={isCollapsed ? m.nav_billing() : undefined}
+        aria-current={isActiveNavItem('/billing') ? 'page' : undefined}
+        class="
+          relative flex items-center rounded-md
+          transition-colors duration-150 group
+          {isCollapsed ? 'lg:justify-center py-2' : 'gap-2.5 px-3 py-2'}
+          {isActiveNavItem('/billing')
+            ? 'text-primary bg-primary/8'
+            : 'text-on-surface-variant hover:text-primary hover:bg-surface-container'}
+        "
+      >
+        <Papicon icon="credit-card" size={isCollapsed ? 18 : 16} class="shrink-0" />
+        {#if !isCollapsed}
+          <span class="text-[13px]">{m.nav_billing()}</span>
         {/if}
       </a>
     {/if}

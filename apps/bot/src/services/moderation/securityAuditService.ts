@@ -65,6 +65,17 @@ export type AuditFix = {
   risky?: boolean;
 };
 
+/**
+ * Renvoi vers la page qui permet de traiter le constat a la main. Sert aux
+ * constats qui demandent une decision humaine plutot qu'un correctif : les
+ * annoncer sans donner le chemin obligeait a chercher la page soi-meme.
+ * `href` est une route interne du dashboard, jamais une URL externe.
+ */
+export type AuditLink = {
+  href: string;
+  label: string;
+};
+
 export type AuditFinding = {
   /** Identifiant stable, utilisé par l'UI pour cibler un correctif. */
   id: string;
@@ -77,6 +88,7 @@ export type AuditFinding = {
   weight: number;
   entities?: AuditEntity[];
   fix?: AuditFix;
+  link?: AuditLink;
 };
 
 export type AuditCategoryScore = {
@@ -737,11 +749,12 @@ async function checkInvites(guild: Guild, c: AuditCollector, config: { inviteGua
         severity: 'INFO',
         title: 'Invitations à usages illimités',
         detail: `${unlimited.size} invitation(s) acceptent un nombre illimité d'utilisations : impossible de tracer la source d'un raid.`,
-        recommendation: 'Activer « invitations unitaires » : chaque invitation ne sert qu\'une fois, la source d\'un raid devient identifiable.',
-        weight: 4,
-        fix: config?.inviteRequireUnitary
-          ? undefined
-          : { action: 'enable_raid_module', label: 'Exiger des invitations unitaires', payload: { field: 'inviteRequireUnitary' } },
+        // Constat purement informatif : pas de poids, pas de correctif.
+        // Exiger des invitations unitaires casse le partage ordinaire d'un lien
+        // entre membres - le cout pour les utilisateurs depasse le gain de
+        // tracabilite, donc on signale sans recommander ni proposer
+        // d'activation en un clic.
+        weight: 0,
       });
     }
 
@@ -1181,6 +1194,7 @@ async function checkHygiene(guild: Guild, c: AuditCollector): Promise<void> {
         detail: `${pending} détections attendent une décision staff. Sans label, les poids du moteur ne se recalibrent pas et la précision stagne.`,
         recommendation: 'Traiter la file depuis la page Doubles comptes.',
         weight: 3,
+        link: { href: '/security/accounts/detections', label: 'Voir les détections' },
       });
     }
   } catch {
@@ -1357,8 +1371,50 @@ export async function applyAuditFix(guild: Guild, findingId: string, reason: str
   if (!finding?.fix) {
     return { ok: false, message: 'Ce constat n\'a pas de correctif automatique (ou n\'est plus d\'actualité).' };
   }
+  return executeAuditFix(guild, finding, reason);
+}
 
+/**
+ * Applique en une passe tous les correctifs sans risque du rapport.
+ *
+ * Les correctifs `risky` touchent des permissions existantes : ils restent
+ * volontairement hors du lot et gardent leur confirmation individuelle - un
+ * bouton « tout activer » ne doit pas pouvoir retirer des droits en silence.
+ *
+ * L'audit n'est lance qu'une fois pour tout le lot : passer par `applyAuditFix`
+ * en boucle l'aurait relance a chaque correctif.
+ */
+export async function applySafeAuditFixes(
+  guild: Guild,
+  reason: string,
+): Promise<{
+  applied: { id: string; title: string; message: string }[];
+  failed: { id: string; title: string; message: string }[];
+}> {
+  const audit = await runSecurityAudit(guild, { deep: false });
+  const targets = audit.findings.filter((f) => f.severity !== 'OK' && f.fix && !f.fix.risky);
+
+  const applied: { id: string; title: string; message: string }[] = [];
+  const failed: { id: string; title: string; message: string }[] = [];
+
+  // En sequence, pas en parallele : plusieurs correctifs ecrivent la meme ligne
+  // de configuration (autoModConfig, guild), et deux upserts concurrents sur la
+  // meme cle se marchent dessus.
+  for (const finding of targets) {
+    const outcome = await executeAuditFix(guild, finding, reason);
+    const entry = { id: finding.id, title: finding.title, message: outcome.message };
+    if (outcome.ok) applied.push(entry);
+    else failed.push(entry);
+  }
+
+  return { applied, failed };
+}
+
+/** Execute le correctif d'un constat deja resolu, sans relancer l'audit. */
+async function executeAuditFix(guild: Guild, finding: AuditFinding, reason: string): Promise<FixOutcome> {
   const fix = finding.fix;
+  if (!fix) return { ok: false, message: "Ce constat n'a pas de correctif automatique." };
+  const findingId = finding.id;
   const payload = fix.payload ?? {};
 
   try {

@@ -35,6 +35,74 @@ export async function fetchAdminGuilds() {
   return response.json();
 }
 
+// ── Facturation globale ───────────────────────────────────────────────────────────────
+
+export type AdminPlanKey = 'FREE' | 'PLUS' | 'PRO' | 'ULTIMATE' | 'CUSTOM';
+
+export interface AdminBillingGuild {
+  id: string;
+  name: string | null;
+  present: boolean;
+  plan: AdminPlanKey;
+  activated: boolean;
+  accessType: string | null;
+  accessExpiresAt: string | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  stripeSubscriptionStatus: string | null;
+  stripeCurrentPeriodEnd: string | null;
+  stripeCancelAtPeriodEnd: boolean;
+  trial: {
+    discordUserId: string;
+    consumed: boolean;
+    reservedAt: string;
+    startedAt: string | null;
+  } | null;
+}
+
+export interface AdminBillingState {
+  enabled: boolean;
+  plans: { key: AdminPlanKey; name: string }[];
+  counts: Record<AdminPlanKey, number>;
+  trialDays: number;
+  subscriptions: number;
+  trials: number;
+  guilds: AdminBillingGuild[];
+}
+
+async function adminBillingMutation(path: string, method: 'PUT' | 'POST', body?: unknown) {
+  const response = await authorizedFetch(`${API_BASE_URL}${path}`, {
+    method,
+    headers: JSON_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Erreur lors de la mise à jour de la facturation');
+  return result as { ok: boolean; message: string; plan?: AdminPlanKey; status?: string };
+}
+
+export async function fetchAdminBilling(): Promise<AdminBillingState> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/billing`);
+  if (!response.ok) throw new Error("Erreur lors du chargement de la facturation");
+  return response.json();
+}
+
+export function setAdminGuildPlan(guildId: string, plan: AdminPlanKey, reason: string) {
+  return adminBillingMutation(`/api/admin/guilds/${guildId}/plan`, 'PUT', { plan, reason });
+}
+
+export function detachAdminGuildBilling(guildId: string) {
+  return adminBillingMutation(`/api/admin/guilds/${guildId}/billing/detach`, 'POST');
+}
+
+export function resetAdminGuildBillingTrial(guildId: string) {
+  return adminBillingMutation(`/api/admin/guilds/${guildId}/billing/trial-reset`, 'POST');
+}
+
+export function resyncAdminGuildBilling(guildId: string) {
+  return adminBillingMutation(`/api/admin/guilds/${guildId}/billing/resync`, 'POST');
+}
+
 export async function fetchAdminShards() {
   const response = await authorizedFetch(`${API_BASE_URL}/api/admin/shards`);
   if (!response.ok) throw new Error('Erreur lors du chargement des shards');
@@ -214,6 +282,8 @@ export interface BroadcastPayload {
   targetGuilds?: string[];
   channelPref?: 'AUTO' | 'NEWS' | 'PUBLIC' | 'STAFF' | 'FALLBACK';
   dryRun?: boolean;
+  /** ISO 8601. Present = annonce programmee au lieu d'un envoi immediat. */
+  scheduledAt?: string;
 }
 
 export interface BroadcastGuildChannel {
@@ -235,12 +305,34 @@ export interface BroadcastGuildConfig {
   channels: BroadcastGuildChannel[];
 }
 
+export interface BroadcastDelivery {
+  id: string;
+  broadcastId: string;
+  guildId: string;
+  guildName: string;
+  channelId: string | null;
+  channelName: string | null;
+  status: 'SENT' | 'FAILED' | 'SKIPPED';
+  reason: string | null;
+  messageId: string | null;
+  createdAt: string;
+}
+
 export interface BroadcastResult {
   success: boolean;
   successCount: number;
   failCount: number;
   totalTargeted: number;
   dryRun?: boolean;
+  scheduled?: boolean;
+  scheduledAt?: string;
+  broadcastId?: string;
+  /** Avertissements non bloquants (image en HTTP, etc.). */
+  warnings?: string[];
+  /** Nombre de serveurs cibles sans salon de diffusion configure (simulation). */
+  unconfiguredCount?: number;
+  /** Echecs detailles, tronques a 50 entrees. */
+  failures?: Omit<BroadcastDelivery, 'id' | 'broadcastId' | 'createdAt'>[];
 }
 
 export interface BroadcastLogEntry {
@@ -260,6 +352,11 @@ export interface BroadcastLogEntry {
   successCount: number;
   failCount: number;
   totalTargeted: number;
+  status: 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED' | 'FAILED';
+  scheduledAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelledBy: string | null;
   createdAt: string;
 }
 
@@ -448,5 +545,216 @@ export async function activateGuildWithCode(code: string, guildId = authStore.se
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error || "Erreur lors de l'activation du serveur");
   }
+  return response.json();
+}
+
+// ── Médias de broadcast ─────────────────────────────────────────────────────
+// Discord ne charge ni les URL `data:` ni les liens CDN signés, qui expirent.
+// L'upload passe donc par Kotbo, qui héberge l'image derrière une URL stable.
+
+export interface BroadcastMedia {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  uploadedBy: string;
+  usageCount: number;
+  createdAt: string;
+}
+
+export interface BroadcastMediaLibrary {
+  media: BroadcastMedia[];
+  usedBytes: number;
+  quotaBytes: number;
+}
+
+export const BROADCAST_MEDIA_MAX_BYTES = 8 * 1024 * 1024;
+export const BROADCAST_MEDIA_ACCEPTED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+/** Lit un fichier en base64 nu (sans le préfixe `data:...;base64,`). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const separator = result.indexOf(',');
+      resolve(separator >= 0 ? result.slice(separator + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Lecture du fichier impossible'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function uploadBroadcastMedia(file: File): Promise<BroadcastMedia> {
+  if (!BROADCAST_MEDIA_ACCEPTED.includes(file.type)) {
+    throw new Error(`Format non supporté (${file.type || 'inconnu'}). Utilisez PNG, JPEG, GIF ou WEBP.`);
+  }
+  if (file.size > BROADCAST_MEDIA_MAX_BYTES) {
+    throw new Error(`Image trop lourde : ${Math.round(BROADCAST_MEDIA_MAX_BYTES / 1024 / 1024)} Mo maximum.`);
+  }
+
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/media`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type,
+      data: await fileToBase64(file),
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Erreur lors de l'upload de l'image");
+  }
+  return response.json();
+}
+
+export async function fetchBroadcastMedia(limit = 60): Promise<BroadcastMediaLibrary> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/media?limit=${limit}`);
+  if (!response.ok) throw new Error('Erreur lors du chargement des images');
+  return response.json();
+}
+
+export async function deleteBroadcastMedia(id: string): Promise<void> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/media/${id}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error("Erreur lors de la suppression de l'image");
+}
+
+// ── Modèles d'annonce ───────────────────────────────────────────────────────
+
+export interface BroadcastTemplate {
+  id: string;
+  name: string;
+  title: string | null;
+  message: string;
+  color: string;
+  thumbnailUrl: string | null;
+  imageUrl: string | null;
+  footerText: string | null;
+  target: string;
+  targetGuilds: string[];
+  channelPref: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchBroadcastTemplates(): Promise<{ templates: BroadcastTemplate[] }> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/templates`);
+  if (!response.ok) throw new Error('Erreur lors du chargement des modèles');
+  return response.json();
+}
+
+export async function createBroadcastTemplate(payload: BroadcastPayload & { name: string }): Promise<BroadcastTemplate> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/templates`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Erreur lors de la création du modèle');
+  }
+  return response.json();
+}
+
+export async function deleteBroadcastTemplate(id: string): Promise<void> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/templates/${id}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error('Erreur lors de la suppression du modèle');
+}
+
+// ── Rapport de diffusion et annulation ──────────────────────────────────────
+
+export async function fetchBroadcastDeliveries(
+  broadcastId: string,
+  status: 'ALL' | 'SENT' | 'FAILED' | 'SKIPPED' = 'ALL',
+): Promise<{ deliveries: BroadcastDelivery[] }> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/${broadcastId}/deliveries?status=${status}`);
+  if (!response.ok) throw new Error('Erreur lors du chargement du rapport de diffusion');
+  return response.json();
+}
+
+export async function cancelScheduledBroadcast(broadcastId: string): Promise<void> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/broadcast/${broadcastId}/cancel`, { method: 'POST' });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Erreur lors de l'annulation");
+  }
+}
+
+// ── Historique de santé ─────────────────────────────────────────────────────
+
+export interface AdminHealthSample {
+  t: number;
+  heapUsed: number;
+  heapTotal: number;
+  rss: number;
+  external: number;
+  averagePing: number;
+  onlineShards: number;
+  totalShards: number;
+  guilds: number;
+  members: number;
+  cpu: number;
+  uptime: number;
+}
+
+export interface AdminHealthSeries {
+  samples: AdminHealthSample[];
+  intervalMs: number;
+  heapTrendPerHour: number;
+  peak: { heapUsed: number; rss: number; averagePing: number; cpu: number } | null;
+}
+
+export async function fetchAdminHealthSeries(minutes = 60): Promise<AdminHealthSeries> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/health/series?minutes=${minutes}`);
+  if (!response.ok) throw new Error("Erreur lors du chargement de l'historique de santé");
+  return response.json();
+}
+
+// ── Journal d'audit ─────────────────────────────────────────────────────────
+
+export interface AdminAuditEntry {
+  id: string;
+  actorId: string;
+  actorName: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  summary: string;
+  metadata: unknown;
+  outcome: 'OK' | 'FAILED';
+  ip: string | null;
+  createdAt: string;
+}
+
+export interface AdminAuditQuery {
+  action?: string;
+  actorId?: string;
+  targetId?: string;
+  outcome?: 'OK' | 'FAILED';
+  search?: string;
+  sinceHours?: number;
+  limit?: number;
+  cursor?: string;
+}
+
+export async function fetchAdminAudit(query: AdminAuditQuery = {}): Promise<{
+  entries: AdminAuditEntry[];
+  nextCursor: string | null;
+}> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/audit?${params.toString()}`);
+  if (!response.ok) throw new Error('Erreur lors du chargement du journal');
+  return response.json();
+}
+
+export async function fetchAdminAuditActions(): Promise<{ actions: { action: string; count: number }[] }> {
+  const response = await authorizedFetch(`${API_BASE_URL}/api/admin/audit/actions`);
+  if (!response.ok) throw new Error('Erreur lors du chargement des actions');
   return response.json();
 }

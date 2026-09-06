@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
+  import { computeForceLayout, type LayoutEdge, type LayoutNode, type LayoutPosition } from '../../graph/forceLayout';
   import Papicon from '../Papicon.svelte';
   import { MessageSquare, ThumbsUp, AtSign, Compass, RotateCcw, Search, Users, ShieldAlert } from 'lucide-svelte';
 
@@ -32,10 +33,12 @@
   const {
     nodes = [],
     edges = [],
+    hiddenMembersCount = 0,
     onSelectNode = (_id: string) => {}
   }: {
     nodes: GraphNode[];
     edges: GraphEdge[];
+    hiddenMembersCount?: number;
     onSelectNode?: (id: string) => void;
   } = $props();
 
@@ -72,6 +75,29 @@
   // Simulation nodes with static computed coordinates
   let simNodes = $state<SimNode[]>([]);
 
+  const nodeById = $derived(new Map(simNodes.map(n => [n.id, n])));
+
+  // Adjacence pondérée, construite une seule fois : évite de rebalayer `edges`
+  // pour chaque noeud (survol, layout, top interlocuteurs).
+  const adjacency = $derived.by(() => {
+    const map = new Map<string, Map<string, number>>();
+    const link = (a: string, b: string, count: number) => {
+      let neighbours = map.get(a);
+      if (!neighbours) {
+        neighbours = new Map<string, number>();
+        map.set(a, neighbours);
+      }
+      neighbours.set(b, (neighbours.get(b) || 0) + count);
+    };
+    for (const edge of edges || []) {
+      link(edge.from, edge.to, edge.count);
+      link(edge.to, edge.from, edge.count);
+    }
+    return map;
+  });
+
+  const hoveredNeighbours = $derived(hoveredNodeId ? adjacency.get(hoveredNodeId) ?? null : null);
+
   // Discord presence status colors
   function getStatusColor(status: string | undefined) {
     switch (status) {
@@ -103,7 +129,7 @@
   });
 
   // Selected profile details
-  const selectedNode = $derived(simNodes.find(n => n.id === selectedNodeId) || null);
+  const selectedNode = $derived(selectedNodeId ? nodeById.get(selectedNodeId) ?? null : null);
 
   // Group edges between any two users to avoid multiple overlapping lines
   const groupedEdges = $derived.by(() => {
@@ -145,26 +171,34 @@
     return Array.from(pairMap.values());
   });
 
+  const EDGE_CAP = 250;
+
+  function capStrongest(list: any[]) {
+    if (list.length <= EDGE_CAP) return list;
+    return [...list].sort((a, b) => b.totalCount - a.totalCount).slice(0, EDGE_CAP);
+  }
+
   // Filter edges dynamically by connection type
   const filteredEdges = $derived.by(() => {
-    const allEdges = groupedEdges;
-    let filtered = allEdges;
-    if (selectedTypeFilter !== 'all') {
-      filtered = allEdges.filter(e => e.strongestType === selectedTypeFilter);
-    }
-    if (filtered.length <= 250) return filtered;
-    
-    // Cap at the top 250 strongest connections
-    return [...filtered].sort((a, b) => b.totalCount - a.totalCount).slice(0, 250);
+    if (selectedTypeFilter === 'all') return capStrongest(groupedEdges);
+    return capStrongest(groupedEdges.filter(e => e.strongestType === selectedTypeFilter));
   });
+
+  // Le layout s'appuie toujours sur toutes les relations : changer de filtre ne
+  // redéclenche donc pas la simulation et les noeuds ne sautent plus.
+  const layoutEdges = $derived<LayoutEdge[]>(
+    groupedEdges.map(e => ({ from: e.from, to: e.to, totalCount: e.totalCount }))
+  );
 
   // Calculate coordinates for curved Bezier paths
   const edgesWithCoords = $derived.by(() => {
-    const activeHoveredNodeId = hoveredNodeId;
-    return filteredEdges.map(edge => {
-      const fromNode = simNodes.find(n => n.id === edge.from);
-      const toNode = simNodes.find(n => n.id === edge.to);
-      if (!fromNode || !toNode) return null;
+    const byId = nodeById;
+    const result: any[] = [];
+
+    for (const edge of filteredEdges) {
+      const fromNode = byId.get(edge.from);
+      const toNode = byId.get(edge.to);
+      if (!fromNode || !toNode) continue;
 
       const x1 = fromNode.x;
       const y1 = fromNode.y;
@@ -197,19 +231,20 @@
       const cx = mx + px * curveAmount;
       const cy = my + py * curveAmount;
 
-      const isHovered = activeHoveredNodeId ? (edge.from === activeHoveredNodeId || edge.to === activeHoveredNodeId) : false;
-      const isDimmed = activeHoveredNodeId ? !isHovered : false;
-
       // Determine edge color (color-coded connections based on relationship)
       let strokeColor = '#5865f2'; // Discord Indigo for Mentions
       if (edge.strongestType === 'reply') strokeColor = '#faa61a'; // Yellow for Replies
       if (edge.strongestType === 'reaction') strokeColor = '#f368e0'; // Pink for Reactions
 
-      return {
-        ...edge,
-        sx, sy, tx, ty, cx, cy, isHovered, isDimmed, strokeColor
-      };
-    }).filter(Boolean);
+      result.push({
+        from: edge.from,
+        to: edge.to,
+        totalCount: edge.totalCount,
+        sx, sy, tx, ty, cx, cy, strokeColor
+      });
+    }
+
+    return result;
   });
 
   // Top 5 Connectors (Default Sidebar state)
@@ -222,20 +257,12 @@
   // Top 5 Interactors for selected member (Selected Sidebar state)
   const selectedTopInteractors = $derived.by(() => {
     if (!selectedNodeId) return [];
-    const id = selectedNodeId;
-    const map = new Map<string, number>();
+    const neighbours = adjacency.get(selectedNodeId);
+    if (!neighbours) return [];
 
-    const safeEdges = edges || [];
-    safeEdges.forEach(e => {
-      if (e.from === id || e.to === id) {
-        const otherId = e.from === id ? e.to : e.from;
-        map.set(otherId, (map.get(otherId) || 0) + e.count);
-      }
-    });
-
-    return Array.from(map.entries())
+    return Array.from(neighbours.entries())
       .map(([otherId, count]) => {
-        const node = simNodes.find(n => n.id === otherId);
+        const node = nodeById.get(otherId);
         return {
           id: otherId,
           label: node?.label || 'Membre',
@@ -248,196 +275,78 @@
       .slice(0, 5);
   });
 
-  // Fruchterman-Reingold Force-Directed Layout algorithm (Synchronous, ultra-optimized O(N) execution)
-  function runStaticFRForceLayout() {
-    const w = width;
-    const h = height;
-    const cx = w / 2;
-    const cy = h / 2;
+  const layoutInputNodes = $derived(nodes.map(n => ({ id: n.id, activityCount: n.activityCount })));
 
-    if (nodes.length === 0) {
+  let layoutWorker: Worker | null = null;
+  let workerUnavailable = false;
+  let pendingRequestId = 0;
+  let lastLayoutInput: { nodes: LayoutNode[]; edges: LayoutEdge[] } | null = null;
+
+  function applyPositions(positions: LayoutPosition[]) {
+    const source = new Map(nodes.map(n => [n.id, n]));
+    simNodes = positions.map(pos => {
+      const node = source.get(pos.id);
+      return {
+        id: pos.id,
+        label: node?.label || 'Membre',
+        avatar: node?.avatar ?? null,
+        activityCount: node?.activityCount ?? 0,
+        status: node?.status || 'offline',
+        x: pos.x,
+        y: pos.y,
+        vx: 0,
+        vy: 0,
+        radius: pos.radius,
+        isHub: pos.isHub,
+        isCenter: pos.isCenter,
+        hubId: pos.hubId
+      };
+    });
+  }
+
+  function getWorker(): Worker | null {
+    if (workerUnavailable) return null;
+    if (layoutWorker) return layoutWorker;
+
+    try {
+      const worker = new Worker(new URL('../../graph/graphLayout.worker.ts', import.meta.url), { type: 'module' });
+      worker.onmessage = (event: MessageEvent<{ requestId: number; positions: LayoutPosition[] }>) => {
+        // Une réponse périmée arriverait après un changement de données
+        if (event.data.requestId !== pendingRequestId) return;
+        applyPositions(event.data.positions);
+      };
+      worker.onerror = () => {
+        workerUnavailable = true;
+        worker.terminate();
+        layoutWorker = null;
+        if (lastLayoutInput) {
+          applyPositions(computeForceLayout(lastLayoutInput.nodes, lastLayoutInput.edges, { width, height }));
+        }
+      };
+      layoutWorker = worker;
+      return worker;
+    } catch {
+      workerUnavailable = true;
+      return null;
+    }
+  }
+
+  function requestLayout(simEdges: LayoutEdge[], inputNodes: LayoutNode[]) {
+    if (inputNodes.length === 0) {
       simNodes = [];
       return;
     }
 
-    const N = nodes.length;
-    // Optimal node distance k based on area and nodes volume
-    const area = w * h;
-    const kFR = 1.3 * Math.sqrt(area / N);
+    const requestId = ++pendingRequestId;
+    lastLayoutInput = { nodes: inputNodes, edges: simEdges };
+    const worker = getWorker();
 
-    const sorted = [...nodes].sort((a, b) => b.activityCount - a.activityCount);
-    const maxActivity = sorted[0]?.activityCount || 1;
-    const sizeFactor = N > 120 ? 0.65 : N > 70 ? 0.85 : 1.0;
-
-    // Identify Community Hubs (top 5 community centers)
-    const kHubs = Math.min(5, sorted.length);
-    const hubs = sorted.slice(0, kHubs);
-    const hubIds = new Set(hubs.map(h => h.id));
-
-    // Group nodes into communities
-    const hubGroups = new Map<string, string[]>();
-    hubs.forEach(h => hubGroups.set(h.id, []));
-
-    const nodeHubMap = new Map<string, string>();
-    const remaining = sorted.slice(kHubs);
-
-    remaining.forEach(node => {
-      let bestHubId = '';
-      let maxCount = -1;
-
-      edges.forEach(edge => {
-        if (edge.from === node.id || edge.to === node.id) {
-          const otherId = edge.from === node.id ? edge.to : edge.from;
-          if (hubIds.has(otherId) && edge.count > maxCount) {
-            maxCount = edge.count;
-            bestHubId = otherId;
-          }
-        }
-      });
-
-      if (!bestHubId) {
-        let minSize = Infinity;
-        let selectedHubId = hubs[0]?.id || '';
-        hubs.forEach(h => {
-          const size = hubGroups.get(h.id)?.length ?? 0;
-          if (size < minSize) {
-            minSize = size;
-            selectedHubId = h.id;
-          }
-        });
-        bestHubId = selectedHubId;
-      }
-
-      nodeHubMap.set(node.id, bestHubId);
-      hubGroups.get(bestHubId)?.push(node.id);
-    });
-
-    // Spaced out hubs positions
-    const hubPositions = new Map<string, {x: number, y: number}>();
-    hubs.forEach((hub, index) => {
-      const angle = (index / kHubs) * 2 * Math.PI - Math.PI / 2;
-      const R = Math.min(w, h) * 0.34;
-      const hx = cx + R * Math.cos(angle);
-      const hy = cy + R * Math.sin(angle);
-      hubPositions.set(hub.id, { x: hx, y: hy });
-    });
-
-    // Initialize all nodes near their hub center in a spiral
-    const tempNodes: SimNode[] = sorted.map((n, i) => {
-      const isHub = hubIds.has(n.id);
-      const hubId = isHub ? n.id : (nodeHubMap.get(n.id) || '');
-      const hubPos = hubPositions.get(hubId) || { x: cx, y: cy };
-      
-      const activityRatio = n.activityCount / maxActivity;
-      // Proportional radius from 14px (visible and clean) to 30px (hubs)
-      const radius = Math.max(14, (14 + activityRatio * 16) * sizeFactor);
-
-      const angle = i * 0.25 * Math.PI;
-      const r = 20 + i * 2.5;
-
-      return {
-        ...n,
-        x: isHub ? hubPos.x : hubPos.x + r * Math.cos(angle),
-        y: isHub ? hubPos.y : hubPos.y + r * Math.sin(angle),
-        vx: 0,
-        vy: 0,
-        radius,
-        isHub,
-        isCenter: i === 0,
-        hubId,
-        status: n.status || 'offline'
-      };
-    });
-
-    // Run synchronous Fruchterman-Reingold layout simulation (100 iterations - fast convergence)
-    const iterations = 100;
-    
-    for (let iter = 0; iter < iterations; iter++) {
-      const temp = (iterations - iter) / iterations; // cooling temperature
-
-      // A. Repulsion forces between all nodes
-      for (let i = 0; i < tempNodes.length; i++) {
-        const n1 = tempNodes[i];
-        for (let j = i + 1; j < tempNodes.length; j++) {
-          const n2 = tempNodes[j];
-          const dx = n2.x - n1.x;
-          const dy = n2.y - n1.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
-          
-          const minDist = n1.radius + n2.radius + 36; // spacing margin
-          let fr = (kFR * kFR) / dist;
-
-          if (dist < minDist) {
-            fr += (minDist - dist) * 1.5; // push hard if overlapping
-          }
-
-          const fx = (dx / dist) * fr;
-          const fy = (dy / dist) * fr;
-
-          n1.vx -= fx;
-          n1.vy -= fy;
-          n2.vx += fx;
-          n2.vy += fy;
-        }
-      }
-
-      // B. Link attraction forces along edges
-      filteredEdges.forEach(edge => {
-        const n1 = tempNodes.find(n => n.id === edge.from);
-        const n2 = tempNodes.find(n => n.id === edge.to);
-        if (!n1 || !n2) return;
-
-        const dx = n2.x - n1.x;
-        const dy = n2.y - n1.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
-        const strength = Math.min(1.5, 0.8 + edge.totalCount * 0.15);
-        const fa = ((dist * dist) / kFR) * 0.08 * strength;
-
-        const fx = (dx / dist) * fa;
-        const fy = (dy / dist) * fa;
-        
-        n1.vx += fx;
-        n1.vy += fy;
-        n2.vx -= fx;
-        n2.vy -= fy;
-      });
-
-      // C. Attraction to Hub center
-      tempNodes.forEach(node => {
-        if (node.isHub) return;
-        const hubNode = tempNodes.find(n => n.id === node.hubId);
-        if (!hubNode) return;
-
-        const dx = hubNode.x - node.x;
-        const dy = hubNode.y - node.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
-        
-        const fa = ((dist * dist) / kFR) * 0.035; // pull towards hub
-        node.vx += (dx / dist) * fa;
-        node.vy += (dy / dist) * fa;
-      });
-
-      // D. Gravity to viewport center
-      for (const n of tempNodes) {
-        const dx = cx - n.x;
-        const dy = cy - n.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
-        
-        n.vx += (dx / dist) * (dist * 0.012);
-        n.vy += (dy / dist) * (dist * 0.012);
-      }
-
-      // E. Update coordinates limited by cooling temperature
-      for (const n of tempNodes) {
-        const d = Math.sqrt(n.vx * n.vx + n.vy * n.vy) || 0.1;
-        const limit = Math.min(d, 40 * temp);
-
-        n.x += (n.vx / d) * limit;
-        n.y += (n.vy / d) * limit;
-      }
+    if (!worker) {
+      applyPositions(computeForceLayout(inputNodes, simEdges, { width, height }));
+      return;
     }
 
-    simNodes = tempNodes;
+    worker.postMessage({ requestId, nodes: inputNodes, edges: simEdges, width, height });
   }
 
   // Get statistics for selected members
@@ -514,7 +423,7 @@
 
   // Smooth centering focus navigation
   function focusNode(nodeId: string) {
-    const node = simNodes.find(n => n.id === nodeId);
+    const node = nodeById.get(nodeId);
     if (!node || !container) return;
 
     const cw = container.clientWidth || 800;
@@ -531,23 +440,18 @@
     panX = cx0 * (1 - DEFAULT_ZOOM);
     panY = cy0 * (1 - DEFAULT_ZOOM);
     selectedNodeId = null;
-    runStaticFRForceLayout();
   }
 
   // Sync props using untrack to prevent Svelte 5 reactive loop crashes
   $effect(() => {
-    // Lectures explicites : elles enregistrent les dépendances de l'effet.
-    void nodes;
-    void edges;
-    void selectedTypeFilter;
+    const simEdges = layoutEdges;
+    const inputNodes = layoutInputNodes;
     untrack(() => {
-      runStaticFRForceLayout();
+      requestLayout(simEdges, inputNodes);
     });
   });
 
-  onMount(() => {
-    runStaticFRForceLayout();
-  });
+  $effect(() => () => layoutWorker?.terminate());
 </script>
 
 <svelte:window onmousemove={handleMouseMove} onmouseup={handleMouseUp} />
@@ -704,6 +608,12 @@
             <span class="text-slate-400">Liaisons de communication</span>
             <span class="font-bold text-slate-200">{edges.length}</span>
           </div>
+          {#if hiddenMembersCount > 0}
+            <div class="flex justify-between text-xs">
+              <span class="text-slate-400">Membres moins actifs non affichés</span>
+              <span class="font-bold text-slate-400">{hiddenMembersCount}</span>
+            </div>
+          {/if}
         </div>
 
         <!-- Top Connectors Ranked List -->
@@ -862,6 +772,11 @@
             <stop offset="100%" stop-color="#0072ff" />
           </radialGradient>
 
+          <!-- Découpe circulaire partagée par tous les avatars -->
+          <clipPath id="clip-avatar" clipPathUnits="objectBoundingBox">
+            <circle cx="0.5" cy="0.5" r="0.5" />
+          </clipPath>
+
           <!-- Glow filters for link overlays -->
           <filter id="glow-link" x="-10%" y="-10%" width="120%" height="120%">
             <feGaussianBlur stdDeviation="3.0" result="blur" />
@@ -873,14 +788,16 @@
           <!-- 1. Connections layer (Color-coded relationship paths with glow) -->
           <g>
             {#each edgesWithCoords as edge}
+              {@const isHovered = hoveredNodeId === edge.from || hoveredNodeId === edge.to}
+              {@const isDimmed = hoveredNodeId ? !isHovered : false}
               <path
                 d="M {edge.sx} {edge.sy} Q {edge.cx} {edge.cy} {edge.tx} {edge.ty}"
                 fill="none"
                 stroke={edge.strokeColor}
-                stroke-width={edge.isHovered ? 4.0 : Math.min(1.5 + edge.totalCount * 0.4, 6)}
-                stroke-opacity={edge.isDimmed ? 0.05 : edge.isHovered ? 0.95 : 0.65}
-                filter={edge.isHovered ? 'url(#glow-link)' : ''}
-                class="transition-all duration-200 pointer-events-none"
+                stroke-width={isHovered ? 4.0 : Math.min(1.5 + edge.totalCount * 0.4, 6)}
+                stroke-opacity={isDimmed ? 0.05 : isHovered ? 0.95 : 0.65}
+                filter={isHovered ? 'url(#glow-link)' : ''}
+                class="transition-[stroke-width,stroke-opacity] duration-200 pointer-events-none"
               />
             {/each}
           </g>
@@ -890,18 +807,11 @@
             {#each simNodes as node (node.id)}
               {@const isSelected = selectedNodeId === node.id}
               {@const isHovered = hoveredNodeId === node.id}
-              {@const isDimmed = hoveredNodeId 
-                ? (node.id !== hoveredNodeId && !edges.some(e => 
-                    (e.from === hoveredNodeId && e.to === node.id) || 
-                    (e.from === node.id && e.to === hoveredNodeId)
-                  )) 
-                : false}
+              {@const isNeighbour = hoveredNeighbours?.has(node.id) ?? false}
+              {@const isDimmed = hoveredNodeId ? !isHovered && !isNeighbour : false}
               {@const fontSize = Math.max(8.5, node.radius * 0.42)}
               {@const textWidth = Math.max(32, node.label.length * fontSize * 0.58)}
-              {@const showLabel = node.isHub || isSelected || isHovered || (hoveredNodeId && edges.some(e => 
-                (e.from === hoveredNodeId && e.to === node.id) || 
-                (e.from === node.id && e.to === hoveredNodeId)
-              ))}
+              {@const showLabel = node.isHub || isSelected || isHovered || isNeighbour}
               
               <!-- svelte-ignore a11y_mouse_events_have_key_events -->
               <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -942,22 +852,15 @@
                   class="transition-colors duration-200"
                 />
 
-                <!-- ClipPath for circular avatar -->
-                <defs>
-                  <clipPath id="clip-pp-{node.id}">
-                    <circle r={node.radius - 1.5} />
-                  </clipPath>
-                </defs>
-
                 <!-- Profile Picture (pp) of the person -->
                 {#if node.avatar}
                   <image
                     href={node.avatar}
-                    x={-node.radius}
-                    y={-node.radius}
-                    width={node.radius * 2}
-                    height={node.radius * 2}
-                    clip-path="url(#clip-pp-{node.id})"
+                    x={-(node.radius - 1.5)}
+                    y={-(node.radius - 1.5)}
+                    width={(node.radius - 1.5) * 2}
+                    height={(node.radius - 1.5) * 2}
+                    clip-path="url(#clip-avatar)"
                     preserveAspectRatio="xMidYMid slice"
                   />
                 {:else}
@@ -965,7 +868,6 @@
                   <circle
                     r={node.radius - 1.5}
                     fill={node.isHub ? 'url(#hub-grad)' : 'url(#node-grad)'}
-                    clip-path="url(#clip-pp-{node.id})"
                   />
                   <text
                     text-anchor="middle"

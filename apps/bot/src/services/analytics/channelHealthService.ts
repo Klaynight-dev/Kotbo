@@ -1,7 +1,10 @@
 import { type Client, ChannelType, type TextChannel, type CategoryChannel } from 'discord.js';
+import type { Prisma } from '@prisma/client';
 import prisma, { prismaRead } from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
 import { getDateKey } from './analyticsService.js';
+import { BucketZoner } from './zonedBuckets.js';
+import { resolveGuildTimezone } from '../../utils/timezone.js';
 import { isModuleEnabled } from '../core/moduleGate.js';
 
 // ============================================================================
@@ -89,12 +92,16 @@ export async function analyzeGuildChannelHealth(
 
   const hourlyStats = await prismaRead.guildHourlyStat.findMany({
     where: { guildId, dateKey: { gte: startDateKey } },
-    select: { hour: true, messagesCount: true },
+    select: { dateKey: true, hour: true, messagesCount: true },
   });
 
+  // L'heure de pointe est destinee a un humain : elle est calculee dans le
+  // fuseau du serveur, pas en UTC ou les creneaux sont stockes. Sans ca,
+  // « pic a 12h » designait en realite 14h pour un serveur a Paris.
+  const zoner = new BucketZoner(await resolveGuildTimezone(guildId));
   const hourlyTotals = new Array(24).fill(0);
   for (const h of hourlyStats) {
-    hourlyTotals[h.hour] += h.messagesCount;
+    hourlyTotals[zoner.fromKeyHour(h.dateKey, h.hour).hour] += h.messagesCount;
   }
   const globalPeakHour = hourlyTotals.indexOf(Math.max(...hourlyTotals));
 
@@ -492,9 +499,21 @@ export async function upsertChannelHealthConfig(
   guildId: string,
   data: Record<string, unknown>,
 ) {
+  const create: Record<string, unknown> = { guildId, ...data };
+
+  if (!Array.isArray(create.excludedChannelIds)) {
+    // Le honeypot est volontairement désert : sans exclusion il ressortirait
+    // toujours en DEAD. L'admin peut le retirer de la liste s'il le souhaite.
+    const honeypotChannelId = (await prismaRead.guild.findUnique({
+      where: { id: guildId },
+      select: { honeypotChannelId: true },
+    }))?.honeypotChannelId;
+    if (honeypotChannelId) create.excludedChannelIds = [honeypotChannelId];
+  }
+
   return prisma.channelHealthConfig.upsert({
     where: { guildId },
-    create: { guildId, ...data },
-    update: data,
+    create: create as Prisma.ChannelHealthConfigUncheckedCreateInput,
+    update: data as Prisma.ChannelHealthConfigUncheckedUpdateInput,
   });
 }

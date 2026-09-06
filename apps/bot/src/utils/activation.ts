@@ -117,6 +117,17 @@ export async function activateGuild(guildId: string, code: string): Promise<Acti
       (result.expiresAt ? ` (${result.accessType}, fin le ${result.expiresAt.toISOString()}).` : '.'),
   );
 
+  // Origine de l'activation : un serveur venu d'un code partenaire et un
+  // serveur venu du libre-service ne se comportent ni a la conversion ni a la
+  // retention, et l'axe n'a de sens que si on le pose au moment ou on le sait.
+  const { trackAcquisitionStep } = await import('../services/analytics/acquisitionService.js');
+  trackAcquisitionStep({
+    step: 'code_activated',
+    guildId,
+    metadata: { origin: 'CODE', accessType: result.accessType, durationMinutes: result.durationMinutes },
+    occurredAt: activatedAt,
+  });
+
   await broadcastActivationChange(guildId, true);
   schedulePostActivationSync(guildId);
   syncGuildCommandsForActivation(guildId, true);
@@ -125,6 +136,67 @@ export async function activateGuild(guildId: string, code: string): Promise<Acti
   await cascadeToLinkedStaffGuilds(guildId);
 
   return result;
+}
+
+/**
+ * Active un serveur sans code, a son arrivee.
+ *
+ * Le code d'activation etait la seule porte d'entree : il fallait le demander a
+ * un administrateur Kotbo, ce qui convient a une distribution sur invitation
+ * mais interdit tout parcours en libre-service - personne ne va reclamer un
+ * code a un inconnu pour essayer un bot. Le serveur entre donc desormais seul,
+ * en offre `FREE`.
+ *
+ * Ouvrir la porte ne donne rien : `FREE` ne comprend aucun module, et
+ * `moduleGate` les eteint tous. Ce que l'activation ouvre, c'est le dashboard
+ * et la possibilite de se configurer - pas le service. La barriere commerciale
+ * est la grille tarifaire, pas ce verrou-ci, qui ne servait qu'a filtrer qui
+ * pouvait entrer.
+ *
+ * `activateGuild` reste en place pour les cas manuels : partenariats, geste
+ * commercial, acces negocie. Un code porte un type d'acces et une duree, ce que
+ * cette fonction ne fait pas.
+ *
+ * Sans effet si le serveur est deja active : on ne reecrit pas `activatedAt`
+ * d'un serveur qui revient apres un redemarrage, sans quoi son anciennete
+ * repartirait de zero a chaque reconnexion.
+ */
+export async function activateGuildSelfServe(guildId: string): Promise<boolean> {
+  const existing = await prisma.guild.findUnique({
+    where: { id: guildId },
+    select: { activated: true },
+  });
+  if (existing?.activated) return false;
+
+  const activatedAt = new Date();
+
+  await prisma.guild.upsert({
+    where: { id: guildId },
+    update: {
+      activated: true,
+      activatedAt,
+      // Aucun code consomme : la colonne reste nulle, ce qui distingue en base
+      // une entree libre-service d'une activation par code.
+      activationCode: null,
+      activatedViaStaffLink: false,
+    },
+    create: {
+      id: guildId,
+      activated: true,
+      activatedAt,
+      activationCode: null,
+      activatedViaStaffLink: false,
+    },
+  });
+
+  logger.success('Activation', `Le serveur ${guildId} s'est active en libre-service (offre FREE).`);
+
+  await broadcastActivationChange(guildId, true);
+  schedulePostActivationSync(guildId);
+  syncGuildCommandsForActivation(guildId, true);
+  await cascadeToLinkedStaffGuilds(guildId);
+
+  return true;
 }
 
 async function broadcastActivationChange(guildId: string, activated: boolean): Promise<void> {

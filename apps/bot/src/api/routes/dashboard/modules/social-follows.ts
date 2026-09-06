@@ -4,6 +4,7 @@ import { resolveYoutubeChannel } from '../../../../services/integrations/youtube
 import prisma from '../../../../utils/db.js';
 import { errorMessage } from '../../../../utils/errors.js';
 import { logger } from '../../../../utils/logger.js';
+import { normalizeRoleMention } from '../../../../utils/mentions.js';
 import { getGuildName, json, pushAudit, readJsonBody } from '../../../shared.js';
 import { type ModuleRouteContext } from './_shared.js';
 
@@ -53,7 +54,7 @@ export async function handleSocialFollowsRoutes(ctx: ModuleRouteContext): Promis
             channelId,
             channelName,
             discordChannelId: body.discordChannelId || null,
-            mention: body.mention || null,
+            mention: normalizeRoleMention(body.mention),
             liveMessage: body.liveMessage || null,
             videoMessage: body.videoMessage || null,
             shortMessage: body.shortMessage || null,
@@ -61,7 +62,7 @@ export async function handleSocialFollowsRoutes(ctx: ModuleRouteContext): Promis
           update: {
             channelName,
             discordChannelId: body.discordChannelId || null,
-            mention: body.mention || null,
+            mention: normalizeRoleMention(body.mention),
             liveMessage: body.liveMessage || null,
             videoMessage: body.videoMessage || null,
             shortMessage: body.shortMessage || null,
@@ -139,13 +140,13 @@ export async function handleSocialFollowsRoutes(ctx: ModuleRouteContext): Promis
             streamerName,
             streamerId,
             discordChannelId: body.discordChannelId || null,
-            mention: body.mention || null,
+            mention: normalizeRoleMention(body.mention),
             liveMessage: body.liveMessage || null,
           },
           update: {
             streamerId,
             discordChannelId: body.discordChannelId || null,
-            mention: body.mention || null,
+            mention: normalizeRoleMention(body.mention),
             liveMessage: body.liveMessage || null,
           }
         });

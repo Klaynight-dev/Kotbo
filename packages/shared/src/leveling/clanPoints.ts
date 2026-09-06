@@ -65,6 +65,21 @@ export function computeClanLevelUpPoints(
   if (base <= 0) return 0;
 
   const flat = Math.min(base, MAX_CLAN_POINTS_PER_LEVEL_UP);
+
+  // Un membre de niveau L a franchi le seuil `xpForLevel(L - 1)` : l'XP
+  // parcourue entre deux niveaux se mesure donc entre ces seuils-là.
+  const crossedXp = xpForLevel(newLevel - 1, curve) - xpForLevel(Math.max(0, previousLevel) - 1, curve);
+
+  // Un passage qui n'a coûté aucun XP n'est payé par aucun des deux modes.
+  //
+  // Le seuil du niveau 1 vaut 0 quelle que soit la courbe : les deux termes de
+  // `xpForLevel` sont multipliés par le niveau, donc ils s'annulent à zéro.
+  // Comme la colonne `level` d'un membre démarre à 0 - un niveau que la courbe
+  // ne produit jamais - le tout premier gain d'XP déclenche un passage 0 → 1 qui
+  // ne franchit rien. Le forfait le payait plein tarif, ce qui revenait à offrir
+  // des points de clan à chaque arrivée sur le serveur.
+  if (crossedXp <= 0) return 0;
+
   if (!reward.proportional) return flat;
 
   const reference = Math.max(
@@ -73,11 +88,6 @@ export function computeClanLevelUpPoints(
   );
   const referenceXp = crossedXpForLevel(reference, curve);
   if (referenceXp <= 0) return flat;
-
-  // Un membre de niveau L a franchi le seuil `xpForLevel(L - 1)` : l'XP
-  // parcourue entre deux niveaux se mesure donc entre ces seuils-là.
-  const crossedXp = xpForLevel(newLevel - 1, curve) - xpForLevel(Math.max(0, previousLevel) - 1, curve);
-  if (crossedXp <= 0) return 0;
 
   const points = (base * crossedXp) / referenceXp;
   if (!Number.isFinite(points)) return MAX_CLAN_POINTS_PER_LEVEL_UP;

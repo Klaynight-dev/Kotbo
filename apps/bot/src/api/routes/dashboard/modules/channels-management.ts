@@ -10,8 +10,246 @@ import { resolveGuildLocale } from '../../../../utils/i18n.js';
 import { honeypotChannelName, provisionHoneypotChannel } from '../../../../services/moderation/honeypotProvisioning.js';
 import { type ModuleRouteContext } from './_shared.js';
 
+/**
+ * Fonctionnalites qui se reglent salon par salon, et le champ de la guilde qui
+ * les porte. Toutes se ramenent a deux formes : une liste d'identifiants a
+ * laquelle le salon appartient ou non, ou un champ unique qui pointe le salon
+ * elu. La vue « Par salon » les manipule sans connaitre le detail de chacune.
+ */
+const CHANNEL_FEATURES = {
+  autoThread: { kind: 'list', field: 'autoThreadChannels', label: 'Fils automatiques' },
+  logIgnored: { kind: 'list', field: 'logIgnoredChannelIds', label: 'Exclu des logs' },
+  honeypot: { kind: 'single', field: 'honeypotChannelId', label: 'Salon piège' },
+  funCounting: { kind: 'single', field: 'funCountingChannelId', label: 'Comptage' },
+  funOneWordStory: { kind: 'single', field: 'funOneWordStoryChannelId', label: 'Histoire à un mot' },
+  funGuessNumber: { kind: 'single', field: 'funGuessNumberChannelId', label: 'Devine le nombre' },
+  funWordChain: { kind: 'single', field: 'funWordChainChannelId', label: 'Chaîne de mots' },
+  funEmojiRiddle: { kind: 'single', field: 'funEmojiRiddleChannelId', label: 'Rébus emoji' },
+  funNeverSay: { kind: 'single', field: 'funNeverSayChannelId', label: 'Ni oui ni non' },
+  funEmojiOnly: { kind: 'single', field: 'funEmojiOnlyChannelId', label: 'Emoji uniquement' },
+} as const;
+
+type ChannelFeatureKey = keyof typeof CHANNEL_FEATURES;
+
+const CHANNEL_FEATURE_KEYS = Object.keys(CHANNEL_FEATURES) as ChannelFeatureKey[];
+
+/** Colonnes a lire pour connaitre l'etat de toutes les fonctionnalites. */
+const CHANNEL_FEATURE_SELECT = Object.fromEntries(
+  CHANNEL_FEATURE_KEYS.map((key) => [CHANNEL_FEATURES[key].field, true]),
+) as Record<string, true>;
+
 export async function handleChannelsManagementRoutes(ctx: ModuleRouteContext): Promise<boolean> {
   const { req, res, parts, client, guildId, method, auditUser, moduleKey } = ctx;
+
+  // GET /api/dashboard/guilds/:guildId/channels-management/by-channel
+  //
+  // Renvoie la liste des salons du serveur avec, pour chacun, les
+  // fonctionnalites qui y sont actives. La page les reglait auparavant module
+  // par module : savoir ce qui touchait un salon donne demandait de parcourir
+  // cinq onglets.
+  if (moduleKey === 'channels-management' && parts.length === 6 && parts[5] === 'by-channel' && method === 'GET') {
+    try {
+      const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+      if (!guild) {
+        json(res, 404, { error: 'Serveur Discord introuvable' });
+        return true;
+      }
+      if (guild.channels.cache.size === 0) await guild.channels.fetch().catch(() => null);
+
+      const [config, stickies, tempVoiceGenerators] = await Promise.all([
+        prisma.guild.findUnique({ where: { id: guildId }, select: CHANNEL_FEATURE_SELECT }),
+        prisma.stickyMessage.findMany({ where: { guildId }, select: { channelId: true, enabled: true } }),
+        prisma.guild
+          .findUnique({ where: { id: guildId }, select: { tempVoiceGenerators: true, tempVoiceChannelId: true } })
+          .then((g) => {
+            const raw = Array.isArray(g?.tempVoiceGenerators) ? (g!.tempVoiceGenerators as unknown[]) : [];
+            const ids = raw
+              .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).channelId : null))
+              .filter((id): id is string => typeof id === 'string');
+            // Le generateur historique vit dans son propre champ : sans lui, un
+            // serveur configure avant les generateurs multiples verrait le sien
+            // disparaitre de la vue.
+            if (g?.tempVoiceChannelId) ids.push(g.tempVoiceChannelId);
+            return new Set(ids);
+          }),
+      ]);
+
+      const stickyByChannel = new Map(stickies.map((s) => [s.channelId, s.enabled]));
+      const record = (config ?? {}) as Record<string, unknown>;
+
+      const featuresFor = (channelId: string) => {
+        const active: string[] = [];
+        for (const key of CHANNEL_FEATURE_KEYS) {
+          const { kind, field } = CHANNEL_FEATURES[key];
+          const value = record[field];
+          const on = kind === 'list'
+            ? Array.isArray(value) && (value as string[]).includes(channelId)
+            : value === channelId;
+          if (on) active.push(key);
+        }
+        if (stickyByChannel.has(channelId)) active.push('sticky');
+        if (tempVoiceGenerators.has(channelId)) active.push('tempVoiceGenerator');
+        return active;
+      };
+
+      const channels = Array.from(guild.channels.cache.values())
+        .filter((ch) => ch.type !== ChannelType.GuildCategory && !ch.isThread())
+        .map((ch) => ({
+          id: ch.id,
+          name: ch.name,
+          type: ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice
+            ? 'voice'
+            : ch.type === ChannelType.GuildForum ? 'forum' : 'text',
+          categoryId: ch.parentId,
+          categoryName: ch.parent?.name ?? null,
+          position: 'rawPosition' in ch ? ch.rawPosition : 0,
+          // `manageable` dit si le bot peut renommer ou supprimer ce salon : la
+          // page grise les actions plutot que de les laisser echouer au clic.
+          manageable: 'manageable' in ch ? ch.manageable : false,
+          features: featuresFor(ch.id),
+        }))
+        .sort((a, b) => (a.categoryName ?? '').localeCompare(b.categoryName ?? '') || a.position - b.position);
+
+      json(res, 200, {
+        channels,
+        features: Object.fromEntries(CHANNEL_FEATURE_KEYS.map((k) => [k, CHANNEL_FEATURES[k].label])),
+      });
+    } catch (err) {
+      logger.error('ChannelsManagementAPI', 'Erreur GET by-channel:', err);
+      json(res, 500, { error: 'Erreur lors de la récupération des salons' });
+    }
+    return true;
+  }
+
+  // PATCH /api/dashboard/guilds/:guildId/channels-management/by-channel/:channelId
+  // { feature, enabled }
+  if (moduleKey === 'channels-management' && parts.length === 7 && parts[5] === 'by-channel' && method === 'PATCH') {
+    try {
+      const channelId = parts[6];
+      const body = await readJsonBody<{ feature?: string; enabled?: boolean }>(req);
+      const feature = body?.feature as ChannelFeatureKey | undefined;
+
+      if (!feature || !CHANNEL_FEATURE_KEYS.includes(feature)) {
+        json(res, 400, { error: 'Fonctionnalité inconnue' });
+        return true;
+      }
+
+      const { kind, field, label } = CHANNEL_FEATURES[feature];
+      const enabled = body?.enabled === true;
+
+      if (kind === 'single') {
+        // Un champ unique ne se « decoche » pas ailleurs : eteindre revient a
+        // vider le champ, et l'allumer deplace la fonctionnalite sur ce salon.
+        await prisma.guild.update({
+          where: { id: guildId },
+          data: { [field]: enabled ? channelId : null },
+        });
+      } else {
+        const current = await prisma.guild.findUnique({ where: { id: guildId }, select: { [field]: true } });
+        const list = Array.isArray((current as Record<string, unknown> | null)?.[field])
+          ? ((current as Record<string, unknown>)[field] as string[])
+          : [];
+        const next = enabled
+          ? Array.from(new Set([...list, channelId]))
+          : list.filter((id) => id !== channelId);
+        await prisma.guild.update({ where: { id: guildId }, data: { [field]: next } });
+      }
+
+      await pushAudit(guildId, {
+        channelId,
+        user: auditUser,
+        action: `${enabled ? 'Activation' : 'Désactivation'} : ${label}`,
+        context: getGuildName(client, guildId),
+        module: 'Salons',
+        eventType: 'Settings',
+        details: `Salon ${channelId} · ${label} ${enabled ? 'activé' : 'désactivé'}`,
+      });
+
+      json(res, 200, { success: true });
+    } catch (err) {
+      logger.error('ChannelsManagementAPI', 'Erreur PATCH by-channel:', err);
+      json(res, 500, { error: 'Erreur lors de la mise à jour du salon' });
+    }
+    return true;
+  }
+
+  // PATCH /api/dashboard/guilds/:guildId/channels-management/channel/:channelId
+  // { name } - renomme le salon Discord
+  if (moduleKey === 'channels-management' && parts.length === 7 && parts[5] === 'channel' && method === 'PATCH') {
+    try {
+      const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+      const channel = await guild?.channels.fetch(parts[6]).catch(() => null);
+      if (!guild || !channel) {
+        json(res, 404, { error: 'Salon introuvable' });
+        return true;
+      }
+      if (!channel.manageable) {
+        json(res, 403, { error: 'Le bot ne peut pas modifier ce salon (permissions ou hiérarchie).' });
+        return true;
+      }
+
+      const body = await readJsonBody<{ name?: string }>(req);
+      const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 100) : '';
+      if (!name) {
+        json(res, 400, { error: 'Nom de salon invalide' });
+        return true;
+      }
+
+      const previous = channel.name;
+      await channel.setName(name, `Renommé depuis le dashboard par ${auditUser}`);
+
+      await pushAudit(guildId, {
+        channelId: channel.id,
+        user: auditUser,
+        action: 'Renommage de salon',
+        context: getGuildName(client, guildId),
+        module: 'Salons',
+        eventType: 'Manuel',
+        details: `#${previous} → #${name}`,
+      });
+
+      json(res, 200, { success: true, name });
+    } catch (err) {
+      logger.error('ChannelsManagementAPI', 'Erreur PATCH channel:', err);
+      json(res, 500, { error: 'Erreur lors du renommage du salon' });
+    }
+    return true;
+  }
+
+  // DELETE /api/dashboard/guilds/:guildId/channels-management/channel/:channelId
+  if (moduleKey === 'channels-management' && parts.length === 7 && parts[5] === 'channel' && method === 'DELETE') {
+    try {
+      const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+      const channel = await guild?.channels.fetch(parts[6]).catch(() => null);
+      if (!guild || !channel) {
+        json(res, 404, { error: 'Salon introuvable' });
+        return true;
+      }
+      if (!channel.manageable) {
+        json(res, 403, { error: 'Le bot ne peut pas supprimer ce salon (permissions ou hiérarchie).' });
+        return true;
+      }
+
+      const name = channel.name;
+      await channel.delete(`Supprimé depuis le dashboard par ${auditUser}`);
+
+      await pushAudit(guildId, {
+        channelId: null,
+        user: auditUser,
+        action: 'Suppression de salon',
+        context: getGuildName(client, guildId),
+        module: 'Salons',
+        eventType: 'Manuel',
+        details: `#${name} (${parts[6]})`,
+      });
+
+      json(res, 200, { success: true });
+    } catch (err) {
+      logger.error('ChannelsManagementAPI', 'Erreur DELETE channel:', err);
+      json(res, 500, { error: 'Erreur lors de la suppression du salon' });
+    }
+    return true;
+  }
 
   // POST /api/dashboard/guilds/:guildId/channels-management/rescan-stats
   if (moduleKey === 'channels-management' && parts.length === 6 && parts[5] === 'rescan-stats' && method === 'POST') {
@@ -412,6 +650,8 @@ export async function handleChannelsManagementRoutes(ctx: ModuleRouteContext): P
             verificationWarnReason: true,
             warnWeightingEnabled: true,
             warnDecayDays: true,
+            countArchivedInWarnScore: true,
+            warnAutoArchiveDays: true,
             wordStatsEnabled: true,
             banHygieneEnabled: true,
           },
@@ -456,6 +696,8 @@ export async function handleChannelsManagementRoutes(ctx: ModuleRouteContext): P
           verificationWarnReason: guild.verificationWarnReason,
           warnWeightingEnabled: guild.warnWeightingEnabled,
           warnDecayDays: guild.warnDecayDays,
+          countArchivedInWarnScore: guild.countArchivedInWarnScore,
+          warnAutoArchiveDays: guild.warnAutoArchiveDays,
           wordStatsEnabled: guild.wordStatsEnabled,
           banHygieneEnabled: guild.banHygieneEnabled,
         });
@@ -506,6 +748,8 @@ export async function handleChannelsManagementRoutes(ctx: ModuleRouteContext): P
           verificationWarnReason?: string;
           warnWeightingEnabled?: boolean;
           warnDecayDays?: number | null;
+          countArchivedInWarnScore?: boolean;
+          warnAutoArchiveDays?: number | null;
           wordStatsEnabled?: boolean;
           banHygieneEnabled?: boolean;
         }>(req);
@@ -644,6 +888,17 @@ export async function handleChannelsManagementRoutes(ctx: ModuleRouteContext): P
             data.warnDecayDays = null;
           } else if (typeof body.warnDecayDays === 'number' && body.warnDecayDays > 0) {
             data.warnDecayDays = Math.floor(body.warnDecayDays);
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'countArchivedInWarnScore')) {
+          data.countArchivedInWarnScore = !!body.countArchivedInWarnScore;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'warnAutoArchiveDays')) {
+          // null ou 0 = pas d'expiration automatique des warns
+          if (body.warnAutoArchiveDays === null || body.warnAutoArchiveDays === 0) {
+            data.warnAutoArchiveDays = null;
+          } else if (typeof body.warnAutoArchiveDays === 'number' && body.warnAutoArchiveDays > 0) {
+            data.warnAutoArchiveDays = Math.floor(body.warnAutoArchiveDays);
           }
         }
         if (Object.prototype.hasOwnProperty.call(body, 'wordStatsEnabled')) {

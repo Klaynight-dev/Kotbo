@@ -3,6 +3,7 @@
   import ActionButton from './ActionButton.svelte';
   import Modal from './Modal.svelte';
   import { localInitialAvatar } from '../discordMedia';
+  import { escapeHtml } from '../emojiParser';
 
   const {
     show = false,
@@ -46,9 +47,13 @@
     }
   }
 
+  /**
+   * `event.details` vient d'un motif d'absence ou d'une description de reunion,
+   * saisis par les membres : on echappe avant d'ajouter le moindre balisage.
+   */
   function interpretMarkdown(text: string) {
     if (!text) return '';
-    return text
+    return escapeHtml(text)
       .replace(/### (.*)/g, '<h5 class="text-[13px] font-medium text-primary mt-4 mb-2">$1</h5>')
       .replace(/## (.*)/g, '<h4 class="text-sm font-semibold text-on-surface mt-6 mb-3 border-b border-outline-variant/20 pb-1">$1</h4>')
       .replace(/# (.*)/g, '<h3 class="text-lg font-semibold text-on-surface mt-8 mb-4">$1</h3>')

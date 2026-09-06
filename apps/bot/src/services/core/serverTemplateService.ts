@@ -38,8 +38,9 @@ import { defaultLevelUpMessage, getOrCreateLevelConfig, invalidateLevelConfigCac
 import { setDashboardModuleStatus } from './moduleActivationService.js';
 import { provisionHoneypotChannel } from '../moderation/honeypotProvisioning.js';
 import type { TicketProvisionOutcome } from '../features/ticketProvisioning.js';
+import { type StatsConfig, readStatsConfig } from '../analytics/statsConfig.js';
 
-export const SERVER_TEMPLATE_SECTIONS = ['access', 'security', 'staff', 'captcha', 'tickets', 'welcome', 'text', 'bots', 'voice', 'modules'] as const;
+export const SERVER_TEMPLATE_SECTIONS = ['access', 'security', 'staff', 'captcha', 'tickets', 'welcome', 'stats', 'text', 'fun', 'bots', 'voice', 'modules'] as const;
 export type ServerTemplateSection = (typeof SERVER_TEMPLATE_SECTIONS)[number];
 
 type ItemKind = 'role' | 'category' | 'text' | 'voice' | 'module';
@@ -49,7 +50,7 @@ type ItemKind = 'role' | 'category' | 'text' | 'voice' | 'module';
  * phrase : le service ne connait pas la langue de l'admin, seulement celle du
  * serveur, qui sert a nommer les salons.
  */
-type ItemWiring = 'staff' | 'logs' | 'tickets' | 'leveling' | 'rpg' | 'tempvoice' | 'welcome' | 'rules' | 'member' | 'captcha' | 'honeypot' | null;
+type ItemWiring = 'staff' | 'logs' | 'tickets' | 'leveling' | 'rpg' | 'tempvoice' | 'welcome' | 'rules' | 'member' | 'captcha' | 'honeypot' | 'starboard' | 'stats' | 'autothread' | null;
 
 /**
  * A qui le salon s'ouvre. Sert a la previsualisation : tout le plan etant
@@ -169,10 +170,32 @@ export const SERVER_TEMPLATE_PLAN: TemplateItem[] = [
   // reviendrait a demander a un arrivant d'accepter des regles qu'il ne voit pas.
   item('welcome.rules', 'welcome', 'text', (l) => m.setup_template_channel_rules({}, { locale: l }), { parent: 'welcome.category', wiring: 'rules', audience: 'everyone', readOnly: true }),
 
+  // Les compteurs en tete du serveur. Des vocaux que personne ne rejoint : leur
+  // nom porte le chiffre, et c'est tout ce qu'on leur demande - Discord n'ayant
+  // pas d'autre facon d'afficher une valeur qui bouge dans la liste des salons.
+  item('stats.category', 'stats', 'category', (l) => m.setup_template_category_stats({}, { locale: l })),
+  item('stats.members', 'stats', 'voice', (l) => m.setup_template_stats_members({ count: '{count}' }, { locale: l }), { parent: 'stats.category', wiring: 'stats' }),
+  item('stats.online', 'stats', 'voice', (l) => m.setup_template_stats_online({ count: '{count}' }, { locale: l }), { parent: 'stats.category', wiring: 'stats' }),
+
   item('text.category', 'text', 'category', (l) => m.setup_template_category_text({}, { locale: l })),
   item('text.general', 'text', 'text', (l) => m.setup_template_channel_general({}, { locale: l }), { parent: 'text.category' }),
-  item('text.media', 'text', 'text', (l) => m.setup_template_channel_media({}, { locale: l }), { parent: 'text.category' }),
+  // Porte l'auto-thread : chaque publication ouvre son fil, et les retours
+  // n'ecrasent pas la publication suivante. C'est le salon du plan ou le fil
+  // s'impose - on commente une image, on ne discute pas par-dessus.
+  item('text.media', 'text', 'text', (l) => m.setup_template_channel_media({}, { locale: l }), { parent: 'text.category', wiring: 'autothread' }),
   item('text.random', 'text', 'text', (l) => m.setup_template_channel_random({}, { locale: l }), { parent: 'text.category' }),
+
+  // Les salons ou l'on ne vient pas discuter mais se distraire. Separes des
+  // salons de discussion parce que c'est ainsi qu'ils se rangent partout : un
+  // #memes au milieu de #general et #media se lit comme un salon de service,
+  // et la categorie est ce qui dit aux membres qu'on peut y perdre du temps.
+  item('fun.category', 'fun', 'category', (l) => m.setup_template_category_fun({}, { locale: l })),
+  item('fun.memes', 'fun', 'text', (l) => m.setup_template_channel_memes({}, { locale: l }), { parent: 'fun.category' }),
+  item('fun.games', 'fun', 'text', (l) => m.setup_template_channel_games({}, { locale: l }), { parent: 'fun.category' }),
+  item('fun.music', 'fun', 'text', (l) => m.setup_template_channel_music({}, { locale: l }), { parent: 'fun.category' }),
+  // Ecrit par le seul bot : ce qui y arrive y arrive par les reactions des
+  // membres, pas par un message qu'on y poste.
+  item('fun.starboard', 'fun', 'text', (l) => m.setup_template_channel_starboard({}, { locale: l }), { parent: 'fun.category', wiring: 'starboard', readOnly: true }),
 
   item('bots.category', 'bots', 'category', (l) => m.setup_template_category_bots({}, { locale: l })),
   item('bots.rpg', 'bots', 'text', (l) => m.setup_template_channel_rpg({}, { locale: l }), { parent: 'bots.category', wiring: 'rpg' }),
@@ -184,12 +207,17 @@ export const SERVER_TEMPLATE_PLAN: TemplateItem[] = [
 
   // Modules allumes en meme temps. Leur nom ne part pas sur Discord et ne suit
   // donc pas la langue du serveur : la page les traduit elle-meme depuis
-  // `moduleId`. Il sert de repli, et de libelle dans le Centre de gestion pour
+  // `moduleId`. Il sert de repli, et de libelle dans la page Modules pour
   // ceux qui n'y figurent pas encore - sans quoi ils s'y afficheraient sous
   // leur identifiant brut.
   item('module.tickets', 'modules', 'module', () => 'Tickets', { moduleId: 'tickets', linkedTo: 'tickets.category' }),
   item('module.leveling', 'modules', 'module', () => 'Niveaux & XP', { moduleId: 'leveling', linkedTo: 'bots.level' }),
   item('module.economy', 'modules', 'module', () => 'Économie & RPG', { moduleId: 'economy', linkedTo: 'bots.rpg' }),
+  item('module.starboard', 'modules', 'module', () => 'Starlight', { moduleId: 'starboard', linkedTo: 'fun.starboard' }),
+  // Un seul module derriere deux elements du plan - les fils automatiques et
+  // les salons de statistiques en relevent tous deux. Il suit le salon media,
+  // le plus courant des deux ; la section statistiques l'allume de son cote.
+  item('module.auto_thread', 'modules', 'module', () => 'Auto-thread & salons', { moduleId: 'auto_thread', linkedTo: 'text.media' }),
   item('module.nickname_moderation', 'modules', 'module', () => 'Modération des pseudos', { moduleId: 'nickname_moderation' }),
   item('module.automod', 'modules', 'module', () => 'AutoMod', { moduleId: 'automod' }),
   item('module.channel_health', 'modules', 'module', () => 'Santé des salons', { moduleId: 'channel_health', linkedTo: 'staff.log' }),
@@ -206,6 +234,19 @@ const ITEMS_BY_KEY = new Map(SERVER_TEMPLATE_PLAN.map((entry) => [entry.key, ent
  */
 export const DEFAULT_SELECTION = SERVER_TEMPLATE_PLAN
   .filter((entry) => entry.section !== 'captcha')
+  .map((entry) => entry.key);
+
+/**
+ * Selection proposee sur un serveur deja habite.
+ *
+ * Uniquement les elements qui n'ecrivent rien sur Discord : allumer des modules
+ * par-dessus une arborescence existante est sans consequence visible, alors que
+ * creer la maquette complete y doublerait des salons dont des gens se servent.
+ * Le reste reste cochable a la main - c'est une proposition de depart, pas une
+ * restriction.
+ */
+export const TAKEOVER_SELECTION = SERVER_TEMPLATE_PLAN
+  .filter((entry) => entry.kind === 'module')
   .map((entry) => entry.key);
 
 export type ServerTemplatePlanItem = {
@@ -283,6 +324,80 @@ export function normalizeSelection(selection: readonly string[]): string[] {
 }
 
 /**
+ * La nature reelle d'un element du serveur, telle que la validation la voit.
+ *
+ * Volontairement reduite aux quatre natures que le plan connait : on ne cherche
+ * pas a decrire Discord, seulement a repondre « ce que l'administrateur a
+ * designe peut-il tenir cette ligne-la ? ».
+ */
+export type AdoptableKind = 'role' | 'category' | 'text' | 'voice';
+
+export type AdoptionLookup = (id: string) => AdoptableKind | null;
+
+export type ParsedAdoptions = {
+  /** Ce qui a ete retenu : clef du plan vers identifiant Discord. */
+  adopt: Record<string, string>;
+  /**
+   * Ce qui a ete refuse, par nom d'element du plan. Refuse et non ignore : une
+   * designation qui ne correspond a rien vient d'une page qui a vieilli - le
+   * salon a ete supprime entre son affichage et l'envoi - et poser la maquette
+   * quand meme creerait justement le doublon qu'on essayait d'eviter.
+   */
+  rejected: string[];
+};
+
+/**
+ * Ce que l'administrateur a designe, ramene a ce qui est posable.
+ *
+ * Le corps de requete n'est pas cru sur parole. Il porte des identifiants qui
+ * vont devenir le salon de journalisation du serveur, son role staff, sa
+ * categorie de tickets : accepter n'importe quoi reviendrait a laisser le
+ * navigateur decider ou Kotbo ecrit. Chaque entree doit donc designer un
+ * element qui existe sur ce serveur et dont la nature correspond a la clef -
+ * un salon vocal envoye pour `welcome.rules` poserait un reglement que personne
+ * ne peut lire.
+ *
+ * La recherche est passee en parametre plutot que lue sur un objet discord.js :
+ * la regle se teste ainsi sans client ni reseau, ce qui est la moindre des
+ * choses pour un point d'entree qui accepte des identifiants du dehors.
+ */
+export function parseAdoptions(
+  raw: unknown,
+  lookup: AdoptionLookup,
+  /** Langue du serveur : les refus sont rendus a l'ecran, sous les noms qu'il porte. */
+  locale: BotLocale,
+): ParsedAdoptions {
+  const adopt: Record<string, string> = {};
+  const rejected: string[] = [];
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { adopt, rejected };
+
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    // Un identifiant Discord est un flocon numerique. Tout le reste - objet,
+    // mention formatee, chaine vide - n'a rien a faire ici.
+    if (typeof value !== 'string' || !/^\d{5,25}$/.test(value)) continue;
+
+    const item = ITEMS_BY_KEY.get(key);
+    // Clef hors plan, ou module : un module n'ecrit rien sur Discord, il n'y a
+    // rien a y adopter.
+    if (!item || item.kind === 'module') continue;
+
+    // La nature doit concorder : un salon vocal nomme « general » ne dispense
+    // pas de creer le salon textuel du meme nom, et une categorie encore moins.
+    // C'est la recherche qui range les salons ou le bot peut ecrire - un salon
+    // d'annonces compris - sous `text`.
+    if (lookup(value) !== item.kind) {
+      rejected.push(item.name(locale));
+      continue;
+    }
+
+    adopt[key] = value;
+  }
+
+  return { adopt, rejected };
+}
+
+/**
  * Permissions exigees du bot pour la selection donnee.
  *
  * Seule la creation d'un role reclame « Gerer les roles ». Les surcharges
@@ -297,9 +412,93 @@ export function requiredPermissionsFor(selection: readonly string[]): bigint[] {
   return required;
 }
 
+/**
+ * Serveur neuf a batir, ou serveur deja vivant a reprendre.
+ *
+ * La mise en place ne propose pas la meme chose dans les deux cas : sur un
+ * serveur neuf on cree l'arborescence complete, sur un serveur habite on ne
+ * touche qu'a ce qui manque, sous peine de doubler des salons que la
+ * communaute utilise deja. Poser la question a l'administrateur ne suffit pas :
+ * il repond « nouveau serveur » parce que Kotbo est nouveau pour lui, pas parce
+ * que le serveur l'est. D'ou cette lecture des faits, qui sert de defaut.
+ *
+ * Fonction pure : les signaux sont passes en parametre plutot que lus sur un
+ * objet discord.js, pour qu'elle se teste sans client ni reseau.
+ */
+export type ServerMaturity = 'fresh' | 'established';
+
+export interface ServerMaturitySignals {
+  createdAt: Date;
+  memberCount: number;
+  /** Salons de tout type, categories comprises. */
+  channelCount: number;
+  /** Roles hors `@everyone`, qui existe partout et ne prouve rien. */
+  roleCount: number;
+}
+
+export interface ServerMaturityVerdict {
+  maturity: ServerMaturity;
+  ageDays: number;
+  /**
+   * Ce qui a fait pencher la balance, en clair. La page l'affiche : une
+   * recommandation dont on ne voit pas le motif se fait ignorer, et celle-ci se
+   * trompera parfois - un serveur prepare a l'avance puis ouvert d'un coup
+   * ressemble a un serveur etabli le jour de son lancement.
+   */
+  reasons: string[];
+}
+
+/**
+ * Seuils. Choisis pour que le doute profite a la reprise : proposer « creer »
+ * sur un serveur habite fait doubler des salons que des gens utilisent, alors
+ * que proposer « reprendre » sur un serveur vide ne coute qu'une case a cocher.
+ */
+const MATURITY_THRESHOLDS = {
+  /** Un mois : en-deca, un serveur se remanie encore sans que personne ne s'en plaigne. */
+  ageDays: 30,
+  /** Au-dela, il y a une communaute, pas une equipe qui prepare le lancement. */
+  members: 50,
+  /**
+   * Un serveur cree nu compte deux salons et deux categories ; un modele
+   * Discord en pose une dizaine. Passe quinze, quelqu'un a construit.
+   */
+  channels: 15,
+  /** Hors `@everyone`. Une poignee de roles, c'est un debut d'organisation. */
+  roles: 8,
+} as const;
+
+export function assessServerMaturity(signals: ServerMaturitySignals): ServerMaturityVerdict {
+  const ageMs = Date.now() - signals.createdAt.getTime();
+  // Tronque et jamais negatif : une horloge en avance sur celle de Discord
+  // rendrait un age negatif, qui se lirait comme un serveur tres jeune.
+  const ageDays = Math.max(0, Math.floor(ageMs / 86_400_000));
+
+  const reasons: string[] = [];
+  if (ageDays >= MATURITY_THRESHOLDS.ageDays) reasons.push(`créé il y a ${ageDays} jours`);
+  if (signals.memberCount >= MATURITY_THRESHOLDS.members) reasons.push(`${signals.memberCount} membres`);
+  if (signals.channelCount > MATURITY_THRESHOLDS.channels) reasons.push(`${signals.channelCount} salons`);
+  if (signals.roleCount > MATURITY_THRESHOLDS.roles) reasons.push(`${signals.roleCount} rôles`);
+
+  // Un seul signal suffit : ils ne se compensent pas. Un serveur de trois jours
+  // avec deux mille membres est un serveur etabli, et un serveur de deux ans
+  // reste un serveur etabli meme vide - on n'y debarque pas en recreant tout.
+  return {
+    maturity: reasons.length > 0 ? 'established' : 'fresh',
+    ageDays,
+    reasons,
+  };
+}
+
 type StoredRefs = Record<string, string>;
 
-function readRefs(value: Prisma.JsonValue | null | undefined): StoredRefs {
+/**
+ * La trace des elements deja poses, relue depuis la colonne JSON.
+ *
+ * Exportee parce que la creation a la demande du parcours - un salon de logs,
+ * une hierarchie de roles - ecrit dans la meme trace : c'est ce qui evite
+ * qu'une mise en place lancee ensuite double ce qui vient d'etre cree.
+ */
+export function readServerTemplateRefs(value: Prisma.JsonValue | null | undefined): StoredRefs {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const refs: StoredRefs = {};
   for (const [key, id] of Object.entries(value as Record<string, unknown>)) {
@@ -330,6 +529,13 @@ export type ServerTemplateResult = {
   /** Modules allumes, par identifiant du dashboard. */
   modules: string[];
   /**
+   * Modules configures mais laisses inertes, faute d'une offre qui les
+   * comprenne. Leur ligne est ecrite : le jour ou le serveur s'abonne, ils
+   * s'allument seuls. La mise en place s'en sert pour dire ce qui attend un
+   * paiement plutot que de le passer sous silence.
+   */
+  preparedModules: string[];
+  /**
    * Ce qui n'a pas pu etre fait sans pour autant arreter la mise en place :
    * une etape facultative refusee faute de permission, par exemple. Sans les
    * remonter, l'admin croirait tout en place.
@@ -343,6 +549,28 @@ export async function applyServerTemplate(input: {
   guild: Guild;
   locale: BotLocale;
   selection: readonly string[];
+  /**
+   * Ce que l'administrateur a designe lui-meme : clef du plan vers identifiant
+   * Discord existant.
+   *
+   * La reprise ne reconnaissait un element que par la trace laissee par une
+   * pose precedente, ou par la ressemblance de son nom. Tout ce que le serveur
+   * portait sous un autre nom - un `#journal` qui fait office de salon de
+   * journalisation, un `@Modo` qui est le role staff - passait donc pour absent
+   * et se recreait a cote, sous le nom de la maquette. C'est exactement ce que
+   * l'on reprochait a la mise en place.
+   *
+   * Ces identifiants entrent dans la trace avant que la pose commence : ils
+   * suivent alors le meme chemin qu'un element pose par Kotbo lui-meme, c'est
+   * a dire repris tel quel par `ensureRole` et `ensureTextChannel`, sans
+   * renommage, sans deplacement et sans reecriture de permissions. Le cablage
+   * qui va avec - salon de logs, role staff, categorie de tickets - se fait
+   * comme si Kotbo l'avait cree.
+   *
+   * La route les a valides avant d'arriver ici : chacun existe sur le serveur
+   * et sa nature correspond a la clef.
+   */
+  adopt?: Readonly<Record<string, string>>;
   auditUser: string;
 }): Promise<ServerTemplateResult> {
   const { guild, locale, auditUser } = input;
@@ -354,6 +582,27 @@ export async function applyServerTemplate(input: {
   const items: ProvisionedEntry[] = [];
   const modules: string[] = [];
   const warnings: string[] = [];
+
+  /**
+   * Allume un module, ou l'inscrit comme prepare quand l'offre ne le comprend
+   * pas encore.
+   *
+   * La mise en place guidee tourne sur des serveurs qui n'ont rien achete :
+   * s'arreter au premier module payant reviendrait a leur interdire de se
+   * preparer, et c'est pourtant tout ce qu'on leur demande de faire ici. La
+   * ligne est donc ecrite quand meme - la garde de lecture la masque tant que
+   * l'offre ne la couvre pas, et le paiement la revele sans qu'aucun traitement
+   * n'ait a repasser derriere.
+   */
+  const preparedModules: string[] = [];
+
+  const enableModule = async (moduleId: string, name: string): Promise<void> => {
+    const result = await setDashboardModuleStatus(guildId, moduleId, true, name, {
+      recordIntentWhenLocked: true,
+    });
+    if (result.preparedOnly) preparedModules.push(moduleId);
+    else modules.push(moduleId);
+  };
   const data: Prisma.GuildUpdateInput = {};
   const refs: StoredRefs = {};
   let panelSent = false;
@@ -371,10 +620,19 @@ export async function applyServerTemplate(input: {
       tempVoiceChannelId: true,
       tempVoiceCategoryId: true,
       honeypotChannelId: true,
+      autoThreadChannels: true,
+      statsConfig: true,
       serverTemplateRefs: true,
     },
   });
-  const knownRefs = readRefs(config?.serverTemplateRefs);
+  // Les designations de l'administrateur priment sur la trace : c'est le geste
+  // le plus recent, et le seul qui vienne de quelqu'un qui connait le serveur.
+  const knownRefs = { ...readServerTemplateRefs(config?.serverTemplateRefs), ...(input.adopt ?? {}) };
+  // Elles entrent dans la trace des le premier enregistrement : une pose
+  // interrompue apres avoir adopte un salon ne doit pas l'oublier et en creer
+  // un second au deuxieme essai.
+  for (const [key, id] of Object.entries(input.adopt ?? {})) refs[key] = id;
+
   const raidConfig = await prisma.raidProtectionConfig.findUnique({
     where: { guildId },
     select: { captchaUnverifiedRoleId: true, captchaChannelId: true, captchaVoiceChannelId: true },
@@ -887,8 +1145,7 @@ export async function applyServerTemplate(input: {
         ...(captchaLogChannelId ? { captchaLogChannelId } : {}),
       });
 
-      await setDashboardModuleStatus(guildId, 'raid_protection', true, 'Protection anti-raid');
-      modules.push('raid_protection');
+      await enableModule('raid_protection', 'Protection anti-raid');
 
       await persist();
     }
@@ -942,7 +1199,16 @@ export async function applyServerTemplate(input: {
         }
       }
 
-      if (outcome?.panelCreated) {
+      // Publie que le salon vienne d'etre cree ou qu'il ait ete repris.
+      //
+      // La condition ne regardait que la creation : un administrateur qui
+      // designait son salon de tickets existant repartait avec le module
+      // allume, le salon cable, et aucun panneau dedans - seul celui de
+      // l'ancien bot, dont les boutons ne repondent plus. « Utiliser
+      // l'existant » ne veut pas dire « ne rien y poser ». L'envoi retire
+      // d'abord les panneaux qui s'y trouvent, ce qui rend l'operation
+      // rejouable sans empiler.
+      if (outcome) {
         const { sendTicketSetupEmbed } = await import('../features/ticketService.js');
         await sendTicketSetupEmbed(guild.client, guildId);
         panelSent = true;
@@ -1033,6 +1299,55 @@ export async function applyServerTemplate(input: {
       await persist();
     }
 
+    if (selection.has('fun.category')) {
+      await assertStillAllowed(guild, required);
+      const parentId = await ensurePlannedCategory('fun.category', null, visibleTo());
+
+      for (const key of ['fun.memes', 'fun.games', 'fun.music']) {
+        if (!selection.has(key)) continue;
+        const channel = await ensureTextChannel(guild, {
+          key,
+          existingId: knownRefs[key],
+          name: nameOf(key),
+          parentId,
+          permissionOverwrites: memberOverwrites,
+          reason,
+        });
+        record(channel.entry);
+      }
+
+      if (selection.has('fun.starboard')) {
+        // Lisible et non ecrit : les highlights y sont republies par le bot, et
+        // les reactions restent ouvertes - c'est souvent la qu'on vote une fois
+        // le message mis en avant.
+        const existing = await prisma.starboardConfig.findUnique({ where: { guildId }, select: { channelId: true } });
+        const channel = await ensureTextChannel(guild, {
+          key: 'fun.starboard',
+          existingId: existing?.channelId ?? knownRefs['fun.starboard'],
+          name: nameOf('fun.starboard'),
+          parentId,
+          permissionOverwrites: readOnlyFor(),
+          reason,
+        });
+        record(channel.entry);
+
+        // Ecrit meme sur un salon repris : retenir la ligne veut dire « je veux
+        // Starlight », et une configuration qui pointe ailleurs - ou nulle part -
+        // le laisserait inerte.
+        if (existing?.channelId !== channel.channel.id) {
+          await prisma.starboardConfig.upsert({
+            where: { guildId },
+            create: { guildId, enabled: true, channelId: channel.channel.id },
+            update: { enabled: true, channelId: channel.channel.id },
+          });
+          const { invalidateStarboardCache } = await import('../features/starboardService.js');
+          await invalidateStarboardCache(guildId);
+        }
+      }
+
+      await persist();
+    }
+
     if (selection.has('text.category')) {
       await assertStillAllowed(guild, required);
       const parentId = await ensurePlannedCategory('text.category', null, visibleTo());
@@ -1048,9 +1363,98 @@ export async function applyServerTemplate(input: {
           reason,
         });
         record(channel.entry);
+
+        // Le salon media ouvre un fil par publication. Ajoute a la liste plutot
+        // qu'ecrit par-dessus : un serveur qui a deja arme l'auto-thread
+        // ailleurs ne doit pas le perdre en posant sa structure.
+        if (key === 'text.media' && selection.has('module.auto_thread')) {
+          const known = new Set(config?.autoThreadChannels ?? []);
+          if (!known.has(channel.channel.id)) {
+            data.autoThreadChannels = [...known, channel.channel.id];
+          }
+          data.autoThreadEnabled = true;
+        }
       }
 
       await persist();
+    }
+
+    if (selection.has('stats.category')) {
+      await assertStillAllowed(guild, required);
+      const parentId = await ensurePlannedCategory('stats.category', null, visibleTo());
+
+      /**
+       * Un compteur, pose et branche.
+       *
+       * Le nom part deja resolu : le laisser sur son modele afficherait
+       * « Membres : {count} » a tous les membres jusqu'au prochain passage de la
+       * boucle de rafraichissement, soit plusieurs minutes sur le seul ecran
+       * qu'on regarde en sortant du parcours.
+       *
+       * `Connect` est refuse a tout le monde : un compteur ou l'on peut entrer
+       * est un vocal fantome dans lequel un membre se retrouve seul.
+       */
+      const ensureCounter = async (key: string, resolved: string) => {
+        const channel = await ensureVoiceChannel(guild, {
+          key,
+          existingId: knownRefs[key],
+          name: resolved,
+          parentId,
+          permissionOverwrites: memberRoleId
+            ? [
+                { id: everyoneId, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
+                ...botOverwrite,
+                { id: memberRoleId, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.Connect] },
+              ]
+            : [{ id: everyoneId, deny: [PermissionFlagsBits.Connect] }, ...botOverwrite],
+          reason,
+        });
+        record(channel.entry);
+        return channel.channel.id;
+      };
+
+      const stats = readStatsConfig(config?.statsConfig);
+      const next: StatsConfig = { ...stats };
+
+      if (selection.has('stats.members')) {
+        next.memberChannelId = await ensureCounter(
+          'stats.members',
+          m.setup_template_stats_members({ count: guild.memberCount }, { locale }),
+        );
+        next.memberEnabled = true;
+        next.memberTemplate = nameOf('stats.members');
+      }
+
+      if (selection.has('stats.online')) {
+        // « En ligne » n'a pas de champ a lui : le format ne nomme que les
+        // compteurs les plus courants et renvoie le reste sur `customStats`.
+        const channelId = await ensureCounter(
+          'stats.online',
+          m.setup_template_stats_online({ count: guild.members.cache.filter((entry) => entry.presence && entry.presence.status !== 'offline').size }, { locale }),
+        );
+        const others = (next.customStats ?? []).filter((entry) => entry.type !== 'online');
+        next.customStats = [
+          ...others,
+          { enabled: true, type: 'online', channelId, channelType: 'voice', template: nameOf('stats.online') },
+        ];
+      }
+
+      data.statsEnabled = true;
+      data.statsConfig = next as Prisma.InputJsonValue;
+      await persist();
+
+      // Les compteurs relevent du module « Auto-thread & salons » : sans lui, la
+      // page ou l'on vient les regler reste fermee.
+      await enableModule('auto_thread', 'Auto-thread & salons');
+
+      // Un premier passage tout de suite : la boucle ne repasse que toutes les
+      // dix minutes, et « En ligne : 0 » sur le serveur qu'on vient de monter
+      // est la premiere chose qu'on irait verifier sur Discord. Elle recompte
+      // aussi les presences, que le cache ne porte pas forcement a cet instant.
+      const { updateGuildStats } = await import('../../events/stats.js');
+      await updateGuildStats(guild.client, guildId).catch((err) => {
+        logger.warn('ServerTemplate', `Premier calcul des compteurs impossible sur ${guildId}`, err);
+      });
     }
 
     if (selection.has('bots.category')) {
@@ -1246,8 +1650,7 @@ export async function applyServerTemplate(input: {
         await enableChannelHealth(guildId, refs['staff.log'] ?? config?.logChannelId ?? null);
       }
 
-      await setDashboardModuleStatus(guildId, entry.moduleId, true, entry.name(locale));
-      modules.push(entry.moduleId);
+      await enableModule(entry.moduleId, entry.name(locale));
     }
 
     await persist();
@@ -1282,13 +1685,13 @@ export async function applyServerTemplate(input: {
     }
 
     await cache.invalidateGuild(guildId);
-    return { items, modules, warnings, panelSent, interrupted: null };
+    return { items, modules, preparedModules, warnings, panelSent, interrupted: null };
   } catch (err) {
     // Ce qui a ete cree est enregistre malgre l'echec : sans cela, une reprise
     // reposerait les memes salons a cote des precedents.
     await persist().catch(() => null);
     await cache.invalidateGuild(guildId).catch(() => null);
     logger.error('ServerTemplate', `Mise en place interrompue sur ${guildId}: ${errorMessage(err)}`);
-    return { items, modules, warnings, panelSent, interrupted: errorMessage(err) };
+    return { items, modules, preparedModules, warnings, panelSent, interrupted: errorMessage(err) };
   }
 }

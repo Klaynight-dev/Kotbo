@@ -3,6 +3,8 @@ import {
   DEFAULT_LEVEL_CURVE,
   LEVEL_CURVE_HARD_CAP,
   LEVEL_CURVE_LIMITS,
+  MAX_XP,
+  clampXp,
   grantedWithinDailyCap,
   levelCurvePreview,
   levelFromXp,
@@ -140,5 +142,30 @@ describe('grantedWithinDailyCap', () => {
   test('ignore les montants nuls ou invalides', () => {
     expect(grantedWithinDailyCap(0, 0, 500)).toBe(0);
     expect(grantedWithinDailyCap(0, Number.NaN, 500)).toBe(0);
+  });
+});
+
+describe('clampXp', () => {
+  test('ramene une XP demesuree sous la borne de la colonne', () => {
+    // `MemberLevel.xp` est un Int Postgres : au-dela de 2 147 483 647 l'ecriture
+    // echoue et l'admin recoit l'erreur brute au lieu de son reglage.
+    expect(clampXp(2_469_297_959_900)).toBe(MAX_XP);
+    expect(MAX_XP).toBeLessThan(2_147_483_647);
+  });
+
+  test('plancher a zero et valeurs entieres', () => {
+    expect(clampXp(-1)).toBe(0);
+    expect(clampXp(12.9)).toBe(12);
+  });
+
+  test('absorbe les valeurs non finies', () => {
+    // Une courbe extreme peut renvoyer Infinity, un fichier importe un NaN.
+    expect(clampXp(Number.POSITIVE_INFINITY)).toBe(MAX_XP);
+    expect(clampXp(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(clampXp(Number.NaN)).toBe(0);
+  });
+
+  test('laisse passer une valeur normale', () => {
+    expect(clampXp(15_000)).toBe(15_000);
   });
 });

@@ -1,14 +1,33 @@
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { Client, ChannelType, type Guild, type GuildBasedChannel } from 'discord.js';
+import {
+  Client,
+  ChannelType,
+  DiscordAPIError,
+  GuildPremiumTier,
+  PermissionFlagsBits,
+  type Guild,
+  type GuildBasedChannel,
+} from 'discord.js';
 import pLimit from 'p-limit';
 import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
 import { isGuildActivated, activateGuild } from '../../../utils/activation.js';
+import { isOnboardingBacktrack } from '@kotbo/contracts';
+import {
+  trackAcquisitionStep,
+  trackDashboardOpen,
+} from '../../../services/analytics/acquisitionService.js';
 import { translate } from '../../../services/integrations/translationService.js';
 import { cache } from '../../../utils/cache.js';
 import { getGuildLanguageState, normalizeLocale } from '../../../utils/i18n.js';
+import { DEFAULT_TIMEZONE, isValidTimezone, listSupportedTimezones, normalizeTimezone } from '@kotbo/contracts';
 import { rerenderPersistentPanels } from '../../../services/core/panelRerenderService.js';
+import {
+  canFinishOnboardingWithoutPayment,
+  isOnboardingFeatureEnabled,
+  markOnboardingComplete,
+} from '../../../services/core/onboardingGate.js';
 import {
   json,
   readJsonBody,
@@ -19,6 +38,45 @@ import {
   type AuthClaims,
   type DashboardAccess,
 } from '../../shared.js';
+
+/**
+ * Limites du dépôt d'emoji, imposées par Discord et non par nous : 256 Ko et
+ * des formats d'image que le CDN sait servir. Les rappeler ici évite un
+ * aller-retour réseau pour un fichier qui sera refusé de toute façon.
+ */
+const GUILD_EMOJI_MAX_BYTES = 256 * 1024;
+const GUILD_EMOJI_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+/**
+ * Fuseau de lecture choisi par un utilisateur, ou `null` pour « suivre le
+ * navigateur ».
+ *
+ * `normalizeTimezone` ne convient pas ici : il replie sur Europe/Paris, ce qui
+ * transformerait une valeur invalide en choix explicite et figerait le lecteur
+ * dans un fuseau qu'il n'a pas demande.
+ */
+function normalizeStoredTimezone(value: unknown): string | null {
+  return isValidTimezone(value) ? value : null;
+}
+
+/**
+ * Ecran courant du parcours, tel que le dashboard l'enregistre.
+ *
+ * L'etat du parcours est un JSON libre, borne en taille mais non valide champ
+ * par champ : c'est le dashboard qui se le relit a lui-meme. On n'en extrait
+ * donc que ce dont le tunnel a besoin, et on se mefie du reste.
+ */
+function readWizardStep(state: unknown): string | null {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+  const step = (state as { step?: unknown }).step;
+  return typeof step === 'string' && step.trim() ? step.trim().slice(0, 64) : null;
+}
+
+/** Le visiteur est-il revenu sur ses pas ? Delegue a l'ordre des ecrans. */
+function wentBackward(from: string | null, to: string | null): boolean {
+  return isOnboardingBacktrack(from, to);
+}
+
 
 export async function handleGeneralRoutes(
   req: IncomingMessage,
@@ -123,6 +181,68 @@ export async function handleGeneralRoutes(
     } catch (err) {
       logger.error('GeneralAPI', `Error handling language for guild ${guildId}:`, err);
       json(res, 500, { error: 'Erreur lors de la gestion de la langue' });
+    }
+    return true;
+  }
+
+  // GET|PATCH /api/dashboard/guilds/:guildId/timezone
+  //
+  // Le bot tourne en UTC : sans ce reglage, une reunion saisie a 21h etait
+  // enregistree a 23h heure de Paris et annoncee a 19h dans les notifications.
+  if (parts.length === 5 && parts[2] === 'guilds' && parts[4] === 'timezone' && (method === 'GET' || method === 'PATCH')) {
+    const guildId = parts[3]!;
+    try {
+      const access = await resolveDashboardAccess(client, guildId, user.userId);
+      if (!access.canViewDashboard) {
+        json(res, 403, { error: 'Accès refusé' });
+        return true;
+      }
+
+      if (method === 'PATCH') {
+        if (!access.canManageSettings) {
+          json(res, 403, { error: 'Accès refusé' });
+          return true;
+        }
+
+        const body = await readJsonBody<{ timezone?: string | null }>(req);
+        const requested = body?.timezone;
+
+        // Pas de repli sur le defaut : une requete malformee remettrait
+        // silencieusement le serveur sur Europe/Paris.
+        if (!isValidTimezone(requested)) {
+          json(res, 400, { error: 'Fuseau horaire invalide : utilisez un identifiant IANA (ex. Europe/Paris)' });
+          return true;
+        }
+
+        await prisma.guild.upsert({
+          where: { id: guildId },
+          update: { timezone: requested },
+          create: { id: guildId, timezone: requested },
+        });
+        await cache.invalidateGuild(guildId);
+
+        json(res, 200, {
+          timezone: requested,
+          default: DEFAULT_TIMEZONE,
+          available: listSupportedTimezones(requested),
+        });
+        return true;
+      }
+
+      const guild = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: { timezone: true },
+      });
+
+      const current = normalizeTimezone(guild?.timezone);
+      json(res, 200, {
+        timezone: current,
+        default: DEFAULT_TIMEZONE,
+        available: listSupportedTimezones(current),
+      });
+    } catch (err) {
+      logger.error('GeneralAPI', `Error handling timezone for guild ${guildId}:`, err);
+      json(res, 500, { error: 'Erreur lors de la gestion du fuseau horaire' });
     }
     return true;
   }
@@ -234,6 +354,152 @@ export async function handleGuildGeneralRoutes(
     return true;
   }
 
+  // POST /api/dashboard/guilds/:guildId/onboarding/complete - clore le parcours
+  //
+  // La seule sortie du tunnel qui ne passe pas par un paiement, et elle ne
+  // s'ouvre que pour un serveur qui n'a rien a payer : instance sans
+  // facturation, ou acces deja accorde (offre posee a la main, abonnement,
+  // code de partenariat). Ailleurs, c'est Stripe qui clot le parcours, par
+  // `syncSubscription` - sans quoi cette route serait le contournement qu'on
+  // vient precisement de retirer.
+  //
+  // L'ecriture est deja reservee aux administrateurs du dashboard par la garde
+  // commune (`handleDashboardRoutes`) : personne d'autre ne peut l'appeler.
+  if (parts.length === 6 && parts[4] === 'onboarding' && parts[5] === 'complete' && method === 'POST') {
+    try {
+      const guild = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: {
+          onboardingCompletedAt: true,
+          plan: true,
+          stripeSubscriptionId: true,
+          accessType: true,
+          activationCode: true,
+        },
+      });
+
+      if (!guild) {
+        json(res, 404, { error: 'Guilde introuvable' });
+        return true;
+      }
+
+      // Deja clos, ou instance qui ne presente pas de parcours : rejouer
+      // l'appel ne doit pas devenir une erreur, la page peut le refaire apres
+      // un retour de paiement ou un simple rafraichissement.
+      if (!guild.onboardingCompletedAt && isOnboardingFeatureEnabled()) {
+        if (!canFinishOnboardingWithoutPayment(guild)) {
+          json(res, 402, {
+            error: "La mise en service passe par le paiement : le parcours ne peut pas être clos ici.",
+          });
+          return true;
+        }
+
+        await markOnboardingComplete(guildId, 'dernier écran, rien à payer');
+      }
+
+      json(res, 200, { ok: true });
+    } catch (err) {
+      logger.error('GeneralAPI', `Error completing onboarding for ${guildId}:`, err);
+      json(res, 500, { error: 'Erreur lors de la clôture du parcours de configuration.' });
+    }
+    return true;
+  }
+
+  // GET|PUT /api/dashboard/guilds/:guildId/onboarding/state - reprise du parcours
+  //
+  // Le navigateur reste la source rapide : il ecrit a chaque clic, sans
+  // attendre le reseau, et le parcours n'a jamais a patienter pour avancer.
+  // Cette route ne fait que doubler cette memoire, pour qu'un changement
+  // d'appareil ne reparte pas du premier ecran.
+  //
+  // Le corps n'est pas relu ligne a ligne : ce sont les reponses d'un
+  // formulaire que le dashboard se relit a lui-meme, aucune n'est appliquee a
+  // Discord depuis ici - chaque etape ecrit par sa propre route, gardee comme
+  // il faut. On borne en revanche la taille : une colonne JSON libre est une
+  // invitation a y deposer autre chose que le parcours.
+  if (parts.length === 6 && parts[4] === 'onboarding' && parts[5] === 'state') {
+    if (method === 'GET') {
+      try {
+        const guild = await prisma.guild.findUnique({
+          where: { id: guildId },
+          select: { onboardingState: true },
+        });
+        if (!guild) {
+          json(res, 404, { error: 'Guilde introuvable' });
+          return true;
+        }
+        // Le parcours vient de se charger : quelqu'un est reellement venu se
+        // servir du bot, la ou beaucoup de serveurs le posent puis l'oublient.
+        trackDashboardOpen(guildId);
+        json(res, 200, { state: guild.onboardingState ?? null });
+      } catch (err) {
+        logger.error('GeneralAPI', `Error reading onboarding state for ${guildId}:`, err);
+        json(res, 500, { error: "Erreur lors de la lecture du parcours de configuration." });
+      }
+      return true;
+    }
+
+    if (method === 'PUT') {
+      try {
+        const body = await readJsonBody<{ state?: unknown }>(req);
+        const state = body?.state;
+
+        // `null` efface : c'est ce que fait « recommencer le parcours ».
+        if (state === null) {
+          await prisma.guild.update({ where: { id: guildId }, data: { onboardingState: Prisma.DbNull } });
+          json(res, 200, { ok: true });
+          return true;
+        }
+
+        if (typeof state !== 'object' || Array.isArray(state)) {
+          json(res, 400, { error: "L'état du parcours doit être un objet." });
+          return true;
+        }
+
+        // 16 Ko : le parcours n'y met qu'une poignee de reponses et de clefs
+        // d'etapes. Au-dela, ce n'est plus un parcours qu'on enregistre.
+        const serialized = JSON.stringify(state);
+        if (serialized.length > 16_384) {
+          json(res, 413, { error: "L'état du parcours est trop volumineux." });
+          return true;
+        }
+
+        // L'etape franchie se deduit de la difference : le parcours envoie son
+        // etat complet, jamais « je viens de passer tel ecran ». Comparer avant
+        // d'ecrire est donc le seul moment ou l'on peut savoir si le visiteur a
+        // avance ou recule - et un retour en arriere ne dit pas la meme chose
+        // qu'un abandon : il signale un ecran mal compris.
+        const previous = await prisma.guild
+          .findUnique({ where: { id: guildId }, select: { onboardingState: true } })
+          .catch(() => null);
+        const previousStep = readWizardStep(previous?.onboardingState);
+        const nextStep = readWizardStep(state);
+
+        await prisma.guild.update({
+          where: { id: guildId },
+          data: { onboardingState: state as Prisma.InputJsonValue },
+        });
+
+        if (nextStep && nextStep !== previousStep) {
+          if (!previousStep) {
+            trackAcquisitionStep({ step: 'onboarding_started', guildId, metadata: { step: nextStep } });
+          }
+          trackAcquisitionStep({
+            step: wentBackward(previousStep, nextStep) ? 'onboarding_back' : 'onboarding_step',
+            guildId,
+            metadata: { step: nextStep, from: previousStep },
+          });
+        }
+
+        json(res, 200, { ok: true });
+      } catch (err) {
+        logger.error('GeneralAPI', `Error writing onboarding state for ${guildId}:`, err);
+        json(res, 500, { error: "Erreur lors de l'enregistrement du parcours de configuration." });
+      }
+      return true;
+    }
+  }
+
   // GET /api/dashboard/guilds/:guildId/channels - salons Discord (texte, vocal, catégories)
   if (parts.length === 5 && parts[4] === 'channels' && method === 'GET') {
     try {
@@ -292,6 +558,146 @@ export async function handleGuildGeneralRoutes(
     } catch (err) {
       logger.error('GeneralAPI', `Error getting guild channels for ${guildId}:`, err);
       json(res, 500, { error: 'Erreur lors de la récupération des salons Discord' });
+    }
+    return true;
+  }
+
+  // GET|POST /api/dashboard/guilds/:guildId/emojis - emojis personnalisés du serveur
+  //
+  // Les sélecteurs d'emoji du dashboard (monnaie, objets, quêtes...) ne
+  // proposaient que de l'Unicode : un serveur qui a sa propre pièce ne pouvait
+  // pas l'utiliser comme symbole de sa monnaie. Cette route expose le jeu
+  // d'emojis de la guilde, et laisse en déposer un nouveau sans passer par
+  // Discord - l'image est envoyée au serveur et l'emoji y est créé.
+  if (parts.length === 5 && parts[4] === 'emojis' && (method === 'GET' || method === 'POST')) {
+    let emojiGuild = client.guilds.cache.get(guildId) ?? null;
+    if (!emojiGuild) {
+      emojiGuild = await client.guilds.fetch(guildId).catch(() => null) as Guild | null;
+    }
+    if (!emojiGuild) {
+      json(res, 404, { error: 'Serveur Discord introuvable' });
+      return true;
+    }
+    const guild = emojiGuild;
+
+    // Le nombre d'emplacements suit le niveau de boost, et vaut autant pour les
+    // emojis fixes que pour les animés : sans ce chiffre, le dashboard ne peut
+    // pas dire pourquoi un dépôt est refusé.
+    const slotsForTier = (tier: GuildPremiumTier): number => {
+      switch (tier) {
+        case GuildPremiumTier.Tier1: return 100;
+        case GuildPremiumTier.Tier2: return 150;
+        case GuildPremiumTier.Tier3: return 250;
+        default: return 50;
+      }
+    };
+
+    const respondWithEmojis = async (status: number, extra: Record<string, unknown> = {}) => {
+      if (guild.emojis.cache.size === 0) {
+        await guild.emojis.fetch().catch(() => null);
+      }
+      const emojis = Array.from(guild.emojis.cache.values())
+        .map((emoji) => ({
+          id: emoji.id,
+          name: emoji.name ?? emoji.id,
+          animated: emoji.animated === true,
+          available: emoji.available !== false,
+          url: emoji.imageURL({ size: 64 }),
+          // La forme que Discord attend dans un message ou une réaction.
+          mention: `<${emoji.animated ? 'a' : ''}:${emoji.name ?? '_'}:${emoji.id}>`,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+
+      json(res, status, {
+        emojis,
+        slots: {
+          total: slotsForTier(guild.premiumTier),
+          staticUsed: emojis.filter((e) => !e.animated).length,
+          animatedUsed: emojis.filter((e) => e.animated).length,
+        },
+        canUpload: access.canManageSettings
+          && guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuildExpressions) === true,
+        ...extra,
+      });
+    };
+
+    if (method === 'GET') {
+      try {
+        await respondWithEmojis(200);
+      } catch (err) {
+        logger.error('GeneralAPI', `Error listing emojis for ${guildId}:`, err);
+        json(res, 500, { error: 'Erreur lors de la récupération des emojis du serveur' });
+      }
+      return true;
+    }
+
+    // Créer un emoji modifie le serveur Discord, pas seulement un réglage :
+    // c'est une écriture réservée aux administrateurs du dashboard.
+    if (!access.canManageSettings) {
+      json(res, 403, { error: 'Accès refusé' });
+      return true;
+    }
+
+    try {
+      const body = await readJsonBody<{ name?: string; mimeType?: string; data?: string }>(req);
+      const rawName = (body?.name ?? '').trim();
+      const mimeType = (body?.mimeType ?? '').trim().toLowerCase();
+      const data = body?.data ?? '';
+
+      if (!rawName || !mimeType || !data) {
+        json(res, 400, { error: 'name, mimeType et data sont requis.' });
+        return true;
+      }
+
+      // Discord n'accepte que lettres, chiffres et tirets bas, entre 2 et 32
+      // caractères. Corriger silencieusement serait pire : l'utilisateur
+      // chercherait ensuite un emoji qui ne porte pas le nom qu'il a saisi.
+      if (!/^\w{2,32}$/.test(rawName)) {
+        json(res, 400, { error: "Nom d'emoji invalide : 2 à 32 caractères, lettres, chiffres et tirets bas uniquement." });
+        return true;
+      }
+
+      if (!GUILD_EMOJI_MIME_TYPES.includes(mimeType)) {
+        json(res, 400, { error: 'Format non supporté. Utilisez PNG, JPEG, GIF ou WEBP.' });
+        return true;
+      }
+
+      const buffer = Buffer.from(data, 'base64');
+      if (buffer.length === 0) {
+        json(res, 400, { error: 'Image vide ou illisible.' });
+        return true;
+      }
+      if (buffer.length > GUILD_EMOJI_MAX_BYTES) {
+        json(res, 413, { error: `Image trop lourde : ${Math.round(GUILD_EMOJI_MAX_BYTES / 1024)} Ko maximum.` });
+        return true;
+      }
+
+      if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+        json(res, 403, { error: "Le bot n'a pas la permission « Gérer les expressions » sur ce serveur." });
+        return true;
+      }
+
+      const created = await guild.emojis.create({
+        attachment: buffer,
+        name: rawName,
+        reason: `Emoji ajouté depuis le dashboard par ${user.userId}`,
+      });
+
+      await respondWithEmojis(201, {
+        created: {
+          id: created.id,
+          name: created.name ?? rawName,
+          animated: created.animated === true,
+          url: created.imageURL({ size: 64 }),
+          mention: `<${created.animated ? 'a' : ''}:${created.name ?? rawName}:${created.id}>`,
+        },
+      });
+    } catch (err) {
+      // Emplacements saturés, image refusée par Discord : le message de l'API
+      // est plus utile que « erreur interne », c'est lui qui dit quoi faire.
+      const apiMessage = err instanceof DiscordAPIError ? err.message : null;
+      logger.error('GeneralAPI', `Error creating emoji for ${guildId}:`, err);
+      json(res, apiMessage ? 400 : 500, { error: apiMessage ?? "Erreur lors de la création de l'emoji" });
     }
     return true;
   }
@@ -355,7 +761,10 @@ export async function handleGuildGeneralRoutes(
           customTheme: null,
           accentColor: 'violet',
           sidebarBehavior: 'auto',
-          compactMode: false
+          compactMode: false,
+          // Nul = suivre le fuseau du navigateur, ce que le dashboard resout
+          // lui-meme : le serveur n'a pas a deviner d'ou on le consulte.
+          timezone: null
         });
         return true;
       }
@@ -366,7 +775,8 @@ export async function handleGuildGeneralRoutes(
         customTheme: settings.customTheme,
         accentColor: settings.accentColor,
         sidebarBehavior: settings.sidebarBehavior,
-        compactMode: settings.compactMode
+        compactMode: settings.compactMode,
+        timezone: settings.timezone
       });
     } catch (err) {
       logger.error('GeneralAPI', `Error fetching user-settings for ${guildId} / ${user.userId}:`, err);
@@ -394,7 +804,8 @@ export async function handleGuildGeneralRoutes(
           customTheme: body?.customTheme ?? null,
           accentColor: body?.accentColor ?? 'violet',
           sidebarBehavior: body?.sidebarBehavior ?? 'auto',
-          compactMode: body?.compactMode ?? false
+          compactMode: body?.compactMode ?? false,
+          timezone: normalizeStoredTimezone(body?.timezone)
         },
         update: {
           bentoLayout: body?.bentoLayout !== undefined ? body.bentoLayout : undefined,
@@ -402,7 +813,8 @@ export async function handleGuildGeneralRoutes(
           customTheme: body?.customTheme !== undefined ? body.customTheme : undefined,
           accentColor: body?.accentColor !== undefined ? body.accentColor : undefined,
           sidebarBehavior: body?.sidebarBehavior !== undefined ? body.sidebarBehavior : undefined,
-          compactMode: body?.compactMode !== undefined ? body.compactMode : undefined
+          compactMode: body?.compactMode !== undefined ? body.compactMode : undefined,
+          timezone: body?.timezone !== undefined ? normalizeStoredTimezone(body.timezone) : undefined
         }
       });
       
@@ -414,7 +826,8 @@ export async function handleGuildGeneralRoutes(
           customTheme: settings.customTheme,
           accentColor: settings.accentColor,
           sidebarBehavior: settings.sidebarBehavior,
-          compactMode: settings.compactMode
+          compactMode: settings.compactMode,
+          timezone: settings.timezone
         }
       });
     } catch (err) {

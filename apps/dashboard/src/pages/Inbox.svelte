@@ -1,11 +1,24 @@
 <script lang="ts">
+  /**
+   * Inbox : les notifications persistantes du staff.
+   *
+   * La page utilisait ses propres formes - pastilles de 56 px, rayons de 32 a
+   * 40 px, onglets en gelules a fond plein - la ou le reste du dashboard tient
+   * en cartes discretes. Elle reprend ici les composants communs (ModulePage,
+   * SectionCard, EmptyState, RefreshButton) et l'onglet souligne des autres
+   * pages, pour qu'on la reconnaisse comme faisant partie du meme produit.
+   */
   import { onMount } from 'svelte';
   import { router } from 'tinro';
   import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import { notificationsStore } from '../lib/stores/notifications.svelte';
-  import { fade, fly } from 'svelte/transition';
   import Papicon from '../lib/components/Papicon.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
+  import SectionCard from '../lib/components/SectionCard.svelte';
+  import EmptyState from '../lib/components/EmptyState.svelte';
+  import RefreshButton from '../lib/components/RefreshButton.svelte';
+  import ActionButton from '../lib/components/ActionButton.svelte';
+  import Skeleton from '../lib/components/Skeleton.svelte';
   import { m, dateLocale } from '../lib/i18n';
 
   const inboxTabs = ['tous', 'modération', 'recrutement', 'staff', 'système'] as const;
@@ -20,24 +33,20 @@
     notificationsStore.fetchNotifications();
   });
 
-  const getIconForType = (type: string) => {
-    switch (type) {
-      case 'SUCCESS': return 'check-circle';
-      case 'WARNING': return 'alert-triangle';
-      case 'ERROR': return 'alert-circle';
-      default: return 'info';
-    }
+  const TYPE_META: Record<string, { icon: string; text: string; bg: string }> = {
+    SUCCESS: { icon: 'check-circle', text: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    WARNING: { icon: 'alert-triangle', text: 'text-amber-500', bg: 'bg-amber-500/10' },
+    ERROR: { icon: 'alert-circle', text: 'text-error', bg: 'bg-error/10' },
+    INFO: { icon: 'info', text: 'text-primary', bg: 'bg-primary/10' },
   };
 
-  const getColorForType = (type: string) => {
-    switch (type) {
-      case 'SUCCESS': return 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20';
-      case 'WARNING': return 'text-amber-500 bg-amber-500/10 border-amber-500/20';
-      case 'ERROR': return 'text-rose-500 bg-rose-500/10 border-rose-500/20';
-      default: return 'text-primary bg-primary/10 border-primary/20';
-    }
-  };
+  const typeMeta = (type: string) => TYPE_META[type] ?? TYPE_META.INFO;
 
+  /**
+   * Classement par mots du titre et par destination du lien. Faute de champ
+   * `category` sur la notification, c'est le seul signal disponible ; une
+   * notification non reconnue reste visible dans « Tout ».
+   */
   const getCategory = (notif: any) => {
     const title = notif.title.toLowerCase();
     const link = (notif.link || '').toLowerCase();
@@ -50,8 +59,8 @@
   };
 
   const filteredNotifications = $derived(
-    currentTab === 'tous' 
-      ? notificationsStore.items 
+    currentTab === 'tous'
+      ? notificationsStore.items
       : notificationsStore.items.filter(n => getCategory(n) === currentTab)
   );
 
@@ -72,6 +81,23 @@
     { id: 'staff', icon: 'user-check' },
     { id: 'système', icon: 'cpu' },
   ];
+
+  /** Non lues par onglet : le compteur guide vers ce qui reste a traiter. */
+  const unreadByTab = $derived.by(() => {
+    const counts: Record<string, number> = { tous: 0, 'modération': 0, recrutement: 0, staff: 0, 'système': 0 };
+    for (const notif of notificationsStore.items) {
+      if (notif.isRead) continue;
+      counts.tous += 1;
+      counts[getCategory(notif)] = (counts[getCategory(notif)] ?? 0) + 1;
+    }
+    return counts;
+  });
+
+  function formatDate(value: string): string {
+    return new Date(value).toLocaleString(dateLocale(), {
+      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+    });
+  }
 </script>
 
 <ModulePage
@@ -82,21 +108,18 @@
 >
   {#snippet actions()}
     {#if notificationsStore.unreadCount > 0}
-      <button
+      <ActionButton
+        variant="primary"
+        size="sm"
+        icon="check"
+        label={m.inbox_mark_all_read()}
         onclick={() => notificationsStore.markAllAsRead()}
-        class="group flex items-center gap-2 px-4 py-2 bg-primary text-white font-semibold text-sm rounded-lg active:scale-[0.98] transition-all"
-      >
-        <Papicon icon="check" size={16} />
-        {m.inbox_mark_all_read()}
-      </button>
+      />
     {/if}
-    <button
+    <RefreshButton
       onclick={() => notificationsStore.fetchNotifications()}
-      class="p-2 bg-surface-container-high text-on-surface-variant rounded-lg hover:bg-surface-container-highest transition-all border border-outline-variant/30"
-      title={m.common_refresh()}
-    >
-      <Papicon icon="refresh-cw" size={18} class={notificationsStore.loading ? 'animate-spin' : ''} />
-    </button>
+      loading={notificationsStore.loading}
+    />
   {/snippet}
 
   <!-- Sur téléphone, le filtre natif reste entièrement lisible et ne demande
@@ -107,126 +130,118 @@
       value={currentTab}
       onchange={(event) => gotoTab('/inbox', event.currentTarget.value, 'tous')}
     >
-      {#each tabs as tab}
+      {#each tabs as tab (tab.id)}
         <option value={tab.id}>{tabLabel(tab.id)}</option>
       {/each}
     </select>
   </label>
 
-  <!-- Tabs desktop -->
-  <div class="inbox-tabs items-center gap-2 p-1.5 bg-surface-container-lowest border border-outline-variant/20 rounded-[22px] overflow-x-auto no-scrollbar shadow-sm">
-    {#each tabs as tab}
+  <div class="inbox-tabs border-b border-outline-variant/10 mb-5 overflow-x-auto no-scrollbar">
+    {#each tabs as tab (tab.id)}
       <button
         onclick={() => gotoTab('/inbox', tab.id, 'tous')}
-        class="relative flex items-center gap-2.5 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300
- {currentTab === tab.id ? 'text-white' : 'text-on-surface-variant hover:bg-surface-container-high'}"
+        class="tab-button {currentTab === tab.id ? 'active' : ''}"
       >
-        {#if currentTab === tab.id}
-          <div 
-            class="absolute inset-0 bg-primary rounded-lg shadow-[0_4px_12px_rgba(var(--color-primary),0.25)]"
-            in:fade={{ duration: 200 }}
-          ></div>
-        {/if}
-        <span class="relative z-10 flex items-center gap-2.5">
-          <Papicon icon={tab.icon} size={18} />
+        <span class="inline-flex items-center gap-2">
+          <Papicon icon={tab.icon} size={15} />
           {tabLabel(tab.id)}
-          
-          {#if tab.id === 'tous' && notificationsStore.unreadCount > 0}
-            <span class="px-1.5 py-0.5 bg-white/20 text-white rounded-lg text-[10px] font-semibold">
-              {notificationsStore.unreadCount}
+          {#if unreadByTab[tab.id] > 0}
+            <span class="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-primary/15 text-primary">
+              {unreadByTab[tab.id]}
             </span>
           {/if}
         </span>
+        {#if currentTab === tab.id}
+          <div class="absolute bottom-0 left-0 w-full h-0.5 bg-primary rounded-t-full"></div>
+        {/if}
       </button>
     {/each}
   </div>
 
-  <!-- Content -->
-  <div class="space-y-4">
+  <SectionCard
+    title={tabLabel(currentTab)}
+    description="{filteredNotifications.length} notification(s){unreadByTab[currentTab] > 0 ? ` · ${unreadByTab[currentTab]} non lue(s)` : ''}"
+    flush
+  >
     {#if notificationsStore.loading && notificationsStore.items.length === 0}
-      <div class="grid gap-4">
-        {#each Array(5) as _}
-          <div class="h-32 bg-surface-container-lowest border border-outline-variant/20 rounded-xl animate-pulse"></div>
+      <div class="p-5 space-y-2">
+        {#each Array(4) as _}
+          <Skeleton height="h-16" />
         {/each}
       </div>
     {:else if filteredNotifications.length === 0}
-      <div class="py-24 flex flex-col items-center justify-center text-on-surface-variant/40 bg-surface-container-lowest border border-outline-variant/20 rounded-[40px] shadow-sm" in:fade>
-        <div class="w-24 h-24 bg-surface-container-high rounded-[32px] flex items-center justify-center mb-8 border border-outline-variant/20 rotate-3">
-          <Papicon icon="inbox" size={48} />
-        </div>
-        <h2 class="text-2xl font-semibold text-on-surface">{m.inbox_empty_title()}</h2>
-        <p class="text-sm mt-3 max-w-xs text-center font-medium opacity-60">
-          {m.inbox_empty_desc_before()}<b>{tabLabel(currentTab)}</b>{m.inbox_empty_desc_after()}
-        </p>
-      </div>
+      <EmptyState
+        icon="inbox"
+        title={m.inbox_empty_title()}
+        description="{m.inbox_empty_desc_before()}{tabLabel(currentTab)}{m.inbox_empty_desc_after()}"
+      />
     {:else}
-      <div class="grid gap-4">
+      <!--
+        Une ligne par notification plutot qu'une carte : l'inbox se parcourt de
+        haut en bas, et la barre laterale suffit a distinguer une non lue.
+      -->
+      <ul class="divide-y divide-outline-variant/10">
         {#each filteredNotifications as notif (notif.id)}
-          <div 
-            class="inbox-notification-card group relative flex items-start gap-5 p-6 bg-surface-container-lowest border border-outline-variant/20 rounded-[32px] hover:border-primary/30 transition-all duration-300 shadow-sm hover:shadow-xl hover:-translate-y-1 {notif.isRead ? 'opacity-80' : 'after:absolute after:left-0 after:top-8 after:bottom-8 after:w-1 after:bg-primary after:rounded-full'}"
-            in:fly={{ y: 20, duration: 400 }}
+          {@const meta = typeMeta(notif.type)}
+          <li
+            class="relative flex items-start gap-3 px-5 py-4 transition-colors hover:bg-white/2
+            {notif.isRead ? '' : 'before:absolute before:left-0 before:top-3 before:bottom-3 before:w-0.5 before:bg-primary before:rounded-full'}"
           >
-            <!-- Type Icon -->
-            <div class="shrink-0 w-14 h-14 rounded-lg flex items-center justify-center border {getColorForType(notif.type)} shadow-sm transition-transform group-">
-              <Papicon icon={getIconForType(notif.type)} size={28} />
+            <div class="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center {meta.bg} {meta.text}">
+              <Papicon icon={meta.icon} size={14} />
             </div>
 
-            <!-- Content -->
-            <div class="flex-1 min-w-0">
-              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-4 mb-2">
-                <div class="flex items-center gap-2">
-                  <h3 class="inbox-notification-card__title text-lg font-semibold text-on-surface tracking-tight">
-                    {notif.title}
-                  </h3>
-                  {#if !notif.isRead}
-                    <span class="w-2 h-2 rounded-full bg-primary animate-pulse shadow-[0_0_8px_rgba(var(--color-primary),0.8)]"></span>
-                  {/if}
-                </div>
-                <span class="text-xs font-bold text-on-surface-variant/50 whitespace-nowrap bg-surface-container-high px-3 py-1.5 rounded-full border border-outline-variant/20">
-                  {new Date(notif.createdAt).toLocaleString(dateLocale(), {
-                    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
-                  })}
+            <div class="min-w-0 flex-1">
+              <div class="flex items-start justify-between gap-3">
+                <h3 class="text-[13.5px] font-semibold text-on-surface leading-snug wrap-break-word">
+                  {notif.title}
+                </h3>
+                <span class="text-[11px] text-on-surface-variant/60 whitespace-nowrap shrink-0 tabular-nums">
+                  {formatDate(notif.createdAt)}
                 </span>
               </div>
-              
-              <p class="text-[15px] leading-relaxed text-on-surface-variant/80 mb-5 max-w-3xl font-medium">
+
+              <p class="mt-1 text-[12.5px] text-on-surface-variant leading-relaxed">
                 {notif.message}
               </p>
-              
-              <div class="inbox-notification-card__footer flex items-center justify-between gap-3">
-                <div class="inbox-notification-card__actions flex flex-wrap gap-2">
-                  {#if notif.link}
-                    <a 
-                      href={notif.link}
-                      class="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-xl active:scale-[0.98] transition-all shadow-sm"
-                    >
-                      <Papicon icon="external-link" size={14} />
-                      {m.inbox_notification_view()}
-                    </a>
-                  {/if}
-                  
-                  {#if !notif.isRead}
-                    <button 
-                      onclick={() => notificationsStore.markAsRead(notif.id)}
-                      class="inline-flex items-center gap-2 px-5 py-2.5 bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-semibold rounded-xl transition-all border border-outline-variant/30"
-                    >
-                      <Papicon icon="check" size={14} />
-                      {m.inbox_notification_mark_read()}
-                    </button>
-                  {/if}
-                </div>
 
-                <div class="hidden sm:flex items-center gap-2 text-xs font-medium text-on-surface-variant/30">
-                  <span class="w-1.5 h-1.5 rounded-full bg-current opacity-30"></span>
-                  {tabLabel(getCategory(notif))}
-                </div>
+              <div class="mt-2.5 flex flex-wrap items-center gap-2">
+                {#if notif.link}
+                  <a
+                    href={notif.link}
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                    bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 transition-colors"
+                  >
+                    <Papicon icon="external-link" size={13} />
+                    {m.inbox_notification_view()}
+                  </a>
+                {/if}
+
+                {#if !notif.isRead}
+                  <button
+                    type="button"
+                    onclick={() => notificationsStore.markAsRead(notif.id)}
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                    bg-surface-container text-on-surface border border-outline-variant/40
+                    hover:border-outline-variant transition-colors"
+                  >
+                    <Papicon icon="check" size={13} />
+                    {m.inbox_notification_mark_read()}
+                  </button>
+                {/if}
+
+                {#if currentTab === 'tous'}
+                  <span class="text-[11px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant">
+                    {tabLabel(getCategory(notif))}
+                  </span>
+                {/if}
               </div>
             </div>
-          </div>
+          </li>
         {/each}
-      </div>
+      </ul>
     {/if}
-  </div>
+  </SectionCard>
 </ModulePage>
 
 <style>
@@ -248,6 +263,7 @@
     .inbox-mobile-filter {
       display: grid;
       gap: 0.4rem;
+      margin-bottom: 1.25rem;
       color: var(--on-surface-variant);
       font-size: 0.75rem;
       font-weight: 700;
@@ -255,41 +271,12 @@
 
     .inbox-mobile-filter select {
       width: 100%;
+      padding: 0.6rem 0.75rem;
       border: 1px solid var(--outline-variant);
-      border-radius: 0.875rem;
+      border-radius: 0.75rem;
       background: var(--surface-container-lowest);
       color: var(--on-surface);
       font-weight: 650;
-    }
-
-    .inbox-notification-card {
-      gap: 0.875rem;
-      border-radius: 1.125rem;
-    }
-
-    .inbox-notification-card > :first-child {
-      width: 2.75rem;
-      height: 2.75rem;
-    }
-
-    .inbox-notification-card__title {
-      overflow-wrap: anywhere;
-      line-height: 1.25;
-    }
-
-    .inbox-notification-card__footer {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .inbox-notification-card__actions {
-      width: 100%;
-    }
-
-    .inbox-notification-card__actions > :where(a, button) {
-      min-height: 2.625rem;
-      flex: 1 1 auto;
-      justify-content: center;
     }
   }
 

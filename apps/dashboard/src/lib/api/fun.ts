@@ -18,3 +18,11 @@ export async function resetCountingGame(guildId = authStore.selectedGuildId) {
 export async function resetGuessNumberGame(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/fun/guess-number/reset', { method: 'POST', guildId, errorContext: 'API Error (Reset Guess Number):' });
 }
+
+export async function resetWordChainGame(guildId = authStore.selectedGuildId) {
+  return dashboardRequest('/fun/word-chain/reset', { method: 'POST', guildId, errorContext: 'API Error (Reset Word Chain):' });
+}
+
+export async function resetEmojiRiddleGame(guildId = authStore.selectedGuildId) {
+  return dashboardRequest('/fun/emoji-riddle/reset', { method: 'POST', guildId, errorContext: 'API Error (Reset Emoji Riddle):' });
+}

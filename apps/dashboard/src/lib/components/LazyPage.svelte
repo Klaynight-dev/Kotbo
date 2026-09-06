@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCachedPage, loadPage, type RouteLoader } from '../lazyRoutes';
   import Skeleton from './Skeleton.svelte';
+  import { dashboardStore } from '../stores/dashboard.svelte';
   import { m } from '../i18n';
 
   const {
@@ -49,7 +50,12 @@
 {#if Component}
   {@const Page = Component as any}
   {#key remountKey}
-    <Page {...pageProps} />
+    <!-- Rallumer un module doit rejouer le chargement de la page, qui n'a lieu
+         qu'au montage et qui s'etait pris un 403 tant que le module etait
+         eteint. -->
+    {#key dashboardStore.state.moduleActivationEpoch}
+      <Page {...pageProps} />
+    {/key}
   {/key}
 {:else if failed}
   <div class="flex flex-col items-center justify-center gap-3 py-16 text-center">

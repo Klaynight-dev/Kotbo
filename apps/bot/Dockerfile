@@ -2,6 +2,7 @@
 FROM oven/bun:1-alpine AS builder
 
 WORKDIR /app
+ENV PRISMA_HIDE_UPDATE_MESSAGE=true
 
 # Copy the bot-only workspace manifest and monorepo configuration
 COPY package.bot.json ./package.json
@@ -48,6 +49,7 @@ COPY --from=builder /app/packages/shared ./packages/shared
 COPY --from=builder /app/apps/bot ./apps/bot
 
 ENV NODE_ENV=production
+ENV PRISMA_HIDE_UPDATE_MESSAGE=true
 
 # Apply database migrations, deploy commands and start the bot
 CMD ["sh", "-c", "bun run db:migrate:repair-production && bun run db:migrate:deploy && bun run --filter @kotbo/bot deploy-commands && bun run --filter @kotbo/bot start"]

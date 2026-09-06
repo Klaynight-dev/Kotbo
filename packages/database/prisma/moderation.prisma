@@ -124,18 +124,39 @@ model Sanction {
   lastReportReminderAt DateTime?
   managerReportEscalatedAt DateTime?
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Contestation et archivage (module Appels)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // false = verrouillée : le membre ne peut plus la contester, définitivement.
+  appealable         Boolean   @default(true)
+  appealLockedAt     DateTime?
+  appealLockedByUserId String?
+  appealLockReason   String?
+
+  // Archivée = désactivée mais conservée. Elle disparaît du casier actif et
+  // (selon `Guild.countArchivedInWarnScore`) cesse de peser dans le score de
+  // warns et l'escalade, sans jamais être effacée.
+  archivedAt         DateTime?
+  archivedByUserId   String?
+  archiveReason      String?
+
   sanctionTableId String?
   sanctionTable   SanctionTable? @relation(fields: [sanctionTableId], references: [id], onDelete: SetNull)
 
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
   reports SanctionReport[]
   evidenceFiles SanctionEvidenceFile[]
+  appealEntries BanAppealSanction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([guildId, createdAt])
   @@index([guildId, status, type])
+  // Casier actif (non archivé) et liste des sanctions contestables
+  @@index([guildId, archivedAt])
+  @@index([guildId, targetUserId, archivedAt])
   @@index([status, nextActionAt])
   @@index([sanctionTableId])
   // Recherches par membre à travers plusieurs serveurs (casier + casier cross-serveur)

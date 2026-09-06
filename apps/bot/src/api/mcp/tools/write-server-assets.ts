@@ -1,6 +1,7 @@
 /** Outils MCP - write server assets (permission WRITE_MEMBERS). */
 import { guardAdminGrant, roleGrantsAdministrator } from '../../../services/moderation/adminLockService.js';
 import { addXp, removeXp } from '../../../services/progression/levelingService.js';
+import { MAX_XP } from '@kotbo/shared';
 import prisma from '../../../utils/db.js';
 import { PermissionFlagsBits } from 'discord.js';
 import { z } from 'zod';
@@ -743,10 +744,13 @@ export function registerWriteServerAssetsTools(ctx: McpToolContext) {
 
         try {
           const { adminResetGuildEconomy } = await import('../../../services/features/economyService.js');
-          await adminResetGuildEconomy(guildId, component);
+          const { restored } = await adminResetGuildEconomy(guildId, component);
 
           await audit(key_name, 'Réinitialisation Économie MCP', `Reset de component: ${component}`, 'Action validée par le staff');
-          return ok({ ok: true, message: `L'économie (${component}) a été réinitialisée avec succès.` });
+          const restitution = restored.players > 0
+            ? ` ${restored.coins} pièces de montée de niveau ont été restituées à ${restored.players} membre(s).`
+            : '';
+          return ok({ ok: true, message: `L'économie (${component}) a été réinitialisée avec succès.${restitution}` });
         } catch (e) {
           return err(`Erreur : ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -791,7 +795,9 @@ export function registerWriteServerAssetsTools(ctx: McpToolContext) {
         description: 'Crédite ou retire de l\'XP de leveling/progression à un membre.',
         inputSchema: {
           member: z.string().describe('Nom, mention ou ID du membre'),
-          amount: z.number().int().describe('Montant d\'XP (positif pour ajouter, négatif pour retirer)'),
+          // Borné : au-delà, l'incrément déborde la colonne `Int` avant même
+          // que `addXp` puisse ramener le total sous le plafond.
+          amount: z.number().int().min(-MAX_XP).max(MAX_XP).describe('Montant d\'XP (positif pour ajouter, négatif pour retirer)'),
           key_name: z.string().optional(),
         },
         _meta: toolMeta,

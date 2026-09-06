@@ -157,3 +157,56 @@ export const setDashboardStateBroadcaster = (fn: (guildId: string, reason: strin
 export const broadcastDashboardStateChange = (guildId: string, reason: string) => {
   dashboardStateBroadcaster?.(guildId, reason);
 };
+
+export type DashboardEvent = { type: string } & Record<string, unknown>;
+
+export let dashboardEventBroadcaster: ((event: DashboardEvent) => void) | null = null;
+export const setDashboardEventBroadcaster = (fn: (event: DashboardEvent) => void) => {
+  dashboardEventBroadcaster = fn;
+};
+
+/**
+ * Diffuser un evenement qui ne porte pas sur un serveur en particulier.
+ *
+ * `broadcastDashboardStateChange` ne sait dire qu'une chose : « l'etat du
+ * serveur X a change ». Elle ne peut donc pas annoncer l'arrivee du bot sur un
+ * serveur, que personne ne regardait encore.
+ *
+ * Le message part vers tous les onglets connectes : il ne doit contenir que
+ * l'identifiant de ce qui a bouge, jamais les donnees elles-memes. Chaque
+ * client redemande alors ce qui le concerne par l'API, qui, elle, verifie ses
+ * droits.
+ */
+export const broadcastDashboardEvent = (event: DashboardEvent) => {
+  dashboardEventBroadcaster?.(event);
+};
+
+/**
+ * Diffuser depuis n'importe quel shard.
+ *
+ * Seul le shard 0 porte l'API, et donc les WebSockets : un evenement emis
+ * ailleurs - l'arrivee du bot sur un serveur, par exemple, qui se produit sur
+ * le shard auquel Discord l'a attribue - n'atteindrait aucun onglet. On le
+ * fait donc traverser par les shards, ou chaque processus tente sa propre
+ * diffusion : seul celui qui porte l'API a un emetteur, les autres n'y voient
+ * rien a faire.
+ */
+export const broadcastDashboardEventAcrossShards = async (
+  client: Client,
+  event: DashboardEvent,
+): Promise<void> => {
+  const sharding = client.shard;
+  if (!sharding) {
+    broadcastDashboardEvent(event);
+    return;
+  }
+
+  // Le corps est serialise puis execute dans chaque shard : il ne peut rien
+  // capturer de la portee locale, d'ou le passage par le global.
+  await sharding.broadcastEval((_shardClient, payload) => {
+    const broadcaster = (globalThis as unknown as Record<string, unknown>).KOTBO_WS_EVENT_BROADCASTER;
+    if (typeof broadcaster === 'function') {
+      (broadcaster as (value: unknown) => void)(payload);
+    }
+  }, { context: event });
+};

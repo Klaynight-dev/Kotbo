@@ -82,6 +82,15 @@ export async function handleChannelHealthRoutes(
         if (body[key] !== undefined) sanitized[key] = body[key];
       }
 
+      if (sanitized.excludedChannelIds !== undefined) {
+        const ids = sanitized.excludedChannelIds;
+        if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+          json(res, 400, { error: 'excludedChannelIds doit être une liste d\'identifiants de salons' });
+          return true;
+        }
+        sanitized.excludedChannelIds = [...new Set(ids as string[])];
+      }
+
       const config = await upsertChannelHealthConfig(guildId, sanitized);
       json(res, 200, config);
     } catch (err) {

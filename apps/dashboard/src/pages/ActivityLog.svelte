@@ -1,12 +1,17 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { m } from '../lib/i18n';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
-  import { authStore } from '../lib/stores/auth.svelte';
+  import { parseDetailsStructure } from '../lib/logDetails';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
   import FormInput from '../lib/components/FormInput.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
   import ColumnSortFilter, { type ColumnFilterOption } from '../lib/components/sanctions/ColumnSortFilter.svelte';
+
+  onMount(() => {
+    void dashboardStore.ensureFullState();
+  });
 
 
   type ActivitySortField = 'date' | 'user' | 'module' | 'action' | 'type';
@@ -128,69 +133,11 @@
   ]);
 
 
-  function hideUserIds(value: string) {
-    return value
-      .replace(/\(<@!?\d{15,25}>\)/g, '')
-      .replace(/<@!?\d{15,25}>/g, '@utilisateur')
-      .replace(/\((\d{15,25})\)/g, '');
-  }
-
-  function replaceEntityMentions(value: string) {
-    return value
-      .replace(/<#(\d{15,25})>/g, (_, channelId: string) => {
-        const channel = dashboardStore.state.discordChannels.find((entry) => entry.id === channelId);
-        const name = channel ? channel.name : 'salon-inconnu';
-        return `<a href="https://discord.com/channels/${authStore.selectedGuildId}/${channelId}" target="_blank" class="mention-link">#${name}</a>`;
-      })
-      .replace(/<@&(\d{15,25})>/g, (_, roleId: string) => {
-        const role = dashboardStore.state.discordRoles.find((entry) => entry.id === roleId);
-        const name = role ? role.name : 'role-inconnu';
-        return `<span class="mention">@${name}</span>`;
-      });
-  }
-
-  function parseDetailsStructure(details: string) {
-    if (!details) return { badges: [], blocks: [] };
-    
-    let clean = details;
-    const userMatch = clean.match(/^([^|]+?\(<@!?\d{15,25}>\))/);
-    if (userMatch) {
-      clean = clean.replace(userMatch[0], '').trim();
-    }
-    clean = clean.replace(/\|?\s*Salon:\s*<#\d+>\s*/gi, '');
-    clean = clean.replace(/^\|\s*/, '').trim();
-
-    const parts = clean.split(/\s*\|\s*/);
-    const badges: Array<{ key: string | null; value: string }> = [];
-    const blocks: Array<{ key: string; value: string }> = [];
-
-    for (const part of parts) {
-      const colIndex = part.indexOf(':');
-      if (colIndex > -1) {
-        const key = part.slice(0, colIndex).trim();
-        const value = part.slice(colIndex + 1).trim();
-        const cleanKey = replaceEntityMentions(hideUserIds(key));
-        const cleanVal = replaceEntityMentions(hideUserIds(value));
-        
-        if (['contenu', 'raison', 'description', 'reason', 'contenu d\'origine', 'nouveau contenu', 'arguments'].includes(key.toLowerCase()) || value.length > 50) {
-          blocks.push({ key: cleanKey, value: cleanVal });
-        } else {
-          badges.push({ key: cleanKey, value: cleanVal });
-        }
-      } else {
-        const cleanVal = replaceEntityMentions(hideUserIds(part));
-        if (cleanVal) {
-          if (cleanVal.length > 50) {
-            blocks.push({ key: m.ctv_details(), value: cleanVal });
-          } else {
-            badges.push({ key: null, value: cleanVal });
-          }
-        }
-      }
-    }
-    
-    return { badges, blocks };
-  }
+  const logLabels = $derived({
+    details: m.ctv_details(),
+    unknownChannel: 'salon-inconnu',
+    unknownRole: 'role-inconnu',
+  });
 </script>
 
 
@@ -304,7 +251,7 @@
       </thead>
       <tbody class="divide-y divide-slate-50 dark:divide-slate-800">
         {#each filteredLogs as entry}
-          {@const parsed = parseDetailsStructure(entry.details)}
+          {@const parsed = parseDetailsStructure(entry.details, logLabels)}
           <tr class="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors group">
             <td class="px-6 py-6">
               <div class="text-xs">

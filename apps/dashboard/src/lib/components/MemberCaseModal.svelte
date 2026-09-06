@@ -19,6 +19,7 @@
   import InteractionTree from './charts/InteractionTree.svelte';
   import Modal from './Modal.svelte';
   import { m, dateLocale } from '../i18n';
+  import { renderLogHtml } from '../logDetails';
 
   type MemberCaseTab = 'resume' | 'identite' | 'activite' | 'messages' | 'logs' | 'sanctions' | 'invites' | 'connexions' | 'analytics' | 'candidatures' | 'linked_accounts' | 'notes';
 
@@ -399,6 +400,45 @@
     }
   }
 
+  /**
+   * Suggestions « ce compte est déjà lié à X sur d'autres serveurs ».
+   * Les liens déjà reproduits ici restent affichés (en confirmation), mais ne
+   * proposent plus de bouton d'action.
+   */
+  const crossServerLinks = $derived(caseData?.crossServerLinks ?? null);
+  const crossServerLinkSuggestions = $derived(crossServerLinks?.suggestions ?? []);
+  const pendingCrossServerLinks = $derived(crossServerLinkSuggestions.filter((s) => !s.alreadyLinkedHere));
+
+  let applyingSuggestionId = $state<string | null>(null);
+
+  /** Reproduit ici un lien déjà posé ailleurs, en traçant sa provenance dans la raison. */
+  async function handleApplySuggestedLink(suggestion: { userId: string; serverCount: number; guilds: { guildName: string }[] }) {
+    if (applyingSuggestionId) return;
+    applyingSuggestionId = suggestion.userId;
+
+    const servers = suggestion.guilds.map((g) => g.guildName).join(', ');
+    try {
+      const success = await linkMemberAccount(
+        userId!,
+        suggestion.userId,
+        m.mcm_xlink_apply_reason({ count: suggestion.serverCount, servers }),
+      );
+      if (success) {
+        toast.success(m.mcm_link_success());
+        if (userId) {
+          const updatedCase = await fetchMemberCase(userId);
+          if (updatedCase) caseData = updatedCase;
+        }
+      } else {
+        toast.error(m.mcm_link_error());
+      }
+    } catch (e: any) {
+      toast.error(e.message || m.mcm_error_unexpected_long());
+    } finally {
+      applyingSuggestionId = null;
+    }
+  }
+
   let unlinkingAccountId = $state<string | null>(null);
 
   async function handleUnlinkAccount(targetId: string) {
@@ -562,7 +602,7 @@
     { id: 'candidatures', label: m.mcm_tab_candidates(), icon: 'user-check', count: () => caseData?.candidatures?.length ?? 0 },
     { id: 'invites', label: m.mcm_tab_invites(), icon: 'mail' },
     { id: 'connexions', label: m.mcm_tab_connections(), icon: 'link' },
-    { id: 'linked_accounts', label: m.mcm_tab_linked(), icon: 'link-2', count: () => caseData?.linkedAccounts?.length ?? 0 },
+    { id: 'linked_accounts', label: m.mcm_tab_linked(), icon: 'link-2', count: () => (caseData?.linkedAccounts?.length ?? 0) + pendingCrossServerLinks.length },
     { id: 'notes', label: m.mcm_tab_notes(), icon: 'edit-3' },
   ]);
 
@@ -654,8 +694,17 @@
     return m.mcm_presence_offline();
   }
 
-  function sanitizeLogSnippet(value: string) {
-    return value.replace(/^Contenu:\s*/i, '').replace(/^\s+|\s+$/g, '');
+  const logSnippetLabels = $derived({
+    unknownChannel: m.lg_unknown_channel_name(),
+    unknownRole: 'role-inconnu',
+  });
+
+  /**
+   * `log.details` reprend mot pour mot ce qu'un membre a ecrit : le fragment
+   * doit etre echappe avant de rejoindre le `{@html}` du journal.
+   */
+  function renderLogSnippet(value: string) {
+    return renderLogHtml(value.replace(/^Contenu:\s*/i, '').trim(), logSnippetLabels);
   }
 
   function getConnectionIcon(type: string) {
@@ -1912,7 +1961,7 @@
                           <span class="text-[10px] font-semibold text-on-surface-variant/30 uppercase tracking-widest">{formatDateTime(log.dateIso)}</span>
                         </div>
                         <div class="rounded-lg bg-surface-container-high/30 p-4 text-xs text-on-surface-variant/80 italic leading-relaxed">
-                          {@html sanitizeLogSnippet(log.details)}
+                          {@html renderLogSnippet(log.details)}
                         </div>
                       </div>
                     {/each}
@@ -2187,6 +2236,99 @@
                 </div>
 
               {:else if activeTab === 'linked_accounts'}
+                {#if crossServerLinks?.enabled && crossServerLinkSuggestions.length > 0}
+                  <div class="mb-6 rounded-xl bg-surface-container-low/50 border border-outline-variant/10 overflow-hidden shadow-sm">
+                    <!-- En-tête -->
+                    <div class="flex items-center gap-4 px-6 py-5 border-b border-outline-variant/10">
+                      <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500">
+                        <Papicon icon="globe" size={22} />
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="text-[10px] font-semibold uppercase tracking-wider text-amber-500">{m.mcm_xlink_title()}</p>
+                        <p class="text-sm font-semibold text-on-surface">
+                          {crossServerLinkSuggestions.length > 1 ? m.mcm_xlink_count_other({ count: crossServerLinkSuggestions.length }) : m.mcm_xlink_count_one({ count: crossServerLinkSuggestions.length })}
+                          <span class="text-on-surface-variant/50 font-medium">{crossServerLinks.serverCount > 1 ? m.mcm_xlink_on_other({ count: crossServerLinks.serverCount }) : m.mcm_xlink_on_one({ count: crossServerLinks.serverCount })}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <!-- Liste -->
+                    <ul class="divide-y divide-outline-variant/10">
+                      {#each crossServerLinkSuggestions as suggestion}
+                        <li class="flex flex-wrap items-center gap-4 px-6 py-4 hover:bg-surface-container-high/20 transition-colors">
+                          {#if suggestion.avatarUrl}
+                            <img src={suggestion.avatarUrl} alt={m.mcm_avatar_alt()} class="h-11 w-11 shrink-0 rounded-lg object-cover border-2 border-surface" />
+                          {:else}
+                            <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-surface-container-high text-sm font-semibold text-primary">
+                              {(suggestion.userTag ?? '?').slice(0, 1).toUpperCase()}
+                            </div>
+                          {/if}
+
+                          <div class="min-w-0 flex-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="text-sm font-semibold text-on-surface truncate">{suggestion.userTag ?? m.mcm_xlink_unknown_user({ id: suggestion.userId })}</span>
+                              <span class="inline-flex items-center gap-1.5 rounded-lg bg-surface-container-high px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant">
+                                {suggestion.serverCount > 1 ? m.mcm_xlink_servers_other({ count: suggestion.serverCount }) : m.mcm_xlink_servers_one({ count: suggestion.serverCount })}
+                              </span>
+                              {#if !suggestion.presentOnGuild}
+                                <span class="inline-flex items-center rounded-lg bg-surface-container-high px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant/50">
+                                  {m.mcm_xlink_absent()}
+                                </span>
+                              {/if}
+                            </div>
+                            <p class="mt-0.5 text-[10px] font-bold text-on-surface-variant/40">ID: {suggestion.userId}</p>
+                            <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              {#each suggestion.guilds as guild}
+                                <span
+                                  class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium {guild.status === 'VALIDATED' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}"
+                                  title={guild.reason ?? ''}
+                                >
+                                  <Papicon icon="map-pin" size={11} class="shrink-0 opacity-60" />
+                                  <span class="truncate max-w-[14rem]">{guild.guildName}</span>
+                                  <span class="opacity-60">· {guild.type === 'MANUAL' ? m.mcm_xlink_manual() : m.mcm_xlink_automatic()}</span>
+                                </span>
+                              {/each}
+                            </div>
+                          </div>
+
+                          <div class="flex shrink-0 items-center gap-2">
+                            <span class="inline-flex items-center rounded-lg bg-surface-container-high px-2.5 py-1 text-[11px] font-semibold text-on-surface-variant" title={m.mcm_xlink_score_hint()}>
+                              {m.mcm_xlink_score({ score: suggestion.score })}
+                            </span>
+                            {#if suggestion.alreadyLinkedHere}
+                              <span class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-emerald-500">
+                                <Papicon icon="check" size={12} />
+                                {m.mcm_xlink_already_linked()}
+                              </span>
+                            {:else}
+                              <button
+                                class="px-4 py-2 rounded-xl text-[11px] font-semibold uppercase tracking-widest transition-all duration-300 {applyingSuggestionId !== null ? 'bg-surface-container-high text-on-surface-variant/50 cursor-not-allowed' : 'bg-primary text-on-primary hover:bg-primary/90 hover:scale-[1.02] active:scale-95 cursor-pointer'}"
+                                onclick={() => handleApplySuggestedLink(suggestion)}
+                                disabled={applyingSuggestionId !== null}
+                              >
+                                {#if applyingSuggestionId === suggestion.userId}
+                                  <div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-on-surface-variant border-t-transparent"></div>
+                                {:else}
+                                  {m.mcm_xlink_apply()}
+                                {/if}
+                              </button>
+                            {/if}
+                          </div>
+                        </li>
+                      {/each}
+                    </ul>
+
+                    <!-- Pied -->
+                    <div class="flex items-center justify-between gap-3 px-6 py-3 border-t border-outline-variant/10 bg-surface-container-low/30">
+                      <p class="flex items-center gap-1.5 text-[11px] font-medium text-on-surface-variant/40">
+                        <Papicon icon="lock" size={12} class="shrink-0" />
+                        {m.mcm_same_instance()}
+                      </p>
+                      <p class="text-[11px] font-medium text-on-surface-variant/40 text-right">{m.mcm_xlink_footer_hint()}</p>
+                    </div>
+                  </div>
+                {/if}
+
                 <div class="mb-8 rounded-xl bg-surface-container-low/50 p-6 border border-outline-variant/10">
                   <h3 class="text-sm font-semibold text-on-surface mb-4 flex items-center gap-2"><Papicon icon="link-2" size={16} /> {m.mcm_link_account_manually()}</h3>
                   <div class="grid gap-4 md:grid-cols-2">

@@ -8,12 +8,14 @@
     fetchMessageLogStats,
     updateMessageLogConfig,
     deleteMessageLog,
+    fetchDiscordChannels,
     type MessageLogEntry,
   } from '../lib/api';
   import ModulePage from '../lib/components/ModulePage.svelte';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
+  import MultiSelect from '../lib/components/MultiSelect.svelte';
   import { m, dateLocale } from '../lib/i18n';
 
   const PAGE_SIZE = 50;
@@ -55,9 +57,15 @@
   } | null>(null);
   let savingConfig = $state(false);
   let retentionInput = $state(90);
+  let guildChannels = $state<{ id: string; name: string }[]>([]);
+  let ignoredDraft = $state<string[]>([]);
   let pendingDeleteId = $state<string | null>(null);
 
   const isAdmin = $derived(dashboardStore.state.access?.canManageSettings === true);
+
+  const ignoredDirty = $derived(
+    ignoredDraft.join(',') !== (stats?.ignoredChannels ?? []).join(','),
+  );
 
   // Logging only captures messages sent AFTER activation, so early on there is
   // little/no data. Surface this so users don't mistake it for a bug.
@@ -147,7 +155,10 @@
     const [ch, st] = await Promise.all([fetchMessageLogChannels(), fetchMessageLogStats()]);
     channels = ch;
     stats = st;
-    if (st) retentionInput = st.retentionDays;
+    if (st) {
+      retentionInput = st.retentionDays;
+      ignoredDraft = [...(st.ignoredChannels ?? [])];
+    }
   }
 
   async function toggleLogging(enabled: boolean) {
@@ -166,6 +177,20 @@
         } else {
           toast.success(m.ms_logging_disabled());
         }
+      }
+    } finally {
+      savingConfig = false;
+    }
+  }
+
+  async function saveIgnoredChannels() {
+    savingConfig = true;
+    try {
+      const res = await updateMessageLogConfig({ ignoredChannels: ignoredDraft });
+      if (res && stats) {
+        stats = { ...stats, ignoredChannels: res.ignoredChannels };
+        ignoredDraft = [...res.ignoredChannels];
+        toast.success(m.ms_ignored_channels_saved());
       }
     } finally {
       savingConfig = false;
@@ -214,6 +239,11 @@
   onMount(async () => {
     await refreshMeta();
     await search(true);
+    // La journalisation couvre aussi le salon textuel des salons vocaux.
+    const channelsData = await fetchDiscordChannels().catch(() => null);
+    if (channelsData) {
+      guildChannels = [...(channelsData.textChannels || []), ...(channelsData.voiceChannels || [])];
+    }
   });
 </script>
 
@@ -269,6 +299,31 @@
           </div>
         {/if}
       </div>
+
+      {#if isAdmin}
+        <div class="p-4 bg-surface-container-low/60 border border-outline-variant/20 rounded-xl space-y-1.5">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm font-semibold text-on-surface">{m.ms_ignored_channels_label()}</span>
+            {#if ignoredDirty}
+              <button
+                class="px-3 py-1.5 bg-primary text-on-primary text-xs font-medium rounded-lg active:scale-[0.98] transition-all"
+                onclick={saveIgnoredChannels}
+                disabled={savingConfig}
+              >
+                {m.common_save()}
+              </button>
+            {/if}
+          </div>
+          <MultiSelect
+            id="message-log-ignored-channels"
+            bind:values={ignoredDraft}
+            options={guildChannels.map((c) => ({ id: c.id, name: `#${c.name}` }))}
+            disabled={savingConfig}
+            accentClass="bg-rose-500/20 text-rose-300 border-rose-500/40"
+          />
+          <p class="text-[11px] text-on-surface-variant/50">{m.ms_ignored_channels_help()}</p>
+        </div>
+      {/if}
 
       <!-- Delay-before-data notice: logging only captures messages sent after activation -->
       {#if stats?.status?.status === 'IN_PROGRESS'}

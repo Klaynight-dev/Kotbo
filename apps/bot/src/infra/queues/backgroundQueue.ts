@@ -32,6 +32,7 @@ export type BackgroundJobName =
   | 'widget-refresh'
   | 'season-check'
   | 'clan-season-check'
+  | 'clan-bet-expiration'
   | 'marketplace-expiration'
   | 'quest-expiration'
   | 'giveaways-expiration'
@@ -39,9 +40,17 @@ export type BackgroundJobName =
   | 'stats-ping'
   | 'message-logs-prune'
   | 'audit-events-prune'
+  | 'billing-events-prune'
+  | 'billing-renewal-notice'
+  | 'analytics-daily-snapshot'
+  | 'acquisition-events-prune'
+  | 'acquisition-abandon-scan'
+  | 'acquisition-alerts-check'
+  | 'acquisition-weekly-recap'
   | 'workflow-resume'
   | 'word-stats-prune'
   | 'ban-hygiene-scan'
+  | 'warn-auto-archive'
   | 'staff-reminders'
   | 'raid-protection-tick'
   | 'raid-protection-locks-renew'
@@ -51,7 +60,14 @@ export type BackgroundJobName =
   | 'ranked-events'
   | 'ranked-streak-freezes'
   | 'ranked-logs-prune'
-  | 'black-market-cycle';
+  | 'black-market-cycle'
+  | 'drop-cycle'
+  // Ces trois-la etaient enregistres par `crons.ts` sans figurer ici :
+  // le typecheck echouait sur leur handler.
+  | 'raid-cycle'
+  | 'clan-weekly-digest'
+  | 'workflow-schedule'
+  | 'campaign-cycle';
 
 
 

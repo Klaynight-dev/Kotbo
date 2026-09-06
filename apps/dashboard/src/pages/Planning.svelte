@@ -32,6 +32,9 @@
   } from '../lib/api';
   import { parseDiscordEmojisAndMarkdown } from '../lib/emojiParser';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
+  import { timezoneStore } from '../lib/stores/timezone.svelte';
+  import { formatWallClockInTimezone, parseDateTimeInTimezone } from '@kotbo/contracts';
+  import TimezoneHint from '../lib/components/TimezoneHint.svelte';
   import ActionButton from '../lib/components/ActionButton.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import Calendar from '../lib/components/Calendar.svelte';
@@ -81,6 +84,9 @@
   // Selection dates
   let selectedStartDate = $state(new Date());
   let selectedEndDate = $state(new Date(Date.now() + 3600000));
+  // Fuseau choisi par l'organisateur pour la reunion en cours de creation ;
+  // reset a `null` au switch de tab et apres soumission.
+  let formTimezone = $state<string | null>(null);
   let currentItemDetail = $state<any>(null);
 
   // Forms Fields
@@ -156,6 +162,7 @@
   let editMeetingDate = $state('');
   let editMeetingEndDate = $state('');
   let editMeetingError = $state('');
+  let editMeetingTimezone = $state<string | null>(null);
   let savingMeetingEdit = $state(false);
 
   async function openMemberCase(userId: string, name: string) {
@@ -202,8 +209,17 @@
     if (!canManageMeetings) return;
     editMeetingTitle = meeting.title;
     editMeetingDesc = meeting.description || '';
-    editMeetingDate = formatLocal(new Date(meeting.scheduledAt));
-    editMeetingEndDate = meeting.endedAt ? formatLocal(new Date(meeting.endedAt)) : formatLocal(new Date(new Date(meeting.scheduledAt).getTime() + 3600000));
+    // Le fuseau est passe explicitement : `formatLocal` suit `activeTimezone`,
+    // qui ne bascule sur celui de l'edition qu'une fois la modale marquee comme
+    // ouverte - c'est-a-dire apres ces deux lignes. Nommer la zone ici evite de
+    // dependre de l'ordre des affectations.
+    editMeetingTimezone = meeting.timezone ?? null;
+    const editZone = editMeetingTimezone ?? timezoneStore.timezone;
+    editMeetingDate = formatWallClockInTimezone(new Date(meeting.scheduledAt), editZone);
+    editMeetingEndDate = formatWallClockInTimezone(
+      meeting.endedAt ? new Date(meeting.endedAt) : new Date(new Date(meeting.scheduledAt).getTime() + 3600000),
+      editZone,
+    );
     editMeetingError = '';
     meetingEditModalOpen = true;
   }
@@ -213,8 +229,8 @@
       editMeetingError = m.meetings_err_required();
       return;
     }
-    const start = new Date(editMeetingDate);
-    const end = new Date(editMeetingEndDate);
+    const start = parseLocal(editMeetingDate);
+    const end = parseLocal(editMeetingEndDate);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       editMeetingError = 'Les dates fournies sont invalides.';
       return;
@@ -231,7 +247,8 @@
         title: editMeetingTitle,
         description: editMeetingDesc,
         scheduledAt: start.toISOString(),
-        endedAt: end.toISOString()
+        endedAt: end.toISOString(),
+        timezone: editMeetingTimezone,
       };
 
       if (currentItemDetail?.id) {
@@ -558,12 +575,61 @@
     miniCalDate = new Date(miniCalDate.getFullYear(), miniCalDate.getMonth() + 1, 1);
   }
 
-  // Format helper
-  const formatLocal = (date: Date) => {
-    const tzOffset = date.getTimezoneOffset() * 60000;
-    const local = new Date(date.getTime() - tzOffset);
-    return local.toISOString().slice(0, 16);
-  };
+  // Fuseau utilise pour lire et rendre les inputs `datetime-local` du formulaire
+  // de creation et de la modale d'edition.
+  //
+  // Seule une reunion porte son propre fuseau, et le selecteur n'apparait que
+  // sur cet onglet-la. Le retenir au-dela ferait lire une absence, un appel ou
+  // une tache dans le fuseau d'une reunion creee juste avant, alors que le
+  // libelle affiche sous le champ annonce celui du serveur.
+  const activeTimezone = $derived(
+    meetingEditModalOpen
+      ? (editMeetingTimezone ?? timezoneStore.timezone)
+      : creationModalOpen && currentTab === 'meeting'
+        ? (formTimezone ?? timezoneStore.timezone)
+        : timezoneStore.timezone,
+  );
+  const formatLocal = (date: Date) => formatWallClockInTimezone(date, activeTimezone);
+  const parseLocal = (input: string): Date =>
+    parseDateTimeInTimezone(input, activeTimezone) ?? new Date();
+
+  /**
+   * Un rappel ne porte pas de fuseau propre : il se lit toujours dans celui du
+   * serveur. Il vit hors des deux modales, donc `activeTimezone` ne le decrit
+   * pas - c'est ce qui le faisait heriter du fuseau de la derniere reunion.
+   */
+  const parseServerLocal = (input: string): Date =>
+    parseDateTimeInTimezone(input, timezoneStore.timezone) ?? new Date();
+
+  /** Meme heure au mur, relue dans un autre fuseau. */
+  function reinterpretWallClock(date: Date, from: string, to: string): Date {
+    return parseDateTimeInTimezone(formatWallClockInTimezone(date, from), to) ?? date;
+  }
+
+  /**
+   * Changer le fuseau reinterprete l'heure affichee, il ne la reecrit pas.
+   *
+   * L'etiquette sous les champs annonce « Heure interpretee dans {zone} » :
+   * declarer une reunion sur Montreal apres avoir tape 15:00 doit donner 15:00
+   * a Montreal. Or ces champs portent un instant, pas une heure au mur, et le
+   * rendu suit le fuseau courant : l'affichage sautait donc a 09:00 - le meme
+   * instant vu d'ailleurs - et la reunion restait a l'heure d'origine. Le
+   * formulaire d'edition, lui, garde des chaines et se comportait deja ainsi.
+   *
+   * Passe par le binding plutot que par un effet sur `formTimezone` : seul un
+   * choix explicite dans le selecteur doit deplacer les dates. Un effet aurait
+   * aussi reagi a l'arrivee du fuseau du serveur et a la reinitialisation du
+   * formulaire, qui ne doivent rien deplacer du tout.
+   */
+  function applyFormTimezone(zone: string | null): void {
+    const previous = formTimezone ?? timezoneStore.timezone;
+    const next = zone ?? timezoneStore.timezone;
+    formTimezone = zone;
+    if (previous === next) return;
+
+    selectedStartDate = reinterpretWallClock(selectedStartDate, previous, next);
+    selectedEndDate = reinterpretWallClock(selectedEndDate, previous, next);
+  }
 
   // Data loading
   async function loadData() {
@@ -638,7 +704,7 @@
     try {
       const payload: any = {
         message: newReminderMessage,
-        targetTime: new Date(newReminderTime).toISOString(),
+        targetTime: parseServerLocal(newReminderTime).toISOString(),
         channelId: newReminderChannel === 'CURRENT' ? currentItemDetail.raw.discordChannelId || null : null,
       };
 
@@ -695,11 +761,25 @@
     detailModalOpen = true;
   }
 
+  /**
+   * Creneau propose a l'ouverture du formulaire.
+   *
+   * Il partait de l'instant d'ouverture de la modale. Le temps de saisir un
+   * titre, cet instant etait passe : Discord refuse un evenement planifie dans
+   * le passe, et la creation echouait sur un « Invalid Form Body » que rien ne
+   * reliait a la cause. Une heure d'avance, comme le formulaire de la page
+   * Reunions.
+   */
+  function defaultStart(): Date {
+    return new Date(Date.now() + 3600000);
+  }
+
   function openCreateModal(start: Date, end?: Date) {
     selectedStartDate = start;
     selectedEndDate = end || new Date(start.getTime() + 3600000);
     formTitle = '';
     formDescription = '';
+    formTimezone = null;
     formPriority = 'MEDIUM';
     formAssigneeId = myStaffRecord?.id || '';
     formSuperiorId = eligibleSuperiors[0]?.userId || '';
@@ -727,7 +807,21 @@
 
     try {
       if (currentTab === 'meeting') {
-        const ok = await createMeeting(formTitle, formDescription, selectedStartDate.toISOString(), selectedEndDate.toISOString());
+        // Un creneau du calendrier peut lui aussi etre deja passe. Le dire ici
+        // vaut mieux que de laisser remonter le refus brut de Discord.
+        if (selectedStartDate.getTime() <= Date.now()) {
+          formError = m.planning_err_meeting_in_past();
+          saving = false;
+          return;
+        }
+        // Seul l'onglet Absence testait l'ordre des deux dates. La page
+        // Reunions le fait aussi, avec ce meme libelle et ce meme test.
+        if (selectedEndDate.getTime() <= selectedStartDate.getTime()) {
+          formError = m.meetings_err_end_before_start();
+          saving = false;
+          return;
+        }
+        const ok = await createMeeting(formTitle, formDescription, selectedStartDate.toISOString(), selectedEndDate.toISOString(), formTimezone);
         if (!ok) throw new Error(m.planning_err_create_meeting());
       } else if (currentTab === 'absence') {
         if (!myStaffRecord) { formError = m.planning_err_not_staff(); saving = false; return; }
@@ -844,6 +938,9 @@
   onMount(() => {
     const handleDashboardRefresh = () => loadData();
     window.addEventListener('kotbo-dashboard-refresh-request', handleDashboardRefresh);
+    // Fuseau du serveur avant loadData : les formulaires seedent sinon leurs
+    // dates en heure navigateur, puis basculent au chargement du store.
+    void timezoneStore.ensureLoaded();
     loadData();
     return () => window.removeEventListener('kotbo-dashboard-refresh-request', handleDashboardRefresh);
   });
@@ -882,7 +979,7 @@
     {/if}
 
     <ActionButton
-      onClick={() => openCreateModal(new Date())}
+      onClick={() => openCreateModal(defaultStart())}
       variant="primary"
       icon="plus"
       label={m.planning_new_event()}
@@ -1104,7 +1201,7 @@
             <!-- Add Task -->
             <div class="px-3 py-3 border-t border-outline-variant/15 shrink-0">
               <button
-                onclick={() => { gotoTab('/planning', 'task', 'meeting'); openCreateModal(new Date()); }}
+                onclick={() => { gotoTab('/planning', 'task', 'meeting'); openCreateModal(defaultStart()); }}
                 class="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-[11px] font-semibold text-purple-400 hover:bg-purple-500/10 transition-colors"
               >
                 <Papicon icon="plus" size={14} />
@@ -1173,7 +1270,7 @@
               <input
                 type="datetime-local"
                 value={formatLocal(selectedStartDate)}
-                onchange={(e) => selectedStartDate = new Date((e.target as HTMLInputElement).value)}
+                onchange={(e) => selectedStartDate = parseLocal((e.target as HTMLInputElement).value)}
                 class="bg-transparent text-xs font-medium px-2 py-1.5 rounded-md border border-outline-variant/20 focus:border-primary outline-none transition-all"
               />
               {#if currentTab !== 'task'}
@@ -1181,12 +1278,25 @@
                 <input
                   type="datetime-local"
                   value={formatLocal(selectedEndDate)}
-                  onchange={(e) => selectedEndDate = new Date((e.target as HTMLInputElement).value)}
+                  onchange={(e) => selectedEndDate = parseLocal((e.target as HTMLInputElement).value)}
                   class="bg-transparent text-xs font-medium px-2 py-1.5 rounded-md border border-outline-variant/20 focus:border-primary outline-none transition-all"
                 />
               {/if}
             </div>
           </div>
+          {#if timezoneStore.loaded && currentTab === 'meeting'}
+            <div class="pl-7">
+              <TimezoneHint bind:value={() => formTimezone, (zone) => applyFormTimezone(zone)} />
+            </div>
+          {:else if timezoneStore.loaded}
+            <p class="pl-7 text-[10px] text-on-surface-variant/70">
+              {#if timezoneStore.differsFromBrowser}
+                {m.planning_datetime_hint_diff({ server: timezoneStore.timezone, browser: timezoneStore.browserTimezone })}
+              {:else}
+                {m.planning_datetime_hint_same({ zone: timezoneStore.timezone })}
+              {/if}
+            </p>
+          {/if}
 
           <!-- Description -->
           <div class="flex items-start gap-3">
@@ -1664,6 +1774,11 @@
                       bind:value={newReminderTime}
                       class="w-full bg-surface-container-high border border-outline-variant/20 rounded px-2 py-1 text-xs text-on-surface outline-none"
                     />
+                    {#if timezoneStore.loaded && timezoneStore.differsFromBrowser}
+                      <p class="mt-1 text-[9px] text-on-surface-variant/70">
+                        {m.planning_datetime_hint_diff_short({ server: timezoneStore.timezone })}
+                      </p>
+                    {/if}
                   </div>
                   <div>
                     <label for="new-reminder-channel" class="block text-[9px] text-on-surface-variant font-medium mb-1">{m.planning_reminder_channel()}</label>
@@ -1993,6 +2108,11 @@
               bind:value={editMeetingEndDate}
               className="w-full"
             />
+            {#if timezoneStore.loaded}
+              <div class="mt-1.5">
+                <TimezoneHint bind:value={editMeetingTimezone} />
+              </div>
+            {/if}
           </div>
 
           <div>

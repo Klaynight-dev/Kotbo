@@ -17,9 +17,31 @@ model Clan {
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
   contributions ClanMemberContribution[]
   contributionEvents ClanContributionEvent[]
+  weeklyDigests ClanWeeklyDigest[]
 
   @@unique([guildId, name])
   @@map("clans")
+}
+
+/// Trace d'un bilan hebdomadaire publié, pour ne jamais le publier deux fois.
+///
+/// Le QG est un salon de discussion : republier après un redémarrage y laisserait deux
+/// bilans à quelques minutes d'écart, au milieu d'une conversation. La ligne est écrite
+/// avant l'envoi, comme pour l'annonce du raid - au pire un bilan manque, jamais un doublon.
+model ClanWeeklyDigest {
+  id       String   @id @default(cuid())
+  guildId  String
+  clanId   String
+  /// Semaine visée, au format `AAAA-Www` sur le fuseau du serveur.
+  weekKey  String
+  postedAt DateTime @default(now())
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  clan  Clan  @relation(fields: [clanId], references: [id], onDelete: Cascade)
+
+  @@unique([clanId, weekKey])
+  @@index([guildId, weekKey])
+  @@map("clan_weekly_digests")
 }
 
 model ClanMemberContribution {
@@ -51,7 +73,16 @@ model ClanContributionEvent {
   clanId    String
   userId    String   // 'system_manual_points' = gain attribué au clan entier (à afficher au nom du clan)
   amount    Int      // Points gagnés lors de cet événement (peut être négatif si retrait)
-  source    String   // 'XP' (gagné via progression) | 'ADMIN' (attribué manuellement par un admin)
+  source    String   // 'XP' (gagné via progression) | 'ADMIN' (attribué manuellement par un admin) | 'DROP' (drop aléatoire ramassé) | 'RPG' (créature vaincue)
+  /// Part de ce mouvement financée à crédit, quand elle existe.
+  ///
+  /// Une mise payée en partie avec des points qu'on n'a pas ne bouge le score
+  /// que du montant réellement prélevé : le reste ouvre une dette, qui ne
+  /// change aucun classement tant qu'elle n'est pas remboursée. Sans cette
+  /// colonne, le remboursement apparaît plus tard dans le flux sans que rien
+  /// n'explique d'où vient la somme, et loguer l'emprunt comme un mouvement à
+  /// part la compterait deux fois.
+  credit    Int?
   season    Int      @default(1)
   createdAt DateTime @default(now())
 
@@ -63,4 +94,66 @@ model ClanContributionEvent {
   // faut remonter le flux global jusqu'à trouver ses gains.
   @@index([guildId, userId, createdAt])
   @@map("clan_contribution_events")
+}
+
+/// Dette de points de clan d'un membre.
+///
+/// Ouverte quand un membre engage plus de points qu'il n'en a (paris à crédit),
+/// elle est prélevée sur ses gains futurs avant tout crédit au classement.
+///
+/// Volontairement **sans saison** : une dette rattachée à la saison en cours
+/// s'effacerait en attendant la clôture, ce qui reviendrait à offrir la mise à
+/// qui parie au mauvais moment. Elle suit le membre jusqu'à remboursement.
+///
+/// Concept de la couche clans, pas des paris : c'est ce qui permet aux gains de
+/// toutes origines (progression, boost, Daily Algo) de rembourser sans que les
+/// clans aient à connaître le module qui a creusé la dette.
+/// État des dettes à la clôture d'une saison, pour que le retour arrière en
+/// restaure l'exact montant.
+///
+/// La dette n'a pas de saison : elle suit le membre et se rembourse au fil de
+/// ses gains, sans jamais repartir de zéro. Rien ne permettait donc de revenir
+/// à ce qu'il devait à la fin d'une saison donnée - un membre qui devait 500 à
+/// la fin de la saison 1 et n'en devait plus que 100 deux saisons plus tard
+/// gardait ses 100 après un retour arrière, alors que la saison 1 s'était
+/// close sur 500.
+///
+/// L'instantané est pris avant l'éventuelle remise à zéro des dettes, qui
+/// appartient à l'ouverture de la saison suivante : annuler une clôture doit
+/// aussi annuler sa purge.
+model ClanDebtSnapshot {
+  id      String @id @default(cuid())
+  guildId String
+  /// Saison qui vient de se clore.
+  season  Int
+  userId  String
+  amount  Int
+  source  String @default("BET")
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([guildId, season, userId])
+  @@index([guildId, season])
+  @@map("clan_debt_snapshots")
+}
+
+model ClanPointDebt {
+  id      String @id @default(cuid())
+  guildId String
+  userId  String
+  /// Toujours positif. La ligne est supprimée dès qu'elle retombe à zéro.
+  amount  Int
+  /// Origine de la dette, pour l'affichage : 'BET' aujourd'hui.
+  source  String @default("BET")
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, userId])
+  @@index([guildId, amount])
+  @@map("clan_point_debts")
 }

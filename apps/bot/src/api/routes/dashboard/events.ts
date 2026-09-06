@@ -6,6 +6,7 @@ import { logger } from '../../../utils/logger.js';
 import {
   json,
   readJsonBody,
+  broadcastDashboardStateChange,
   type AuthClaims,
   type DashboardAccess,
 } from '../../shared.js';
@@ -74,6 +75,7 @@ export async function handleEventsRoutes(
         }
         event = await createEvent(guildId, body as Parameters<typeof createEvent>[1]);
       }
+      broadcastDashboardStateChange(guildId, 'events_updated');
       json(res, 201, { event });
     } catch (err) {
       logger.error('EventsAPI', err);
@@ -102,6 +104,7 @@ export async function handleEventsRoutes(
     if (method === 'DELETE' && !parts[6]) {
       try {
         await deleteEvent(client, eventId);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, { success: true });
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -114,6 +117,7 @@ export async function handleEventsRoutes(
     if (method === 'POST' && parts[6] === 'publish') {
       try {
         const event = await publishEvent(client, eventId);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, { event });
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -126,6 +130,7 @@ export async function handleEventsRoutes(
     if (method === 'POST' && parts[6] === 'next') {
       try {
         const result = await nextQuestion(client, eventId);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, result);
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -138,6 +143,7 @@ export async function handleEventsRoutes(
     if (method === 'POST' && parts[6] === 'prev') {
       try {
         const result = await prevQuestion(client, eventId);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, result);
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -150,6 +156,7 @@ export async function handleEventsRoutes(
     if (method === 'POST' && parts[6] === 'finish') {
       try {
         const result = await finishEvent(client, eventId);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, result);
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -258,6 +265,7 @@ export async function handleEventsRoutes(
           }
         }
 
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, { event });
       } catch (err) {
         logger.error('EventsAPI', err);
@@ -310,6 +318,7 @@ export async function handleEventsRoutes(
     if (method === 'DELETE' && parts[6] === 'registrations' && parts[7]) {
       try {
         await removeEventRegistration(eventId, parts[7]);
+        broadcastDashboardStateChange(guildId, 'events_updated');
         json(res, 200, { ok: true });
       } catch (err) {
         logger.error('EventsAPI', err);

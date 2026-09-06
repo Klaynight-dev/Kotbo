@@ -22,6 +22,18 @@ export async function updateChannelLink(linkId: string, data: Record<string, any
   return dashboardRequest(`/channel-links/${linkId}`, { method: 'PATCH', payload: data, guildId, errorContext: 'API Error (Update Link):' });
 }
 
+export async function addChannelLinkMember(groupId: string, data: Record<string, any>, guildId = authStore.selectedGuildId) {
+  return dashboardRequest(`/channel-links/${groupId}/members`, { method: 'POST', payload: data, guildId, errorContext: 'API Error (Add Link Member):' });
+}
+
+export async function updateChannelLinkMember(groupId: string, memberId: string, data: Record<string, any>, guildId = authStore.selectedGuildId) {
+  return dashboardRequest(`/channel-links/${groupId}/members/${memberId}`, { method: 'PATCH', payload: data, guildId, errorContext: 'API Error (Update Link Member):' });
+}
+
+export async function removeChannelLinkMember(groupId: string, memberId: string, guildId = authStore.selectedGuildId) {
+  return dashboardMutation(`/channel-links/${groupId}/members/${memberId}`, { method: 'DELETE', guildId, errorContext: 'API Error (Remove Link Member):' });
+}
+
 export async function deleteChannelLink(linkId: string, guildId = authStore.selectedGuildId) {
   return dashboardMutation(`/channel-links/${linkId}`, { method: 'DELETE', guildId, errorContext: 'API Error (Delete Link):' });
 }

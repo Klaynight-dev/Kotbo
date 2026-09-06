@@ -2,9 +2,35 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { Client } from 'discord.js';
 import cron from 'node-cron';
 import prisma from '../../../utils/db.js';
+import { Prisma } from '@prisma/client';
 import { logger } from '../../../utils/logger.js';
 import { json, readJsonBody, resolveDashboardAccess, pushAudit, type AuthClaims } from '../../shared.js';
 import { reloadSchedule, stopSchedule, executeSchedule } from '../../../services/system/scheduleService.js';
+
+/** Texte du message programme. Vide = pas de texte, l'embed peut suffire. */
+function messageText(value: unknown): string | null {
+  // 2000 caracteres : la limite d'un message Discord. Tronquer ici evite un
+  // echec au moment de l'envoi, des heures apres l'enregistrement.
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 2000) : null;
+}
+
+/**
+ * Ne garde de l'embed que les quatre champs qu'on sait rendre, et refuse les
+ * images servies ailleurs qu'en HTTPS. Un embed sans aucun champ utile revient
+ * a ne pas en avoir : on renvoie `null` plutot qu'un objet vide.
+ */
+function sanitizeScheduledEmbed(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (!value || typeof value !== 'object') return Prisma.JsonNull;
+  const raw = value as Record<string, unknown>;
+
+  const embed: Record<string, string> = {};
+  if (typeof raw.title === 'string' && raw.title.trim()) embed.title = raw.title.trim().slice(0, 256);
+  if (typeof raw.description === 'string' && raw.description.trim()) embed.description = raw.description.trim().slice(0, 4096);
+  if (typeof raw.imageUrl === 'string' && /^https:\/\//.test(raw.imageUrl)) embed.imageUrl = raw.imageUrl.slice(0, 500);
+  if (typeof raw.color === 'string' && /^#[0-9a-f]{6}$/i.test(raw.color)) embed.color = raw.color;
+
+  return Object.keys(embed).length > 0 ? embed : Prisma.JsonNull;
+}
 
 export async function handleScheduleRoutes(
   req: IncomingMessage,
@@ -58,6 +84,10 @@ export async function handleScheduleRoutes(
         cron?: string;
         targetId?: string | null;
         enabled?: boolean;
+        message?: string | null;
+        messageEmbed?: unknown;
+        allowMentions?: boolean;
+        runOnce?: boolean;
       }>(req);
 
       if (!body) {
@@ -70,7 +100,7 @@ export async function handleScheduleRoutes(
         return true;
       }
 
-      if (!['CHANNEL_RESET', 'DATA_EXPORT', 'SERVER_BACKUP'].includes(body.type)) {
+      if (!['CHANNEL_RESET', 'DATA_EXPORT', 'SERVER_BACKUP', 'SEND_MESSAGE'].includes(body.type)) {
         json(res, 400, { error: 'Type de tâche invalide' });
         return true;
       }
@@ -88,6 +118,10 @@ export async function handleScheduleRoutes(
           cron: body.cron,
           targetId: body.targetId || null,
           enabled: body.enabled ?? true,
+          message: messageText(body.message),
+          messageEmbed: sanitizeScheduledEmbed(body.messageEmbed),
+          allowMentions: body.allowMentions === true,
+          runOnce: body.runOnce === true,
         },
       });
 
@@ -124,6 +158,10 @@ export async function handleScheduleRoutes(
         cron?: string;
         targetId?: string | null;
         enabled?: boolean;
+        message?: string | null;
+        messageEmbed?: unknown;
+        allowMentions?: boolean;
+        runOnce?: boolean;
       }>(req);
 
       if (!body) {
@@ -140,7 +178,7 @@ export async function handleScheduleRoutes(
         return true;
       }
 
-      if (body.type && !['CHANNEL_RESET', 'DATA_EXPORT', 'SERVER_BACKUP'].includes(body.type)) {
+      if (body.type && !['CHANNEL_RESET', 'DATA_EXPORT', 'SERVER_BACKUP', 'SEND_MESSAGE'].includes(body.type)) {
         json(res, 400, { error: 'Type de tâche invalide' });
         return true;
       }
@@ -158,6 +196,10 @@ export async function handleScheduleRoutes(
           cron: body.cron ?? undefined,
           targetId: body.targetId !== undefined ? body.targetId : undefined,
           enabled: body.enabled ?? undefined,
+          message: body.message !== undefined ? messageText(body.message) : undefined,
+          messageEmbed: body.messageEmbed !== undefined ? sanitizeScheduledEmbed(body.messageEmbed) : undefined,
+          allowMentions: body.allowMentions !== undefined ? body.allowMentions === true : undefined,
+          runOnce: body.runOnce !== undefined ? body.runOnce === true : undefined,
         },
       });
 

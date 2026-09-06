@@ -4,6 +4,7 @@
   const Route = RouteLegacy as any;
   import MainLayout from "./lib/components/MainLayout.svelte";
   import { authStore } from "./lib/stores/auth.svelte";
+  import { rememberLoginReturn } from "./lib/loginReturn";
   import { dashboardStore } from "./lib/stores/dashboard.svelte";
   import { brandingStore } from "./lib/stores/branding.svelte";
   import { userPrefs } from "./lib/stores/userPreferences.svelte";
@@ -13,11 +14,14 @@
   import { channelDetailsModal } from "./lib/stores/channelDetailsModal.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import GlobalConfirmDialog from "./lib/components/GlobalConfirmDialog.svelte";
+  import GlobalNoticeModal from "./lib/components/GlobalNoticeModal.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import GlobalErrorOverlay from "./lib/components/GlobalErrorOverlay.svelte";
   import LazyRoute from "./lib/components/LazyRoute.svelte";
   import ModuleDisabledNotice from "./lib/components/ModuleDisabledNotice.svelte";
+  import NoAccessNotice from "./lib/components/NoAccessNotice.svelte";
+  import { navigationStore } from "./lib/stores/navigation.svelte";
   import { getModuleForPath } from "@kotbo/contracts";
   import {
     SECURITY_LEGACY_REDIRECTS,
@@ -30,9 +34,17 @@
   let globalError = $state<{ message: string; stack?: string } | null>(null);
   let showKeyboardShortcuts = $state(false);
 
+  import { wizard } from "./lib/stores/onboardingWizard.svelte";
+
   $effect(() => {
     if (authStore.selectedGuildId && authStore.isAuthenticated) {
       userPrefs.syncFromDatabase();
+    }
+  });
+
+  $effect(() => {
+    if (authStore.selectedGuildId) {
+      wizard.initialize(authStore.selectedGuildId);
     }
   });
 
@@ -42,6 +54,10 @@
   // src/lib/lazyRoutes.ts.
   import Login from "./pages/Login.svelte";
   import Activation from "./pages/Activation.svelte";
+  // Le parcours de configuration est le premier - et longtemps le seul - ecran
+  // d'un serveur qui vient d'installer le bot : le charger a la demande
+  // afficherait un vide la ou il faut precisement rassurer.
+  import Onboarding from "./pages/Onboarding.svelte";
 
   const isPublicPage = $derived(
     /^\/\d{17,19}\/news\/?$/.test($router.path) ||
@@ -49,6 +65,8 @@
       /^\/\d{17,19}\/prestige\/classement\/?$/.test($router.path) ||
       /^\/\d{17,19}\/leveling\/clan\/?$/.test($router.path) ||
       /^\/\d{17,19}\/clan\/?$/.test($router.path) ||
+      /^\/\d{17,19}\/rpg\/?$/.test($router.path) ||
+      /^\/\d{17,19}\/dev\/?$/.test($router.path) ||
       /^\/\d{17,19}\/giveaways(\/[A-Za-z0-9_-]+)?\/?$/.test($router.path) ||
       ($router.path.startsWith("/profile/") && !authStore.isAuthenticated) ||
       $router.path.startsWith("/transcripts/") ||
@@ -66,23 +84,63 @@
   }
 
   const featureAccess = $derived(dashboardStore.state.featureAccess || {});
-  const fallbackCanView = $derived(
-    authStore.guilds.find((guild) => guild.id === authStore.selectedGuildId)
-      ?.accessLevel !== "none",
+  const fallbackCanView = $derived(authStore.hasGuildAccess);
+  const noGuildAccess = $derived(
+    authStore.initialized && !authStore.hasGuildAccess,
+  );
+  /** Pages qui ne parlent d'aucun serveur en particulier, donc sans garde de guilde. */
+  const isGuildAgnosticPage = $derived($router.path === "/servers");
+
+  const needsActivation = $derived(
+    dashboardStore.state.error === "activation_requise",
   );
 
+  /**
+   * Ce serveur n'a pas de tableau de bord : il a un parcours de configuration.
+   *
+   * Ce n'est pas `needsActivation` qui repond - un serveur s'active tout seul
+   * en arrivant, en offre FREE, et le drapeau est deja retombe quand la
+   * personne ouvre le dashboard pour la premiere fois. Elle recevait alors la
+   * coquille complete, barre laterale et en-tete compris, autour de cinquante
+   * pages verrouillees : exactement l'ecran que le parcours doit epargner.
+   *
+   * C'est le bot qui tranche (`onboardingRequired`), et lui seul : le parcours
+   * est-il alle a son terme sur ce serveur ? Rien d'autre n'entre dans la
+   * reponse - ni l'offre, ni ce que garde ce navigateur, ni le fait d'etre
+   * administrateur du bot. Un drapeau de navigateur vivait ici
+   * (`wizard.isDone('checkout')`) : il faisait dependre d'un `localStorage` une
+   * decision qui appartient au serveur - efface, le parcours recommencait ;
+   * ecrit a la main, il le faisait disparaitre.
+   *
+   * `=== true` et non une valeur molle : tant que l'etat n'est pas charge le
+   * champ est absent, et prendre l'absence pour un oui ferait clignoter le
+   * parcours devant un abonne a chaque ouverture.
+   */
+  const inWizard = $derived(dashboardStore.state.onboardingRequired === true);
+
+  // Une page dont la clef est refusee ne doit pas se rendre en attendant que la
+  // redirection s'applique - et quand il n'existe aucune page ouverte vers ou
+  // rediriger, c'est cet ecran qui reste affiche.
+  const routeFeatureDenied = $derived.by(() => {
+    if (!authStore.initialized || isPublicPage) return false;
+    const featureKey = resolveRouteFeatureKey($router.path);
+    return !!featureKey && !canViewFeature(featureKey);
+  });
+
   function canViewFeature(featureKey: string) {
+    // Meme ordre que navigationStore.canViewFeature : l'acces a la guilde
+    // prime sur `featureAccess`, qui decrit la derniere guilde chargee.
+    if (!fallbackCanView) return false;
     if (!featureKey) return true;
     const feature = (featureAccess as Record<string, any>)?.[featureKey];
     if (feature?.canView !== undefined) return feature.canView;
-    return fallbackCanView;
+    return true;
   }
 
   function resolveRouteFeatureKey(path: string): string | null {
     if (path === "/" || path.startsWith("/profile")) return "dashboard";
     if (path.startsWith("/analytics")) return "analytics";
     if (path.startsWith("/inbox")) return "inbox";
-    if (path.startsWith("/dailyalgo")) return "daily_algo";
     if (path.startsWith("/events")) return "events";
     if (path.startsWith("/members") || path.startsWith("/invitations"))
       return "members";
@@ -104,12 +162,18 @@
     if (path.startsWith("/absences")) return "absences";
     if (path.startsWith("/planning")) return "absences";
     if (path.startsWith("/leveling")) return "leveling";
-    if (path.startsWith("/economy")) return "economy";
+    if (
+      path.startsWith("/economy") ||
+      path.startsWith("/marketplace") ||
+      path.startsWith("/quests")
+    )
+      return "economy";
     if (path.startsWith("/giveaways")) return "giveaways";
     if (path.startsWith("/welcome") || path.startsWith("/announcement")) return "welcome_goodbye";
     if (path.startsWith("/reaction-roles")) return "reaction_roles";
     if (path.startsWith("/triggers") || path.startsWith("/workflows")) return "workflows";
     if (path.startsWith("/suggestions")) return "suggestions";
+    if (path.startsWith("/starboard")) return "starboard";
     if (path.startsWith("/embed-builder")) return "embed_builder";
     if (path.startsWith("/staff-management")) {
       const segment = path.split('/')[2] || '';
@@ -120,10 +184,11 @@
       return "staff_directory";
     }
     if (path.startsWith("/evaluations")) return "staff_directory";
+    if (path.startsWith("/management")) return "centralized_config";
     if (path.startsWith("/modules")) return "modules";
     if (path.startsWith("/server-template")) return "settings";
+    if (path.startsWith("/setup")) return "settings";
     if (path.startsWith("/command-access")) return "commands";
-    if (path.startsWith("/settings")) return "settings";
     if (path.startsWith("/regulation")) return "regulation";
     if (path.startsWith("/news")) return "news";
     if (path.startsWith("/social-networks")) return "social_networks";
@@ -143,16 +208,58 @@
     router.goto(path);
   }
 
-  function selectedGuildAccessLevel() {
-    const selectedGuild = authStore.guilds.find(
-      (guild) => guild.id === authStore.selectedGuildId,
-    );
-    return selectedGuild?.accessLevel || "admin";
-  }
-
+  /**
+   * Une guilde qu'on n'arrive pas a resoudre ne vaut pas autorisation. Le repli
+   * sur "admin" ouvrait les routes de configuration des que le serveur
+   * selectionne n'etait pas dans la liste - liste pas encore lue, serveur
+   * devenu inaccessible - et le test `!== "moderator"` laissait aussi passer
+   * tout niveau inconnu. La liste ne porte que "admin" et "moderator", donc la
+   * question posee ici est exactement celle de `authStore.isAdmin`.
+   *
+   * Tant que la session n'est pas chargee la reponse reste permissive, comme
+   * `authStore.hasGuildAccess` : refuser pendant l'amorcage retirerait ces
+   * routes de la table, et un rafraichissement sur une page de configuration
+   * tomberait sur l'ecran 404 avant meme que la liste des serveurs soit connue.
+   */
+  /**
+   * Deuxieme source, et non un assouplissement : `canManageSettings` n'est vrai
+   * que pour le niveau `admin` - un moderateur le recoit a false, l'API refuse
+   * de toute facon toute ecriture sans lui.
+   *
+   * Les deux sources ne se valent pas. `authStore.isAdmin` vient de la liste
+   * des serveurs, ou le niveau est deduit des permissions rendues par OAuth :
+   * elles datent de la connexion, et valent zero quand l'appel a Discord ne
+   * ramene rien pour ce serveur. L'etat de guilde, lui, est calcule en allant
+   * chercher le membre sur le serveur et en lisant ses permissions reelles.
+   * Un administrateur dont la session porte des permissions perimees se voyait
+   * donc refuser des pages que le serveur, lui, lui accordait.
+   */
   const canManageSettings = $derived(
-    selectedGuildAccessLevel() !== "moderator",
+    !authStore.initialized
+      || authStore.isAdmin
+      || !!dashboardStore.state.access?.canManageSettings,
   );
+
+  /**
+   * Chemins que la table de routes ne monte que pour un administrateur.
+   *
+   * Sans cette liste, y arriver sans le droit tombait sur le 404 : l'ecran
+   * disait que la page n'existe pas pendant que le fil d'Ariane affichait son
+   * nom, et rien n'indiquait qu'il ne manquait qu'un role. La liste doit suivre
+   * le bloc de la table de routes garde par `canManageSettings`.
+   */
+  const ADMIN_ROUTES = [
+    "/management", "/modules", "/server-template", "/setup",
+    "/migration", "/campaigns", "/module-settings", "/notifications",
+    "/command-access", "/backups", "/schedules", "/mcp-settings",
+    "/custom-bot", "/automations", "/staff-management", "/channels-management",
+  ];
+
+  const routeNeedsAdmin = $derived.by(() => {
+    if (canManageSettings || isPublicPage) return false;
+    const path = $router.path;
+    return ADMIN_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
+  });
 
   /**
    * Module éteint auquel appartient la route courante, s'il y en a un.
@@ -191,6 +298,11 @@
 
     void authStore.initialize().then(() => {
       if (!authStore.isAuthenticated && $router.path !== "/login" && !isPublicPage) {
+        // L'adresse demandee est retenue avant d'etre remplacee : sans cela,
+        // quelqu'un qui clique « Ajouter le bot » et doit se connecter est
+        // depose ensuite sur le tableau de bord d'un serveur quelconque, et la
+        // raison de son clic est perdue en chemin.
+        rememberLoginReturn($router.url);
         router.goto("/login");
       } else if (authStore.isAuthenticated && $router.path === "/login") {
         router.goto("/");
@@ -229,7 +341,7 @@
             break;
           case 'c':
             e.preventDefault();
-            router.goto("/settings");
+            router.goto("/management");
             break;
           case 'l':
             e.preventDefault();
@@ -269,7 +381,7 @@
             break;
           case 'c':
             e.preventDefault();
-            router.goto("/settings");
+            router.goto("/management");
             gKeyPressed = false;
             if (gKeyTimeout) clearTimeout(gKeyTimeout);
             break;
@@ -383,15 +495,26 @@
       $router.path !== "/login" &&
       !isPublicPage
     ) {
+      rememberLoginReturn($router.url);
       router.goto("/login");
       return;
     }
 
     if (authStore.isAuthenticated && !isPublicPage) {
+      // Aucun serveur accessible : il n'y a nulle part ou rediriger, c'est
+      // NoAccessNotice qui prend la main.
+      if (noGuildAccess) return;
+
       const featureKey = resolveRouteFeatureKey($router.path);
       if (featureKey && !canViewFeature(featureKey)) {
-        if ($router.path !== "/") {
-          router.goto("/");
+        // `/` porte la clef `dashboard` : y renvoyer quelqu'un a qui cette
+        // clef est refusee ne faisait rien du tout, et l'accueil se rendait
+        // malgre le refus. On vise donc la premiere page reellement ouverte.
+        const target = canViewFeature("dashboard")
+          ? "/"
+          : navigationStore.allItems[0]?.href;
+        if (target && $router.path !== target) {
+          router.goto(target);
         }
       }
     }
@@ -407,7 +530,6 @@
     'tickets': '/tickets',
     'meetings': '/planning',
     'fun': '/fun',
-    'dailyalgo': $router.query.submissionId ? `/dailyalgo/ide?submissionId=${$router.query.submissionId}` : '/dailyalgo'
   }}
   {@const target = mapping[moduleId] || "/modules"}
   <div use:navigate={target}></div>
@@ -444,6 +566,16 @@
       <LazyRoute
         path="/:serverId/clan"
         load={() => import("./pages/LevelingClanPublic.svelte")}
+        props={(meta) => ({ serverId: meta.params.serverId })}
+      />
+      <LazyRoute
+        path="/:serverId/rpg"
+        load={() => import("./pages/RpgClanPublic.svelte")}
+        props={(meta) => ({ serverId: meta.params.serverId })}
+      />
+      <LazyRoute
+        path="/:serverId/dev"
+        load={() => import("./pages/ClanBoardPublic.svelte")}
         props={(meta) => ({ serverId: meta.params.serverId })}
       />
       <LazyRoute
@@ -497,15 +629,52 @@
       </Route>
 
       {#if authStore.isAuthenticated}
-        {#if dashboardStore.state.error === "activation_requise"}
+        {#if isGuildAgnosticPage}
+          <!-- « Mes serveurs » ne depend d'aucun serveur : c'est meme la page
+               qu'il faut atteindre quand on n'en a aucun d'equipe, pour y
+               inviter le bot. La garde de guilde la laisserait inaccessible.
+               Elle passe donc avant la garde d'activation : sans cela, le
+               visiteur dont le dernier serveur consulte n'est pas active se
+               voit reclamer un code d'activation alors qu'il venait
+               precisement equiper un *autre* serveur.
+
+               Et elle se rend sans MainLayout : barre laterale et en-tete ne
+               parlent que du serveur selectionne, or il n'y en a aucun ici.
+               Les afficher vides - navigation morte, fil d'Ariane sans
+               destination, selecteur de serveur qui ne selectionne rien -
+               donne une page a moitie cassee pour ce qui est, le plus souvent,
+               le tout premier ecran de quelqu'un qui decouvre Kotbo. -->
+          <LazyRoute
+            path="/servers"
+            load={() => import("./pages/Servers.svelte")}
+          />
+        {:else if $router.path === "/activation"}
+          <!-- Le chemin des codes : activation offerte, partenariat, reprise
+               par le support. Il faut le demander - il n'accueille plus
+               personne d'office - et sur un serveur deja servi il se retire,
+               n'ayant plus rien a activer. -->
+          {#if needsActivation}
+            <Activation />
+          {:else}
+            <div use:navigate={"/"}></div>
+          {/if}
+        {:else if inWizard}
+          <!-- Tant que le serveur n'a rien pris, il n'y a pas de tableau de
+               bord a atteindre : toutes les adresses menent au parcours de
+               configuration. Pas de barre laterale, pas d'en-tete, aucune page
+               du dashboard - il n'y a rien a piloter tant que rien n'est
+               monte. Ce qu'on ouvre en payant, c'est le pilotage. -->
+          <Route path="/*">
+            <Onboarding />
+          </Route>
+        {:else if needsActivation}
           <Route path="/*">
             <Activation />
           </Route>
-        {:else if $router.path === "/dailyalgo/ide"}
-          <LazyRoute
-            path="/dailyalgo/ide"
-            load={() => import("./pages/DailyAlgoIDE.svelte")}
-          />
+        {:else if noGuildAccess || routeFeatureDenied || routeNeedsAdmin}
+          <MainLayout>
+            <NoAccessNotice reason={noGuildAccess ? "guild" : "feature"} />
+          </MainLayout>
         {:else if disabledModuleForRoute}
           <MainLayout>
             <ModuleDisabledNotice moduleKey={disabledModuleForRoute} />
@@ -559,6 +728,14 @@
                 load={() => import("./pages/admin/Modules.svelte")}
               />
               <LazyRoute
+                path="/admin/billing"
+                load={() => import("./pages/admin/Billing.svelte")}
+              />
+              <LazyRoute
+                path="/admin/analytics"
+                load={() => import("./pages/admin/Analytics.svelte")}
+              />
+              <LazyRoute
                 path="/admin/whitelabel"
                 load={() => import("./pages/admin/WhiteLabel.svelte")}
               />
@@ -569,6 +746,10 @@
               <LazyRoute
                 path="/admin/gdpr"
                 load={() => import("./pages/admin/Gdpr.svelte")}
+              />
+              <LazyRoute
+                path="/admin/audit"
+                load={() => import("./pages/admin/Audit.svelte")}
               />
             {/if}
             <LazyRoute
@@ -633,12 +814,30 @@
             />
             {#if canManageSettings}
               <LazyRoute
+                path="/management/*"
+                load={() => import("./pages/ManagementCenter.svelte")}
+              />
+              <LazyRoute
                 path="/modules"
                 load={() => import("./pages/ModuleCatalog.svelte")}
               />
+              <!-- « Créer mon serveur » est un bloc de la prise en main depuis
+                   qu'elles ont fusionné : l'ancienne adresse y renvoie, elle
+                   court encore dans des liens et des favoris. -->
+              <Route path="/server-template">
+                <div use:navigate={"/setup"}></div>
+              </Route>
               <LazyRoute
-                path="/server-template"
-                load={() => import("./pages/ServerTemplate.svelte")}
+                path="/setup"
+                load={() => import("./pages/Setup.svelte")}
+              />
+              <LazyRoute
+                path="/migration"
+                load={() => import("./pages/Migration.svelte")}
+              />
+              <LazyRoute
+                path="/campaigns"
+                load={() => import("./pages/Campaigns.svelte")}
               />
               <Route path="/module-settings/:moduleId" let:meta>
                 <!-- Simple redirect logic for legacy URLs -->
@@ -651,10 +850,6 @@
               <LazyRoute
                 path="/command-access/*"
                 load={() => import("./pages/CommandAccess.svelte")}
-              />
-              <LazyRoute
-                path="/settings"
-                load={() => import("./pages/GeneralSettings.svelte")}
               />
               <LazyRoute
                 path="/backups"
@@ -729,6 +924,10 @@
               <div use:navigate={"/userSettings/widget"}></div>
             </Route>
             <LazyRoute
+              path="/billing"
+              load={() => import("./pages/Billing.svelte")}
+            />
+            <LazyRoute
               path="/channel-links"
               load={() => import("./pages/ChannelLinks.svelte")}
             />
@@ -737,10 +936,6 @@
               load={() => import("./pages/StaffServerLinks.svelte")}
             />
 
-            <LazyRoute
-              path="/dailyalgo"
-              load={() => import("./pages/DailyAlgo.svelte")}
-            />
             <LazyRoute
               path="/members/*"
               load={() => import("./pages/Members.svelte")}
@@ -764,7 +959,7 @@
               props={(meta) => ({ formId: meta.params.formId })}
             />
             <LazyRoute
-              path="/tickets"
+              path="/tickets/*"
               load={() => import("./pages/Tickets.svelte")}
             />
             <LazyRoute
@@ -797,6 +992,13 @@
             <LazyRoute
               path="/leveling/*"
               load={() => import("./pages/Leveling.svelte")}
+            />
+            <!-- Avant `/economy/*`, et surtout sur un chemin voisin plutot que dessous :
+                 les routes de Tinro ne s'excluent pas, `/economy/*` capterait aussi
+                 `/economy/quick-setup` et empilerait la page Economie sous celle-ci. -->
+            <LazyRoute
+              path="/economy-setup"
+              load={() => import("./pages/EconomyQuickSetup.svelte")}
             />
             <LazyRoute
               path="/economy/*"
@@ -838,6 +1040,10 @@
               load={() => import("./pages/Suggestions.svelte")}
             />
             <LazyRoute
+              path="/starboard"
+              load={() => import("./pages/Starboard.svelte")}
+            />
+            <LazyRoute
               path="/embed-builder"
               load={() => import("./pages/EmbedBuilder.svelte")}
             />
@@ -848,6 +1054,10 @@
             <LazyRoute
               path="/clans"
               load={() => import("./pages/Clans.svelte")}
+            />
+            <LazyRoute
+              path="/drops"
+              load={() => import("./pages/Drops.svelte")}
             />
 
             <LazyRoute
@@ -910,6 +1120,7 @@
 
 <ToastContainer />
 <GlobalConfirmDialog />
+<GlobalNoticeModal />
 <CommandPalette />
 
 {#if inviteDetailsModal.open}

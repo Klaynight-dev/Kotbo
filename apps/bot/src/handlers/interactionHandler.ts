@@ -8,7 +8,7 @@ import { COLORS, successEmbed, errorEmbed, truncate } from '../utils/embeds.js';
 import { handleConfigChannelSelect, handleConfigModal, handleConfigSelectMenu } from './configHandler.js';
 import { sendSetupStep1, sendSetupStep2, sendSetupStep3, sendSetupFinish } from '../panels/setupPanel.js';
 import { reviewDailyAlgoSubmission } from '../services/progression/dailyAlgoService.js';
-import { renderPanelTarget } from '../utils/interactionResponses.js';
+import { renderPanelBeside, renderPanelTarget } from '../utils/interactionResponses.js';
 import { parseSetupStep, parseUserCaseRoute, parseValidateRoute, parseEventQuizRoute, parseEventResultRoute } from './interactionRoutes.js';
 import { handleQuizInteraction, buildEventResultsView, getEventStats } from '../services/features/eventService.js';
 import { toggleGuildBoolean } from '../utils/prismaToggles.js';
@@ -18,6 +18,7 @@ import { handleRecruitmentButton } from '../services/staff/recruitmentService.js
 import { handleTicketButton, handleTicketModalSubmit, handleTicketSelectMenu } from '../services/features/ticketService.js';
 import { canManageGiveaways } from '../services/features/giveawayConfigService.js';
 import { handleRpgButton, handleRpgModalSubmit, handleRpgSelectMenu } from '../services/features/rpgPanelService.js';
+import { DROP_CLAIM_PREFIX, handleDropClaim } from '../services/features/dropService.js';
 import { checkInMeeting, createNotification } from '../services/staff/staffLeadershipService.js';
 import { handleDCInteraction } from '../services/moderation/dcDetectionService.js';
 import { memberProfileIdentity } from '../services/moderation/memberIdentityService.js';
@@ -189,6 +190,7 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
         buildSatisfactionDoneEmbed,
         scheduleCommentPromptExpiry,
         markCommentPromptOpen,
+        publishSatisfactionReview,
       } = await import('../services/features/ticketSatisfactionService.js');
       const success = await recordSatisfaction(satGuildId, ticketId, user.id, rating);
 
@@ -196,6 +198,10 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
         await interaction.reply({ content: '❌ Erreur lors de l\'enregistrement.', flags: [MessageFlags.Ephemeral] });
         return;
       }
+
+      // Publie l'avis sans attendre : la note est acquise, un commentaire arrivé
+      // plus tard viendra éditer le message déjà posté.
+      void publishSatisfactionReview(client, satGuildId, ticketId, user.id);
 
       // La note est acquise avant de proposer la question facultative : fermer le
       // sondage sans y répondre ne doit jamais faire perdre l'évaluation.
@@ -242,6 +248,14 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
         : [new EmbedBuilder().setColor(COLORS.success).setTitle('Merci pour votre retour !').setTimestamp()],
       components: [],
     });
+    return;
+  }
+
+  // ── Drop aléatoire : bouton de ramassage ────────────────────────────
+  if (customId.startsWith(DROP_CLAIM_PREFIX)) {
+    const dropId = customId.slice(DROP_CLAIM_PREFIX.length);
+    if (!dropId) return;
+    await handleDropClaim(interaction, dropId);
     return;
   }
 
@@ -321,6 +335,35 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
     return;
   }
 
+  // ── Raid hebdomadaire : bouton d'assaut ────────────────────────────
+  if (customId === 'rpg_raid_attack') {
+    if (!guildId) return;
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+    const [{ attackRaid, RaidError }, { buildAssaultEmbed }] = await Promise.all([
+      import('../services/features/rpg/rpgRaidService.js'),
+      import('../services/features/rpg/rpgRaidPanel.js'),
+    ]);
+
+    try {
+      const member = await resolveGuildMemberByUserId(interaction, user.id);
+      const outcome = await attackRaid(interaction.client, guildId, user.id, member);
+      await interaction.editReply({ embeds: [await buildAssaultEmbed(guildId, outcome)] });
+    } catch (error) {
+      // Un refus attendu - pas de clan, plus d'assaut, pas assez d'énergie - se dit au
+      // joueur ; le reste part au journal, l'utilisateur n'ayant que faire d'une trace.
+      const expected = error instanceof RaidError;
+      if (!expected) logger.error('RpgRaid', `Assaut en échec sur ${guildId}:`, error);
+      await interaction.editReply({
+        embeds: [errorEmbed(
+          'Assaut impossible',
+          expected ? error.message : "L'assaut n'a pas pu être livré.",
+        )],
+      }).catch(() => null);
+    }
+    return;
+  }
+
   // ── RPG Admin Reset Confirm/Cancel buttons ─────────────────────────
   if (customId.startsWith('rpg_reset_confirm:')) {
     const component = customId.split(':')[1] as 'all' | 'profiles' | 'items' | 'config' | 'guilds';
@@ -333,7 +376,7 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
     await interaction.deferUpdate();
     
     const { adminResetGuildEconomy } = await import('../services/features/economyService.js');
-    await adminResetGuildEconomy(guildId!, component);
+    const { restored } = await adminResetGuildEconomy(guildId!, component);
 
     const componentLabels: Record<string, string> = {
       all: "l'Économie & RPG (Global)",
@@ -343,8 +386,12 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
       guilds: 'les Guildes RPG'
     };
 
+    const restitution = restored.players > 0
+      ? `\n\n**${restored.coins.toLocaleString('fr-FR')}** pièces de montée de niveau ont été restituées à **${restored.players}** membre(s).`
+      : '';
+
     await interaction.editReply({
-      embeds: [successEmbed('Réinitialisation terminée', `Le composant **${componentLabels[component] || component}** a été réinitialisé avec succès !`)],
+      embeds: [successEmbed('Réinitialisation terminée', `Le composant **${componentLabels[component] || component}** a été réinitialisé avec succès !${restitution}`)],
       components: []
     });
     return;
@@ -398,6 +445,13 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
   if (customId.startsWith('giveaway_join:')) {
     const { handleGiveawayJoin } = await import('../services/features/giveawayService.js');
     await handleGiveawayJoin(interaction);
+    return;
+  }
+
+  // ── Paris entre membres (points de clan) ────────────────────────────
+  if (customId.startsWith('bet:')) {
+    const { handleBetButton } = await import('../services/community/clanBetService.js');
+    await handleBetButton(interaction);
     return;
   }
 
@@ -495,7 +549,7 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
       }
 
       const panel = await buildMemberCasePanel(interaction.guild!, caseRoute.userId, 'sanctions', caseRoute.pageIndex ?? 0);
-      await renderPanelTarget(interaction, {
+      await renderPanelBeside(interaction, {
         // embeds: [] vide les embeds des anciens panels legacy, requis pour la conversion en Components V2
         embeds: [],
         components: panel.components,
@@ -513,7 +567,10 @@ export async function handleButton(interaction: Interaction, client: Client): Pr
         : caseRoute.pageIndex ?? 0;
 
     const panel = await buildMemberCasePanel(interaction.guild!, caseRoute.userId, section, pageIndex);
-    await renderPanelTarget(interaction, {
+    // `renderPanelBeside` et non `renderPanelTarget` : « Voir le casier » est
+    // pose sur des logs et des cartes de sanction, que l'`update` remplacait
+    // par le casier - le log etait alors perdu pour tout le serveur.
+    await renderPanelBeside(interaction, {
       embeds: [],
       components: panel.components,
       files: panel.files,
@@ -1296,6 +1353,13 @@ export async function handleSelectMenu(interaction: AnySelectMenuInteraction, cl
     return;
   }
 
+  // Verdict par sanction contestée, dans l'embed staff des appels
+  if (customId.startsWith('appeal_item:') && interaction.isStringSelectMenu()) {
+    const { handleAppealItemSelect } = await import('../services/moderation/banAppealService.js');
+    await handleAppealItemSelect(client, customId, interaction);
+    return;
+  }
+
   // DM guild select for /ticket open in DMs
   if (customId === 'ticket:dm_guild_select' && interaction.isStringSelectMenu()) {
     const selectedGuildId = interaction.values[0];
@@ -1325,6 +1389,13 @@ export async function handleSelectMenu(interaction: AnySelectMenuInteraction, cl
     return;
   }
 
+  // Verdict d'un pari, réservé aux administrateurs
+  if (customId.startsWith('bet:winner:') && interaction.isStringSelectMenu()) {
+    const { handleBetWinnerSelect } = await import('../services/community/clanBetService.js');
+    await handleBetWinnerSelect(interaction);
+    return;
+  }
+
   // Menu déroulant des pages de présentation du thread d'accueil
   if (customId === 'wpage_select' && interaction.isStringSelectMenu()) {
     const { handleWelcomeMenuInteraction } = await import('../services/features/welcomeThreadService.js');
@@ -1333,7 +1404,7 @@ export async function handleSelectMenu(interaction: AnySelectMenuInteraction, cl
   }
 
   // Ticket system select menu
-  if (customId === 'ticket:select_type') {
+  if (customId === 'ticket:select_type' || customId === 'ticket:history_select') {
     if (!interaction.isStringSelectMenu()) return;
     await handleTicketSelectMenu(client, customId, interaction);
     return;
@@ -1469,11 +1540,12 @@ export async function handleModalSubmit(interaction: ModalSubmitInteraction, cli
     const [, satGuildId, ticketId] = customId.split(':');
     const rawComment = interaction.fields.getTextInputValue('comment') ?? '';
 
-    const { recordSatisfactionComment, buildSatisfactionDoneEmbed, clearCommentPrompt } = await import('../services/features/ticketSatisfactionService.js');
+    const { recordSatisfactionComment, buildSatisfactionDoneEmbed, clearCommentPrompt, publishSatisfactionReview } = await import('../services/features/ticketSatisfactionService.js');
     const saved = rawComment.trim()
       ? await recordSatisfactionComment(satGuildId, ticketId, interaction.user.id, rawComment)
       : false;
     await clearCommentPrompt(satGuildId, ticketId, interaction.user.id);
+    if (saved) void publishSatisfactionReview(client, satGuildId, ticketId, interaction.user.id);
 
     const stored = await prisma.ticketSatisfaction.findUnique({
       where: { guildId_ticketId_userId: { guildId: satGuildId, ticketId, userId: interaction.user.id } },

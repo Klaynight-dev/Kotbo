@@ -7,9 +7,84 @@ import {
   readJsonBody,
   type AuthClaims,
 } from '../../shared.js';
-import { createDirectLink, needsMessageMapping, removeLink, updateLinkConfig } from '../../../services/features/channelLinkService.js';
+import {
+  addGroupMember,
+  createDirectGroup,
+  getGroup,
+  inspectRelayPermissions,
+  needsMessageMapping,
+  refreshGroupTopics,
+  removeGroup,
+  removeGroupMember,
+  updateGroupConfig,
+  updateGroupMemberConfig,
+  type LinkGroup,
+  type LinkMemberMode,
+  type LinkRelayMode,
+} from '../../../services/features/channelLinkService.js';
 import { isLinkGuestGuild } from '../../../services/features/channelLinkGuestService.js';
 import { INVITE_SOURCE, recordBotInvite } from '../../../services/analytics/inviteService.js';
+
+const RESERVED_SEGMENTS = new Set(['invites', 'other-guilds', 'direct']);
+
+function readMode(value: unknown, fallback: LinkMemberMode = 'BOTH'): LinkMemberMode {
+  return value === 'SEND_ONLY' || value === 'RECEIVE_ONLY' || value === 'BOTH' ? value : fallback;
+}
+
+function readRelayMode(value: unknown, fallback: LinkRelayMode = 'WEBHOOK'): LinkRelayMode {
+  return value === 'EMBED' ? 'EMBED' : fallback;
+}
+
+function serializeGroup(group: LinkGroup, guildId: string, client: Client) {
+  const issuesByMember = new Map(inspectRelayPermissions(client, group).map((issue) => [issue.memberId, issue]));
+
+  const members = group.members.map((member) => {
+    const memberGuild = client.guilds.cache.get(member.guildId);
+    const channel = memberGuild?.channels.cache.get(member.channelId);
+    const issue = issuesByMember.get(member.id);
+    return {
+      id: member.id,
+      guildId: member.guildId,
+      guildName: memberGuild?.name ?? member.guildId,
+      guildIcon: memberGuild?.iconURL() ?? null,
+      channelId: member.channelId,
+      channelName: channel?.name ?? member.channelId,
+      mode: member.mode,
+      relayMode: member.relayMode,
+      enabled: member.enabled,
+      isLocal: member.guildId === guildId,
+      // Ce serveur n'a pas de clé : il ne voit que ce pont, et Kotbo n'y
+      // collecte rien. À afficher pour lever le doute des communautés qui
+      // acceptent un lien sans vouloir « du bot ».
+      isLinkOnly: isLinkGuestGuild(member.guildId),
+      // Ce qui manque à ce salon pour relayer complètement. Un webhook emprunte
+      // les permissions d'@everyone : sans emojis externes, Discord réduit les
+      // emojis venus d'ailleurs à leur raccourci, sans que rien ne l'explique.
+      missingBotPermissions: issue?.bot.map((permission) => permission.key) ?? [],
+      missingEveryonePermissions: issue?.everyone.map((permission) => permission.key) ?? [],
+      channelMissing: issue?.channelMissing ?? false,
+    };
+  });
+
+  return {
+    ...group,
+    members,
+    localMembers: members.filter((m) => m.isLocal),
+    remoteGuildCount: new Set(members.filter((m) => !m.isLocal).map((m) => m.guildId)).size,
+    // `true` quand ce pont inscrit en base la correspondance entre un message et
+    // ses copies - nécessaire aux éditions, suppressions, réactions et
+    // épinglages, inutile autrement.
+    storesMessageMap: needsMessageMapping(group),
+  };
+}
+
+async function canManageGuild(client: Client, guildId: string, userId: string): Promise<boolean> {
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) return false;
+  const member = guild.members.cache.get(userId) ?? await guild.members.fetch(userId).catch(() => null);
+  if (!member) return false;
+  return member.permissions.has('Administrator') || member.permissions.has('ManageGuild');
+}
 
 export async function handleChannelLinkRoutes(
   req: IncomingMessage,
@@ -27,44 +102,13 @@ export async function handleChannelLinkRoutes(
   // GET /api/dashboard/guilds/:guildId/channel-links
   if (parts.length === 5 && method === 'GET') {
     try {
-      const links = await prisma.channelLink.findMany({
-        where: {
-          OR: [{ sourceGuildId: guildId }, { targetGuildId: guildId }],
-        },
+      const groups = await prisma.channelLinkGroup.findMany({
+        where: { members: { some: { guildId } } },
+        include: { members: true },
         orderBy: { createdAt: 'desc' },
       });
 
-      const enriched = links.map((l) => {
-        const isSource = l.sourceGuildId === guildId;
-        const remoteGuildId = isSource ? l.targetGuildId : l.sourceGuildId;
-        const remoteGuild = client.guilds.cache.get(remoteGuildId);
-        const localChannelId = isSource ? l.sourceChannelId : l.targetChannelId;
-        const remoteChannelId = isSource ? l.targetChannelId : l.sourceChannelId;
-        const localChannel = client.guilds.cache.get(guildId)?.channels.cache.get(localChannelId);
-        const remoteChannel = remoteGuild?.channels.cache.get(remoteChannelId);
-
-        return {
-          ...l,
-          isSource,
-          localChannelId,
-          localChannelName: localChannel?.name ?? localChannelId,
-          remoteGuildId,
-          remoteGuildName: remoteGuild?.name ?? remoteGuildId,
-          remoteGuildIcon: remoteGuild?.iconURL() ?? null,
-          remoteChannelId,
-          remoteChannelName: remoteChannel?.name ?? remoteChannelId,
-          // Le serveur d'en face n'a pas de clé : il ne voit que ce pont, et
-          // Kotbo n'y collecte rien. À afficher pour lever le doute des
-          // communautés qui acceptent un lien sans vouloir « du bot ».
-          remoteIsLinkOnly: isLinkGuestGuild(remoteGuildId),
-          // `true` quand ce lien inscrit en base la correspondance entre un
-          // message et sa copie - nécessaire aux éditions, suppressions,
-          // réactions et épinglages, inutile autrement.
-          storesMessageMap: needsMessageMapping(l),
-        };
-      });
-
-      json(res, 200, enriched);
+      json(res, 200, groups.map((group) => serializeGroup(group, guildId, client)));
     } catch (err) {
       logger.error('ChannelLinkAPI', 'Erreur GET channel-links', err);
       json(res, 500, { error: 'Erreur serveur' });
@@ -114,38 +158,47 @@ export async function handleChannelLinkRoutes(
     try {
       const body = await readJsonBody(req);
       const sourceChannelId = typeof body?.sourceChannelId === 'string' ? body.sourceChannelId : null;
-      const targetGuildId = typeof body?.targetGuildId === 'string' ? body.targetGuildId : null;
-      const targetChannelId = typeof body?.targetChannelId === 'string' ? body.targetChannelId : null;
-      if (!sourceChannelId || !targetGuildId || !targetChannelId) {
-        json(res, 400, { error: 'sourceChannelId, targetGuildId et targetChannelId requis' });
+
+      // Le dashboard envoie une liste de cibles ; l'ancien couple
+      // targetGuildId/targetChannelId reste accepté pour les appels existants.
+      const rawTargets: any[] = Array.isArray(body?.targets)
+        ? body.targets
+        : (body?.targetGuildId && body?.targetChannelId
+          ? [{ guildId: body.targetGuildId, channelId: body.targetChannelId, mode: body?.direction === 'UNIDIRECTIONAL' ? 'RECEIVE_ONLY' : 'BOTH' }]
+          : []);
+
+      if (!sourceChannelId || rawTargets.length === 0) {
+        json(res, 400, { error: 'sourceChannelId et au moins une cible sont requis' });
         return true;
       }
 
-      const targetGuild = client.guilds.cache.get(targetGuildId);
-      if (!targetGuild) {
-        json(res, 400, { error: 'Le bot n\'est pas présent sur le serveur cible.' });
-        return true;
+      const targets = [];
+      for (const raw of rawTargets) {
+        const targetGuildId = typeof raw?.guildId === 'string' ? raw.guildId : null;
+        const targetChannelId = typeof raw?.channelId === 'string' ? raw.channelId : null;
+        if (!targetGuildId || !targetChannelId) {
+          json(res, 400, { error: 'Chaque cible doit préciser guildId et channelId.' });
+          return true;
+        }
+        if (!client.guilds.cache.get(targetGuildId)) {
+          json(res, 400, { error: 'Le bot n\'est pas présent sur l\'un des serveurs cibles.' });
+          return true;
+        }
+        if (!(await canManageGuild(client, targetGuildId, user.userId))) {
+          json(res, 403, { error: 'Vous devez être admin de chacun des serveurs cibles.' });
+          return true;
+        }
+        targets.push({ guildId: targetGuildId, channelId: targetChannelId, mode: readMode(raw?.mode) });
       }
 
-      let targetMember;
-      try {
-        targetMember = await targetGuild.members.fetch(user.userId);
-      } catch {
-        targetMember = null;
-      }
-      if (!targetMember || (!targetMember.permissions.has('Administrator') && !targetMember.permissions.has('ManageGuild'))) {
-        json(res, 403, { error: 'Vous devez être admin du serveur cible.' });
-        return true;
-      }
-
-      const result = await createDirectLink({
-        sourceGuildId: guildId,
-        sourceChannelId,
-        targetGuildId,
-        targetChannelId,
+      const result = await createDirectGroup({
+        ownerGuildId: guildId,
+        ownerChannelId: sourceChannelId,
+        targets,
         createdByUserId: user.userId,
-        direction: body?.direction === 'UNIDIRECTIONAL' ? 'UNIDIRECTIONAL' : 'BIDIRECTIONAL',
-        relayMode: body?.relayMode === 'EMBED' ? 'EMBED' : 'WEBHOOK',
+        name: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null,
+        ownerMode: readMode(body?.ownerMode, body?.direction === 'UNIDIRECTIONAL' ? 'SEND_ONLY' : 'BOTH'),
+        relayMode: readRelayMode(body?.relayMode),
         client,
       });
 
@@ -155,7 +208,6 @@ export async function handleChannelLinkRoutes(
       }
 
       let serverInviteUrl: string | null = null;
-      let topicUpdated = false;
       if (body?.createServerInvite) {
         try {
           const sourceGuild = client.guilds.cache.get(guildId);
@@ -164,34 +216,17 @@ export async function handleChannelLinkRoutes(
             const discordInvite = await sourceChannel.createInvite({
               maxAge: 0,
               maxUses: 0,
-              reason: 'Kotbo Link: Invitation pour la description du salon lié',
+              reason: 'Kotbo Link: Invitation pour la description des salons liés',
             });
             serverInviteUrl = discordInvite.url;
-
-            const targetGuild = client.guilds.cache.get(targetGuildId);
-            // L'invitation est affichée dans le topic du salon distant : sa provenance est ce serveur.
-            await recordBotInvite(discordInvite, INVITE_SOURCE.channelLink(targetGuild?.name ?? targetGuildId));
-
-            const targetChannel = targetGuild?.channels.cache.get(targetChannelId);
-            if (targetChannel && 'setTopic' in targetChannel && typeof targetChannel.setTopic === 'function') {
-              try {
-                const currentTopic = (targetChannel as any).topic ?? '';
-                const inviteTag = `🔗 ${discordInvite.url}`;
-                const cleanTopic = currentTopic.replace(/\n?🔗 https:\/\/discord\.gg\/\S+/g, '').trim();
-                const newTopic = cleanTopic ? `${cleanTopic}\n${inviteTag}` : inviteTag;
-                await targetChannel.setTopic(newTopic);
-                topicUpdated = true;
-              } catch (topicErr) {
-                logger.warn('ChannelLinkAPI', 'Impossible de modifier le topic du salon cible', topicErr);
-              }
-            }
+            await recordBotInvite(discordInvite, INVITE_SOURCE.channelLinkPairing());
           }
         } catch (err) {
           logger.warn('ChannelLinkAPI', 'Impossible de créer l\'invitation Discord', err);
         }
       }
 
-      json(res, 201, { ...result, serverInviteUrl, topicUpdated });
+      json(res, 201, { ...serializeGroup(result, guildId, client), serverInviteUrl });
     } catch (err) {
       logger.error('ChannelLinkAPI', 'Erreur POST direct link', err);
       json(res, 500, { error: 'Erreur serveur' });
@@ -224,16 +259,33 @@ export async function handleChannelLinkRoutes(
         return true;
       }
 
+      // Un code peut viser un pont existant : chaque serveur qui l'utilise
+      // rejoint alors le même pont, au lieu d'en ouvrir un nouveau à deux.
+      const groupId = typeof body?.groupId === 'string' ? body.groupId : null;
+      if (groupId) {
+        const group = await getGroup(groupId);
+        if (!group || !group.members.some((m) => m.guildId === guildId)) {
+          json(res, 404, { error: 'Pont introuvable' });
+          return true;
+        }
+      }
+
       const { randomBytes } = await import('node:crypto');
       const code = randomBytes(6).toString('hex').toUpperCase();
+      const requestedMaxUses = typeof body?.maxUses === 'number' ? body.maxUses : Number.NaN;
+      const maxUses = Number.isInteger(requestedMaxUses) && requestedMaxUses > 0
+        ? Math.min(requestedMaxUses, 25)
+        : 1;
 
       const invite = await prisma.channelLinkInvite.create({
         data: {
           code,
           guildId,
           channelId: String(body?.channelId ?? ''),
+          groupId,
+          memberMode: readMode(body?.memberMode),
           direction: body?.direction === 'UNIDIRECTIONAL' ? 'UNIDIRECTIONAL' : 'BIDIRECTIONAL',
-          relayMode: body?.relayMode === 'EMBED' ? 'EMBED' : 'WEBHOOK',
+          relayMode: readRelayMode(body?.relayMode),
           relayText: typeof body?.relayText === 'boolean' ? body.relayText : true,
           relayImages: typeof body?.relayImages === 'boolean' ? body.relayImages : true,
           relayEmbeds: typeof body?.relayEmbeds === 'boolean' ? body.relayEmbeds : false,
@@ -241,6 +293,7 @@ export async function handleChannelLinkRoutes(
           relayEdits: typeof body?.relayEdits === 'boolean' ? body.relayEdits : true,
           relayDeletes: typeof body?.relayDeletes === 'boolean' ? body.relayDeletes : true,
           relayPins: typeof body?.relayPins === 'boolean' ? body.relayPins : true,
+          maxUses,
           expiresAt: new Date(Date.now() + 30 * 60 * 1000),
           createdByUserId: user.userId,
         },
@@ -274,34 +327,39 @@ export async function handleChannelLinkRoutes(
     return true;
   }
 
-  // PATCH /api/dashboard/guilds/:guildId/channel-links/:linkId
-  if (parts.length === 6 && parts[5] !== 'invites' && parts[5] !== 'other-guilds' && parts[5] !== 'direct' && method === 'PATCH') {
+  const groupId = parts.length >= 6 && !RESERVED_SEGMENTS.has(parts[5]!) ? parts[5]! : null;
+  if (!groupId) return false;
+
+  const group = await getGroup(groupId);
+  if (!group || !group.members.some((m) => m.guildId === guildId)) {
+    if (parts.length >= 6 && (method === 'PATCH' || method === 'DELETE' || method === 'POST')) {
+      json(res, 404, { error: 'Pont introuvable' });
+      return true;
+    }
+    return false;
+  }
+
+  // PATCH /api/dashboard/guilds/:guildId/channel-links/:groupId
+  if (parts.length === 6 && method === 'PATCH') {
     try {
-      const linkId = parts[5];
       const body = await readJsonBody(req);
 
-      const link = await prisma.channelLink.findUnique({ where: { id: linkId } });
-      if (!link || (link.sourceGuildId !== guildId && link.targetGuildId !== guildId)) {
-        json(res, 404, { error: 'Lien introuvable' });
-        return true;
-      }
-
-      const allowedFields = ['relayText', 'relayImages', 'relayEmbeds', 'relayReactions', 'relayEdits', 'relayDeletes', 'relayThreads', 'relayPolls', 'relayPins', 'sourceRelayMode', 'targetRelayMode', 'direction', 'enabled', 'updateTopic'];
+      const allowedFields = ['name', 'relayText', 'relayImages', 'relayEmbeds', 'relayReactions', 'relayEdits', 'relayDeletes', 'relayThreads', 'relayPolls', 'relayPins', 'enabled', 'updateTopic'];
       const updateData: Record<string, any> = {};
       for (const field of allowedFields) {
         if (body?.[field] !== undefined) updateData[field] = body[field];
       }
 
-      // Passe par le service : lui seul sait invalider le cache des liens,
+      // Passe par le service : lui seul sait invalider le cache des ponts,
       // rouvrir ou refermer la garde des serveurs en liaison seule et purger les
       // correspondances de messages devenues inutiles.
-      const updated = await updateLinkConfig(linkId, updateData);
+      const updated = await updateGroupConfig(groupId, updateData);
       if (!updated) {
-        json(res, 404, { error: 'Lien introuvable' });
+        json(res, 404, { error: 'Pont introuvable' });
         return true;
       }
 
-      json(res, 200, updated);
+      json(res, 200, serializeGroup(updated, guildId, client));
     } catch (err) {
       logger.error('ChannelLinkAPI', 'Erreur PATCH channel-link', err);
       json(res, 500, { error: 'Erreur serveur' });
@@ -309,23 +367,114 @@ export async function handleChannelLinkRoutes(
     return true;
   }
 
-  // POST /api/dashboard/guilds/:guildId/channel-links/:linkId/invite
-  if (parts.length === 7 && parts[6] === 'invite' && method === 'POST') {
+  // DELETE /api/dashboard/guilds/:guildId/channel-links/:groupId
+  if (parts.length === 6 && method === 'DELETE') {
     try {
-      const linkId = parts[5];
-      const link = await prisma.channelLink.findUnique({ where: { id: linkId } });
-      if (!link || (link.sourceGuildId !== guildId && link.targetGuildId !== guildId)) {
-        json(res, 404, { error: 'Lien introuvable' });
+      await removeGroup(groupId, client);
+      json(res, 200, { ok: true });
+    } catch (err) {
+      logger.error('ChannelLinkAPI', 'Erreur DELETE channel-link', err);
+      json(res, 500, { error: 'Erreur serveur' });
+    }
+    return true;
+  }
+
+  // POST /api/dashboard/guilds/:guildId/channel-links/:groupId/members
+  if (parts.length === 7 && parts[6] === 'members' && method === 'POST') {
+    try {
+      const body = await readJsonBody(req);
+      const memberGuildId = typeof body?.guildId === 'string' ? body.guildId : null;
+      const memberChannelId = typeof body?.channelId === 'string' ? body.channelId : null;
+      if (!memberGuildId || !memberChannelId) {
+        json(res, 400, { error: 'guildId et channelId requis' });
         return true;
       }
 
-      const isSource = link.sourceGuildId === guildId;
-      const localChannelId = isSource ? link.sourceChannelId : link.targetChannelId;
-      const remoteGuildId = isSource ? link.targetGuildId : link.sourceGuildId;
-      const remoteChannelId = isSource ? link.targetChannelId : link.sourceChannelId;
+      if (!client.guilds.cache.get(memberGuildId)) {
+        json(res, 400, { error: 'Le bot n\'est pas présent sur ce serveur.' });
+        return true;
+      }
+      if (!(await canManageGuild(client, memberGuildId, user.userId))) {
+        json(res, 403, { error: 'Vous devez être admin du serveur ajouté.' });
+        return true;
+      }
 
-      const localGuild = client.guilds.cache.get(guildId);
-      const localChannel = localGuild?.channels.cache.get(localChannelId);
+      const result = await addGroupMember({
+        groupId,
+        guildId: memberGuildId,
+        channelId: memberChannelId,
+        addedByUserId: user.userId,
+        mode: readMode(body?.mode),
+        relayMode: readRelayMode(body?.relayMode),
+        client,
+      });
+
+      if ('error' in result) {
+        json(res, 400, { error: result.error });
+        return true;
+      }
+
+      json(res, 201, serializeGroup(result, guildId, client));
+    } catch (err) {
+      logger.error('ChannelLinkAPI', 'Erreur POST membre de pont', err);
+      json(res, 500, { error: 'Erreur serveur' });
+    }
+    return true;
+  }
+
+  // PATCH /api/dashboard/guilds/:guildId/channel-links/:groupId/members/:memberId
+  if (parts.length === 8 && parts[6] === 'members' && method === 'PATCH') {
+    try {
+      const body = await readJsonBody(req);
+      const data: Record<string, any> = {};
+      if (body?.mode !== undefined) data.mode = readMode(body.mode);
+      if (body?.relayMode !== undefined) data.relayMode = readRelayMode(body.relayMode);
+      if (typeof body?.enabled === 'boolean') data.enabled = body.enabled;
+
+      const updated = await updateGroupMemberConfig(groupId, parts[7]!, data);
+      if (!updated) {
+        json(res, 404, { error: 'Salon introuvable dans ce pont' });
+        return true;
+      }
+
+      json(res, 200, serializeGroup(updated, guildId, client));
+    } catch (err) {
+      logger.error('ChannelLinkAPI', 'Erreur PATCH membre de pont', err);
+      json(res, 500, { error: 'Erreur serveur' });
+    }
+    return true;
+  }
+
+  // DELETE /api/dashboard/guilds/:guildId/channel-links/:groupId/members/:memberId
+  if (parts.length === 8 && parts[6] === 'members' && method === 'DELETE') {
+    try {
+      const memberId = parts[7]!;
+      const member = group.members.find((m) => m.id === memberId);
+      if (!member) {
+        json(res, 404, { error: 'Salon introuvable dans ce pont' });
+        return true;
+      }
+      // Retirer le salon d'un autre serveur suppose d'y être admin ; retirer le
+      // sien est toujours permis, c'est la façon de quitter un pont.
+      if (member.guildId !== guildId && !(await canManageGuild(client, member.guildId, user.userId))) {
+        json(res, 403, { error: 'Vous devez être admin de ce serveur pour le retirer.' });
+        return true;
+      }
+
+      const remaining = await removeGroupMember(groupId, memberId, client);
+      json(res, 200, { ok: true, group: remaining ? serializeGroup(remaining, guildId, client) : null });
+    } catch (err) {
+      logger.error('ChannelLinkAPI', 'Erreur DELETE membre de pont', err);
+      json(res, 500, { error: 'Erreur serveur' });
+    }
+    return true;
+  }
+
+  // POST /api/dashboard/guilds/:guildId/channel-links/:groupId/invite
+  if (parts.length === 7 && parts[6] === 'invite' && method === 'POST') {
+    try {
+      const localMember = group.members.find((m) => m.guildId === guildId);
+      const localChannel = localMember ? client.guilds.cache.get(guildId)?.channels.cache.get(localMember.channelId) : null;
 
       if (!localChannel || !('createInvite' in localChannel) || typeof localChannel.createInvite !== 'function') {
         json(res, 400, { error: 'Impossible de créer une invitation sur ce salon.' });
@@ -335,51 +484,23 @@ export async function handleChannelLinkRoutes(
       const discordInvite = await localChannel.createInvite({
         maxAge: 0,
         maxUses: 0,
-        reason: 'Kotbo Link: Invitation pour la description du salon lié',
+        reason: 'Kotbo Link: Invitation pour la description des salons liés',
       });
 
-      const remoteGuild = client.guilds.cache.get(remoteGuildId);
-      // L'invitation est affichée dans le topic du salon distant : sa provenance est ce serveur.
-      await recordBotInvite(discordInvite, INVITE_SOURCE.channelLink(remoteGuild?.name ?? remoteGuildId));
+      const guild = client.guilds.cache.get(guildId);
+      await recordBotInvite(discordInvite, INVITE_SOURCE.channelLink(guild?.name ?? guildId));
 
-      const remoteChannel = remoteGuild?.channels.cache.get(remoteChannelId);
+      // Les descriptions listent tous les participants : les réécrire propage
+      // l'invitation partout, au lieu du seul salon d'en face.
       let topicUpdated = false;
-
-      if (remoteChannel && 'setTopic' in remoteChannel && typeof remoteChannel.setTopic === 'function') {
-        try {
-          const currentTopic = (remoteChannel as any).topic ?? '';
-          const inviteTag = `🔗 ${discordInvite.url}`;
-          const cleanTopic = currentTopic.replace(/\n?🔗 https:\/\/discord\.gg\/\S+/g, '').trim();
-          const newTopic = cleanTopic ? `${cleanTopic}\n${inviteTag}` : inviteTag;
-          await remoteChannel.setTopic(newTopic);
-          topicUpdated = true;
-        } catch (err) {
-          logger.warn('ChannelLinkAPI', 'Impossible de modifier le topic du salon distant', err);
-        }
+      if (group.updateTopic) {
+        await refreshGroupTopics(client, group, true);
+        topicUpdated = true;
       }
 
       json(res, 201, { inviteUrl: discordInvite.url, topicUpdated });
     } catch (err) {
-      logger.error('ChannelLinkAPI', 'Erreur POST invite pour link', err);
-      json(res, 500, { error: 'Erreur serveur' });
-    }
-    return true;
-  }
-
-  // DELETE /api/dashboard/guilds/:guildId/channel-links/:linkId
-  if (parts.length === 6 && parts[5] !== 'invites' && parts[5] !== 'other-guilds' && parts[5] !== 'direct' && method === 'DELETE') {
-    try {
-      const linkId = parts[5];
-      const link = await prisma.channelLink.findUnique({ where: { id: linkId } });
-      if (!link || (link.sourceGuildId !== guildId && link.targetGuildId !== guildId)) {
-        json(res, 404, { error: 'Lien introuvable' });
-        return true;
-      }
-
-      await removeLink(linkId, client);
-      json(res, 200, { ok: true });
-    } catch (err) {
-      logger.error('ChannelLinkAPI', 'Erreur DELETE channel-link', err);
+      logger.error('ChannelLinkAPI', 'Erreur POST invite pour pont', err);
       json(res, 500, { error: 'Erreur serveur' });
     }
     return true;

@@ -110,6 +110,25 @@ authRouter.get('/api/auth/discord/callback', async (c) => {
   const dashboardUrl = getDashboardUrl().replace(/\/$/, '');
   const code = c.req.query('code');
   const state = c.req.query('state');
+
+  // Retour d'une *invitation du bot*, et non d'une connexion.
+  //
+  // L'ecran d'autorisation d'un bot revient sur la meme adresse que la
+  // connexion - une application Discord n'a qu'une liste de redirections, et
+  // celle-ci est la seule declaree. Mais il n'y a ni `state` ni verificateur
+  // PKCE : ce trajet-la n'a jamais demarre par `startDiscordOAuth`. La garde
+  // ci-dessous le prenait donc pour un etat invalide et renvoyait sur
+  // `/login`, d'ou la session encore valide ramenait sur `/` - le serveur qui
+  // venait d'etre equipe etait perdu en route, et avec lui le parcours de
+  // configuration qu'il devait ouvrir.
+  //
+  // `guild_id` est ce que Discord ajoute a ce retour, et lui seul : il dit
+  // *quel* serveur vient de recevoir le bot. On le rend a « Mes serveurs »,
+  // qui sait attendre l'arrivee effective du bot puis entrer dedans.
+  const installedGuildId = c.req.query('guild_id');
+  if (installedGuildId && /^\d{17,20}$/.test(installedGuildId)) {
+    return c.redirect(`${dashboardUrl}/servers?installed=${installedGuildId}`, 302);
+  }
   const cookies = parseCookies(c.req.header('cookie') ?? '');
   const returnTo = safeReturnTo(cookies.kotbo_oauth_return_to);
 

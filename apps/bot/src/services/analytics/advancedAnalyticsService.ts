@@ -16,6 +16,7 @@
  * `available: false` si la journalisation des messages n'est pas activée.
  */
 
+import { DEFAULT_TIMEZONE, normalizeTimezone } from '@kotbo/contracts';
 import { prismaRead } from '../../utils/db.js';
 import { getTopWords } from './wordStatsService.js';
 
@@ -533,7 +534,10 @@ export async function getWordAnalytics(guildId: string, days = 30) {
 // MODÉRATION
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function getModerationAnalytics(guildId: string) {
+export async function getModerationAnalytics(guildId: string, timezone = DEFAULT_TIMEZONE) {
+  // Les « heures chaudes » sont une grille jour x heure : lue en UTC, elle
+  // annoncait a un lecteur parisien des pics decales d'une a deux heures.
+  const zone = normalizeTimezone(timezone);
   const since90 = new Date(Date.now() - 90 * DAY_MS);
 
   // Pression : sanctions pour 1000 messages, par semaine (12 semaines)
@@ -591,8 +595,8 @@ export async function getModerationAnalytics(guildId: string) {
 
   // Heures chaudes : sanctions par (jour de semaine × heure), 90j
   const hotHours = await prismaRead.$queryRaw<Array<{ dow: number; hour: number; count: bigint }>>`
-    SELECT EXTRACT(ISODOW FROM "createdAt")::int AS dow,
-           EXTRACT(HOUR FROM "createdAt")::int AS hour,
+    SELECT EXTRACT(ISODOW FROM "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${zone})::int AS dow,
+           EXTRACT(HOUR FROM "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${zone})::int AS hour,
            COUNT(*) AS count
     FROM "sanctions"
     WHERE "guildId" = ${guildId} AND "createdAt" >= ${since90}
@@ -682,7 +686,7 @@ export const ADVANCED_SECTIONS: AdvancedSection[] = [
   'retention', 'activity', 'churn', 'channels', 'social', 'words', 'moderation',
 ];
 
-export async function getAdvancedAnalytics(guildId: string, section: AdvancedSection) {
+export async function getAdvancedAnalytics(guildId: string, section: AdvancedSection, timezone = DEFAULT_TIMEZONE) {
   switch (section) {
     case 'retention': return getRetentionAnalytics(guildId);
     case 'activity': return getActivityAnalytics(guildId);
@@ -690,6 +694,6 @@ export async function getAdvancedAnalytics(guildId: string, section: AdvancedSec
     case 'channels': return getChannelAnalytics(guildId);
     case 'social': return getSocialAnalytics(guildId);
     case 'words': return getWordAnalytics(guildId);
-    case 'moderation': return getModerationAnalytics(guildId);
+    case 'moderation': return getModerationAnalytics(guildId, timezone);
   }
 }

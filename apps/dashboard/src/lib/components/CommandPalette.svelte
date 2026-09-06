@@ -12,12 +12,14 @@
   import {
     generalItems,
     moderationItems,
+    securityItems,
     levelingItems,
     economyItems,
     communityItems,
     staffItems,
     configItems,
   } from '../config/pages';
+  import { tabsForPage } from '../config/pageTabs';
 
   interface PaletteItem {
     id: string;
@@ -36,9 +38,10 @@
 
   // ─── Accès / visibilité (reproduit depuis Sidebar.svelte) ──────────────────
   const featureAccess = $derived(dashboardStore.state.featureAccess || {});
-  const fallbackCanView = $derived(
-    authStore.guilds.find((g) => g.id === authStore.selectedGuildId)?.accessLevel !== 'none'
-  );
+  // Meme repli que App.svelte et navigationStore : un serveur qu'on n'arrive
+  // pas a resoudre rendait `undefined`, different de 'none', et la palette
+  // listait donc toutes les pages tant que la liste n'etait pas lue.
+  const fallbackCanView = $derived(authStore.hasGuildAccess);
 
   const canViewFeature = (featureKey: string | undefined) => {
     if (!featureKey) return true;
@@ -63,6 +66,13 @@
   const visibleModeration = $derived(
     moderationItems.filter((i) => (isStaff || isModerator || isAdmin) && canViewFeature(i.featureKey))
   );
+  // Securite : meme regle que la navigation - visible des le staff, en lecture
+  // seule pour les non-admins. Le groupe manquait a la palette, ses pages et
+  // leurs onglets etaient donc introuvables a la recherche.
+  const visibleSecurity = $derived(
+    securityItems.filter((i) => (isStaff || isModerator || isAdmin) && canViewFeature(i.featureKey))
+  );
+
   const visibleLeveling = $derived(
     levelingItems.filter((i) => canViewFeature(i.featureKey))
   );
@@ -85,92 +95,53 @@
   );
 
   // ─── Éléments de la palette ────────────────────────────────────────────────
+  /**
+   * Une page suivie de ses onglets.
+   *
+   * Les onglets sont des destinations à part entière : `/economy/bestiaire`
+   * n'est atteignable que par la page Économie, et rien dans la palette ne
+   * laissait deviner qu'il existait. Le libellé de la page reste dans le
+   * sous-titre de l'onglet pour que « bestiaire » comme « économie » y mènent.
+   */
+  const pushPageWithTabs = (
+    items: PaletteItem[],
+    item: { name: string; href: string; icon?: string },
+    prefix: string,
+    group: string,
+    fallbackIcon: string,
+  ) => {
+    items.push({
+      id: `${prefix}-${item.name}`,
+      label: item.name,
+      sublabel: `Page · ${group}`,
+      icon: item.icon || fallbackIcon,
+      group,
+      action: () => router.goto(item.href)
+    });
+
+    for (const tab of tabsForPage(item.href)) {
+      items.push({
+        id: `${prefix}-${item.name}-${tab.id}`,
+        label: `${item.name} › ${tab.label()}`,
+        sublabel: `Onglet · ${item.name}`,
+        icon: tab.icon || item.icon || fallbackIcon,
+        group,
+        action: () => router.goto(tab.href)
+      });
+    }
+  };
+
   const allPaletteItems = $derived.by(() => {
     const items: PaletteItem[] = [];
 
-    // General Items
-    for (const item of visibleGeneral) {
-      items.push({
-        id: `general-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Général',
-        icon: item.icon || 'home',
-        group: 'Général',
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Moderation Items
-    for (const item of visibleModeration) {
-      items.push({
-        id: `moderation-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Modération',
-        icon: item.icon || 'shield',
-        group: 'Modération',
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Leveling Items
-    for (const item of visibleLeveling) {
-      items.push({
-        id: `leveling-${item.name}`,
-        label: item.name,
-        sublabel: "Page · Système d'XP",
-        icon: item.icon || 'trophy',
-        group: "Système d'XP",
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Economy Items
-    for (const item of visibleEconomy) {
-      items.push({
-        id: `economy-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Économie & RPG',
-        icon: item.icon || 'coins',
-        group: 'Économie & RPG',
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Community Items
-    for (const item of visibleCommunity) {
-      items.push({
-        id: `community-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Communauté',
-        icon: item.icon || 'users',
-        group: 'Communauté',
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Staff Items
-    for (const item of visibleStaff) {
-      items.push({
-        id: `staff-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Staff',
-        icon: item.icon || 'briefcase',
-        group: 'Staff',
-        action: () => router.goto(item.href)
-      });
-    }
-
-    // Configuration Items
-    for (const item of visibleConfig) {
-      items.push({
-        id: `config-${item.name}`,
-        label: item.name,
-        sublabel: 'Page · Configuration',
-        icon: item.icon || 'sliders',
-        group: 'Configuration',
-        action: () => router.goto(item.href)
-      });
-    }
+    for (const item of visibleGeneral) pushPageWithTabs(items, item, 'general', 'Général', 'home');
+    for (const item of visibleModeration) pushPageWithTabs(items, item, 'moderation', 'Modération', 'shield');
+    for (const item of visibleSecurity) pushPageWithTabs(items, item, 'security', 'Sécurité', 'shieldcheck');
+    for (const item of visibleLeveling) pushPageWithTabs(items, item, 'leveling', "Système d'XP", 'trophy');
+    for (const item of visibleEconomy) pushPageWithTabs(items, item, 'economy', 'Économie & RPG', 'coins');
+    for (const item of visibleCommunity) pushPageWithTabs(items, item, 'community', 'Communauté', 'users');
+    for (const item of visibleStaff) pushPageWithTabs(items, item, 'staff', 'Staff', 'briefcase');
+    for (const item of visibleConfig) pushPageWithTabs(items, item, 'config', 'Configuration', 'sliders');
 
     // Admin Items (only if isBotAdmin is true)
     if (authStore.isBotAdmin) {
@@ -182,18 +153,45 @@
       items.push({ id: 'admin-security', label: 'Sécurité & Blacklist', sublabel: 'Admin · Accès globaux', icon: 'ShieldCheck', group: 'Administration', action: () => router.goto('/admin/security') });
       items.push({ id: 'admin-content',  label: 'Mots globaux', sublabel: 'Admin · Filtrage', icon: 'filter', group: 'Administration', action: () => router.goto('/admin/content') });
       items.push({ id: 'admin-activation', label: "Codes d'activation", sublabel: 'Admin · Licences', icon: 'Key', group: 'Administration', action: () => router.goto('/admin/activation') });
+      items.push({ id: 'admin-audit',    label: "Journal d'audit", sublabel: 'Admin · Traçabilité', icon: 'ClipboardList', group: 'Administration', action: () => router.goto('/admin/audit') });
+      items.push({ id: 'admin-whitelabel', label: 'Marque blanche', sublabel: 'Admin · Instances', icon: 'Layers', group: 'Administration', action: () => router.goto('/admin/whitelabel') });
+      items.push({ id: 'admin-gdpr',     label: 'Export RGPD', sublabel: 'Admin · Conformité', icon: 'ShieldCheck', group: 'Administration', action: () => router.goto('/admin/gdpr') });
       items.push({ id: 'admin-config',   label: 'Configuration avancée', sublabel: 'Admin · Système', icon: 'Settings', group: 'Administration', action: () => router.goto('/admin/config') });
     }
 
-    // Profil page
+    // Profil page. Son URL porte l'identifiant du membre : les onglets sont
+    // donc construits à la main, `tabsForPage` ne travaillant que sur des
+    // chemins fixes.
+    const profileBase = authStore.user?.id ? `/profile/${authStore.user.id}` : '/profile';
     items.push({
       id: 'profile',
       label: 'Mon Profil',
       sublabel: 'Profil utilisateur',
       icon: 'user',
       group: 'Compte',
-      action: () => router.goto(authStore.user?.id ? `/profile/${authStore.user.id}` : '/profile')
+      action: () => router.goto(profileBase)
     });
+    for (const tab of tabsForPage('/profile')) {
+      items.push({
+        id: `profile-${tab.id}`,
+        label: `Mon Profil › ${tab.label()}`,
+        sublabel: 'Onglet · Mon Profil',
+        icon: tab.icon || 'user',
+        group: 'Compte',
+        action: () => router.goto(`${profileBase}/${tab.id}`)
+      });
+    }
+
+    for (const tab of tabsForPage('/userSettings')) {
+      items.push({
+        id: `usersettings-${tab.id}`,
+        label: `Préférences › ${tab.label()}`,
+        sublabel: 'Onglet · Préférences',
+        icon: tab.icon || 'settings',
+        group: 'Compte',
+        action: () => router.goto(tab.href)
+      });
+    }
 
     // Theme Toggle action
     items.push({

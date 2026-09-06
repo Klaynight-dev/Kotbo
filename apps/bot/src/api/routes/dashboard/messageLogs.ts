@@ -1,6 +1,7 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Client } from 'discord.js';
 import prisma from '../../../utils/db.js';
+import { cache } from '../../../utils/cache.js';
 import { logger } from '../../../utils/logger.js';
 import { json, readJsonBody, type AuthClaims, type DashboardAccess } from '../../shared.js';
 
@@ -191,6 +192,10 @@ export async function handleMessageLogRoutes(
           messageLoggingStatus: true,
         },
       });
+
+      // `getCachedGuild` sert les écouteurs de messages : sans purge, la liste
+      // des salons ignorés ne prendrait effet qu'à l'expiration du cache.
+      await cache.invalidateGuild(guildId);
 
       if (body?.enabled === true) {
         const { startMessageLoggingBackfill } = await import('../../../services/features/messageLoggingScraperService.js');

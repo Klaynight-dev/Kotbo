@@ -6,11 +6,12 @@ import {
 } from 'discord.js';
 import { errorContainer, infoContainer, kotboContainer, successContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
-import { checkInMeeting, getMeetings, createMeeting, syncMeetingPresencesWithAbsences } from '../../services/staff/staffLeadershipService.js';
+import { checkInMeeting, getMeetings, createMeeting, syncMeetingPresencesWithAbsences, MeetingValidationError } from '../../services/staff/staffLeadershipService.js';
 import { getStaffMember } from '../../services/staff/staffManagementService.js';
 import { logger } from '../../utils/logger.js';
 import { separator, v2Message } from '@arcscord/components';
 import { getCommandMetadata } from '../../utils/i18n.js';
+import { parseDateTimeInTimezone, resolveGuildTimezone } from '../../utils/timezone.js';
 import * as m from '../../lib/paraglide/messages.js';
 
 const meta = getCommandMetadata('c2_meeting');
@@ -149,8 +150,11 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const dateStr = interaction.options.getString('date', true);
     const description = interaction.options.getString('description') || '';
 
-    const scheduledAt = new Date(dateStr);
-    if (isNaN(scheduledAt.getTime())) {
+    // Sans fuseau explicite, `new Date` lit la saisie dans celui du process,
+    // qui est UTC : « 21:00 » devenait 23h a Paris.
+    const timezone = await resolveGuildTimezone(interaction.guildId);
+    const scheduledAt = parseDateTimeInTimezone(dateStr, timezone);
+    if (!scheduledAt) {
       await interaction.reply(v2Message(
         { flags: MessageFlags.Ephemeral },
         errorContainer('Format invalide', 'Format de date invalide. Utilisez `YYYY-MM-DD HH:mm` (ex: 2024-05-20 21:00).'),
@@ -166,11 +170,13 @@ async function execute(interaction: ChatInputCommandInteraction) {
         successContainer('Réunion planifiée', `Réunion planifiée: **${title}** pour le <t:${Math.floor(scheduledAt.getTime()/1000)}:F>.\nL'événement Discord a été créé et l'annonce a été postée.`),
       ));
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Configurez')) {
+      // Un refus previsible porte deja son explication : la jeter pour un
+      // « Erreur lors de la creation » laissait l'admin sans la moindre piste.
+      if (err instanceof MeetingValidationError) {
         logger.warn('MeetingCmd', `Error creating meeting: ${err.message}`);
         await interaction.reply(v2Message(
           { flags: MessageFlags.Ephemeral },
-          errorContainer('Erreur de configuration', err.message),
+          errorContainer('Création impossible', err.message),
         ));
       } else {
         logger.error('MeetingCmd', 'Error creating meeting:', err);

@@ -11,6 +11,19 @@ function makeEffects(overrides: Partial<WorkflowEffects> = {}) {
     getRole: async (roleId) => (roleId ? { kind: 'Role', id: roleId, name: `role-${roleId}` } : null),
     getChannel: async (channelId) =>
       channelId ? { kind: 'Channel', id: channelId, name: `salon-${channelId}`, categoryName: null } : null,
+    getMember: async (userId) =>
+      userId
+        ? {
+          kind: 'Member',
+          id: userId,
+          tag: `${userId}#0000`,
+          displayName: `membre-${userId}`,
+          isBot: false,
+          roleIds: [],
+          accountCreatedAt: null,
+          joinedAt: null,
+        }
+        : null,
     getGuildInfo: async () => ({ name: 'Serveur test', memberCount: 42 }),
     runAction: async (type, inputs) => {
       calls.push({ type, inputs });

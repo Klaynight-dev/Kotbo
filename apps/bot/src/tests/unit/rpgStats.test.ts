@@ -7,7 +7,7 @@ import {
   upgradeCost,
   upgradeSuccessChance,
   type Equipment,
-  type StatItem,
+  type EquippedPiece,
   type StatProfile,
 } from '../../services/features/rpg/rpgStats.js';
 import { computeAttack } from '../../services/features/rpg/rpgCombatMath.js';
@@ -20,15 +20,16 @@ function profile(overrides: Partial<StatProfile> = {}): StatProfile {
     speed: 20,
     maxHealth: 150,
     className: null,
-    weaponUpgrade: 0,
-    armorUpgrade: 0,
-    accessoryUpgrade: 0,
     ...overrides,
   };
 }
 
-function item(overrides: Partial<StatItem> = {}): StatItem {
-  return { atkBonus: 0, defBonus: 0, spdBonus: 0, hpBonus: 0, rarity: 'COMMON', ...overrides };
+/**
+ * Objet porté, avec la progression de l'exemplaire possédé. Forge et enchantements vivent
+ * désormais sur l'instance : ils se déclarent ici, plus sur le profil.
+ */
+function item(overrides: Partial<EquippedPiece> = {}): EquippedPiece {
+  return { atkBonus: 0, defBonus: 0, spdBonus: 0, hpBonus: 0, rarity: 'COMMON', upgrade: 0, enchants: [], ...overrides };
 }
 
 const NO_GEAR: Equipment = { weapon: null, armor: null, accessory: null };
@@ -44,13 +45,12 @@ describe('getEffectiveStats', () => {
     expect(stats.critChance).toBeCloseTo(BASE_CRIT_CHANCE, 5);
   });
 
-  test("un objet supprimé n'accorde plus rien, même avec un niveau de forge résiduel", () => {
-    // Un emplacement peut pointer vers un objet supprimé de la boutique : le
-    // profil garde alors son niveau de forge alors que l'objet n'existe plus.
-    // La contribution doit tomber a zero, sinon le joueur conserverait les
-    // statistiques d'un objet disparu de son inventaire (issue #66).
-    const orphaned = profile({ weaponUpgrade: MAX_UPGRADE_LEVEL, armorUpgrade: 5, accessoryUpgrade: 3 });
-    const stats = getEffectiveStats(orphaned, NO_GEAR);
+  test("un objet supprimé n'accorde plus rien, forge et enchantements compris", () => {
+    // Un emplacement peut pointer vers un objet supprimé de la boutique. La contribution
+    // doit tomber a zero, sinon le joueur conserverait les statistiques d'un objet disparu
+    // de son inventaire (issue #66). La progression vivant sur l'instance, elle disparaît
+    // avec elle : il n'y a plus de niveau de forge résiduel possible sur le profil.
+    const stats = getEffectiveStats(profile(), NO_GEAR);
 
     expect(stats.attack).toBe(20);
     expect(stats.defense).toBe(20);
@@ -103,7 +103,7 @@ describe('getEffectiveStats', () => {
 
   test('la forge augmente les stats de l objet amélioré', () => {
     const plain = getEffectiveStats(profile(), { ...NO_GEAR, weapon: item({ atkBonus: 20 }) });
-    const upgraded = getEffectiveStats(profile({ weaponUpgrade: 5 }), { ...NO_GEAR, weapon: item({ atkBonus: 20 }) });
+    const upgraded = getEffectiveStats(profile(), { ...NO_GEAR, weapon: item({ atkBonus: 20, upgrade: 5 }) });
 
     expect(upgraded.attack).toBeGreaterThan(plain.attack);
     expect(upgraded.attack).toBe(plain.attack + upgradeBonus(20, 5));

@@ -5,6 +5,7 @@
   import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import { portal } from '../lib/actions/portal';
   import { authStore } from '../lib/stores/auth.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
@@ -494,6 +495,7 @@
     moderatorRoleId: '',
     propagateSanctions: false,
     sanctionReportEnabled: true,
+    sanctionReportSkipBots: false,
     sanctionTables: [] as any[]
   });
 
@@ -501,10 +503,28 @@
     moderatorRoleId: '',
     propagateSanctions: false,
     sanctionReportEnabled: true,
+    sanctionReportSkipBots: false,
     sanctionTables: [] as any[]
   });
 
+  let unsubscribeRealtime: (() => void) | null = null;
+
   onMount(async () => {
+    void dashboardStore.ensureFullState();
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: [
+        'sanctions_updated',
+        'member_banned',
+        'member_warned',
+        'member_kicked',
+        'member_timeout',
+        'sanction_report_required',
+      ],
+      onUpdate: () => {
+        void dashboardStore.refresh({ full: true });
+      },
+    });
+
     loadingConfig = true;
     try {
       const configs = await fetchFeatureConfigurations();
@@ -523,6 +543,7 @@
         moderatorRoleId: dashboardStore.state.moderatorRoleId || '',
         propagateSanctions: (dashboardStore.state as any).propagateSanctions || false,
         sanctionReportEnabled: (dashboardStore.state as any).sanctionReportEnabled ?? true,
+        sanctionReportSkipBots: (dashboardStore.state as any).sanctionReportSkipBots ?? false,
         sanctionTables: JSON.parse(JSON.stringify(dashboardStore.state.sanctionTables || []))
       };
       guildSettings = { ...loaded };
@@ -551,6 +572,7 @@
   });
 
   onDestroy(() => {
+    unsubscribeRealtime?.();
     unsavedChanges.release('sanctions');
   });
 
@@ -564,7 +586,8 @@
       const ok1 = await updateGlobalSettings({
         moderatorRoleId: guildSettings.moderatorRoleId,
         propagateSanctions: guildSettings.propagateSanctions,
-        sanctionReportEnabled: guildSettings.sanctionReportEnabled
+        sanctionReportEnabled: guildSettings.sanctionReportEnabled,
+        sanctionReportSkipBots: guildSettings.sanctionReportSkipBots
       });
       if (!ok1) throw new Error(m.sc_api_error_general());
 
@@ -712,6 +735,69 @@
       .filter((rule): rule is (typeof reportRuleOptions)[number] => Boolean(rule))
   );
   const canDeleteSanctions = $derived(dashboardStore.state.access?.level === 'admin');
+
+  // ── Sélection multiple et actions groupées ────────────────────────────────
+  // Archiver = désactiver en gardant la trace, verrouiller = retirer le droit
+  // de contester, supprimer = purger. Les trois passent par la même route.
+  let selectedIds = $state<string[]>([]);
+  let bulkBusy = $state(false);
+
+  const selectedCount = $derived(selectedIds.length);
+  const allVisibleSelected = $derived(
+    filteredAndSortedSanctions.length > 0 &&
+    filteredAndSortedSanctions.every((entry) => selectedIds.includes(entry.id))
+  );
+
+  function toggleSelection(id: string) {
+    selectedIds = selectedIds.includes(id)
+      ? selectedIds.filter((entry) => entry !== id)
+      : [...selectedIds, id];
+  }
+
+  function toggleSelectAllVisible() {
+    selectedIds = allVisibleSelected ? [] : filteredAndSortedSanctions.map((entry) => entry.id);
+  }
+
+  const BULK_CONFIRMS: Record<string, { title: string; description: string; confirmLabel: string; danger: boolean }> = $derived({
+    archive: { title: m.sc_bulk_archive_title(), description: m.sc_bulk_archive_desc(), confirmLabel: m.sc_bulk_archive(), danger: false },
+    unarchive: { title: m.sc_bulk_unarchive_title(), description: m.sc_bulk_unarchive_desc(), confirmLabel: m.sc_bulk_unarchive(), danger: false },
+    lock: { title: m.sc_bulk_lock_title(), description: m.sc_bulk_lock_desc(), confirmLabel: m.sc_bulk_lock(), danger: false },
+    unlock: { title: m.sc_bulk_unlock_title(), description: m.sc_bulk_unlock_desc(), confirmLabel: m.sc_bulk_unlock(), danger: false },
+    delete: { title: m.sc_bulk_delete_title(), description: m.sc_bulk_delete_desc(), confirmLabel: m.sc_bulk_delete(), danger: true },
+  });
+
+  async function runBulkAction(action: 'archive' | 'unarchive' | 'lock' | 'unlock' | 'delete') {
+    if (selectedIds.length === 0) return;
+    const meta = BULK_CONFIRMS[action];
+    const confirmed = await confirmDialog.ask({
+      title: meta.title,
+      description: `${meta.description} (${m.sc_bulk_selected({ count: selectedIds.length })})`,
+      confirmLabel: meta.confirmLabel,
+      variant: meta.danger ? 'danger' : 'default',
+    });
+    if (!confirmed) return;
+
+    bulkBusy = true;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/sanctions/bulk`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authStore.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, sanctionIds: selectedIds }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(payload.error || m.sc_update_error());
+        return;
+      }
+      toast.success(m.sc_bulk_done({ count: payload.count ?? selectedIds.length }));
+      selectedIds = [];
+      await dashboardStore.refresh();
+    } catch {
+      toast.error(m.sc_update_error());
+    } finally {
+      bulkBusy = false;
+    }
+  }
   const canImportSanctions = $derived(Boolean(dashboardStore.state.access?.canModerateContent));
   let importModalOpen = $state(false);
   const canCreateSelectedReport = $derived(
@@ -1089,10 +1175,29 @@
         {#if deletionMessage}
           <div class="px-6 pt-4 text-sm font-semibold {deletionMessageIsError ? 'text-red-600' : 'text-emerald-600'}">{deletionMessage}</div>
         {/if}
+        {#if selectedCount > 0}
+          <div class="px-6 pb-4 flex flex-wrap items-center gap-2">
+            <span class="text-xs font-bold text-on-surface-variant mr-1">{m.sc_bulk_selected({ count: selectedCount })}</span>
+            <ActionButton onClick={() => runBulkAction('archive')} disabled={bulkBusy} icon="inbox" label={m.sc_bulk_archive()} title={m.sc_bulk_archive_desc()} />
+            <ActionButton onClick={() => runBulkAction('unarchive')} disabled={bulkBusy} icon="undo" label={m.sc_bulk_unarchive()} title={m.sc_bulk_unarchive_desc()} />
+            <ActionButton onClick={() => runBulkAction('lock')} disabled={bulkBusy} icon="lock" label={m.sc_bulk_lock()} title={m.sc_bulk_lock_desc()} />
+            <ActionButton onClick={() => runBulkAction('unlock')} disabled={bulkBusy} icon="unlock" label={m.sc_bulk_unlock()} title={m.sc_bulk_unlock_desc()} />
+            {#if canDeleteSanctions}
+              <ActionButton onClick={() => runBulkAction('delete')} disabled={bulkBusy} variant="danger" icon="trash" label={m.sc_bulk_delete()} title={m.sc_bulk_delete_desc()} />
+            {/if}
+            <button onclick={() => (selectedIds = [])} class="text-xs font-bold text-primary hover:text-primary/80 transition">
+              {m.sc_bulk_clear()}
+            </button>
+          </div>
+        {/if}
         <div class="overflow-x-auto">
           <table class="w-full text-left border-collapse">
             <thead>
         <tr class="bg-slate-50 dark:bg-white/5">
+          <th class="px-4 py-4 w-10">
+            <input type="checkbox" checked={allVisibleSelected} onchange={toggleSelectAllVisible}
+              aria-label={m.sc_bulk_select_all()} class="accent-primary w-4 h-4" />
+          </th>
           <th class="px-4 py-4">
             <ColumnSortFilter
               label={m.sc_col_date()}
@@ -1162,6 +1267,7 @@
         {#if showSanctionsSkeleton}
           {#each Array(6) as _, index (index)}
             <tr class="animate-pulse">
+              <td class="px-4 py-4"><div class="h-3.5 w-4 rounded bg-slate-200 dark:bg-slate-700"></div></td>
               <td class="px-4 py-4"><div class="h-3.5 w-32 rounded-full bg-slate-200 dark:bg-slate-700"></div></td>
               <td class="px-4 py-4"><div class="h-3.5 w-28 rounded-full bg-slate-200 dark:bg-slate-700"></div></td>
               <td class="px-4 py-4"><div class="h-3.5 w-24 rounded-full bg-slate-200 dark:bg-slate-700"></div></td>
@@ -1175,9 +1281,23 @@
           {#each filteredAndSortedSanctions as entry}
             {@const linkedReport = sanctionReports.find((report) => report.sanctionId === entry.id)}
             {@const reportAction = getReportActionState(entry, linkedReport)}
-            <tr class="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
+            <tr class="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors {entry.archivedAt ? 'opacity-60' : ''}">
+              <td class="px-4 py-4">
+                <input type="checkbox" checked={selectedIds.includes(entry.id)} onchange={() => toggleSelection(entry.id)}
+                  aria-label={m.sc_bulk_select_row()} class="accent-primary w-4 h-4" />
+              </td>
               <td class="px-4 py-4 text-xs font-medium">{new Date(entry.createdAt).toLocaleString('fr-FR')}</td>
-              <td class="px-4 py-4 text-xs font-bold text-primary">{typeLabel(entry.type)}</td>
+              <td class="px-4 py-4 text-xs font-bold text-primary">
+                {typeLabel(entry.type)}
+                {#if entry.archivedAt}
+                  <span class="ml-1 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-700"
+                    title={entry.archiveReason || ''}>{m.sc_badge_archived()}</span>
+                {/if}
+                {#if entry.appealable === false}
+                  <span class="ml-1 inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[9px] font-bold text-rose-700"
+                    title={entry.appealLockReason || ''}>{m.sc_badge_locked()}</span>
+                {/if}
+              </td>
               <td class="px-4 py-4 text-xs">
                 <button 
                   onclick={() => openCaseModal(entry.targetUserId, entry.targetTag)}
@@ -1230,11 +1350,11 @@
         {/if}
         {#if !showSanctionsSkeleton && sanctions.length === 0}
           <tr>
-            <td colspan="7" class="px-6 py-14 text-center text-on-surface-variant">{m.sc_no_sanctions()}</td>
+            <td colspan="8" class="px-6 py-14 text-center text-on-surface-variant">{m.sc_no_sanctions()}</td>
           </tr>
         {:else if !showSanctionsSkeleton && filteredAndSortedSanctions.length === 0}
           <tr>
-            <td colspan="7" class="px-6 py-14 text-center text-on-surface-variant">
+            <td colspan="8" class="px-6 py-14 text-center text-on-surface-variant">
               {m.sc_no_match_filters()}
             </td>
           </tr>
@@ -1282,6 +1402,23 @@
                   checked={guildSettings.sanctionReportEnabled}
                   onToggle={(v: boolean) => {
                     guildSettings.sanctionReportEnabled = v;
+                  }}
+                />
+              </div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-sm font-semibold text-on-surface">Ignorer les sanctions sur les bots</p>
+                  <p class="text-xs text-on-surface-variant/70 mt-1">
+                    Sanctionner un bot ne produit ni rapport ni rappel : il n'y a ni victime a
+                    documenter, ni membre a qui rendre des comptes. Les sanctions restent
+                    enregistrees dans le casier.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={guildSettings.sanctionReportSkipBots}
+                  onToggle={(v: boolean) => {
+                    guildSettings.sanctionReportSkipBots = v;
                   }}
                 />
               </div>

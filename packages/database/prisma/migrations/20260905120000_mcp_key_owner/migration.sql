@@ -1,0 +1,12 @@
+-- Proprietaire d'une cle MCP.
+--
+-- Une cle ne portait que son serveur et ses permissions. Elle continuait donc
+-- de fonctionner apres que celui qui s'en servait ait perdu ses droits, ou
+-- meme quitte le serveur : rien ne la reliait a un compte, et seule une
+-- revocation manuelle pouvait la couper.
+--
+-- La colonne reste nullable a dessein. Les cles deja distribuees n'ont pas de
+-- proprietaire connu, et les eteindre d'office couperait des integrations en
+-- service sans prevenir. Elles gardent l'ancien comportement, signalees comme
+-- telles dans le dashboard ; les nouvelles sont rattachees a leur createur.
+ALTER TABLE "mcp_api_keys" ADD COLUMN IF NOT EXISTS "ownerId" TEXT;

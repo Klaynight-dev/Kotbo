@@ -8,11 +8,16 @@ import { Events } from 'discord.js';
  * tenable - l'isolement du bus - plus que sur la mécanique de cache.
  */
 
-type LinkRow = { sourceGuildId: string; targetGuildId: string };
+type GroupRow = { members: { guildId: string }[] };
 
-let linkRows: LinkRow[] = [];
-const findMany = mock((_args?: unknown) => Promise.resolve(linkRows));
-const mockDb = { channelLink: { findMany } };
+let groupRows: GroupRow[] = [];
+const findMany = mock((_args?: unknown) => Promise.resolve(groupRows));
+const mockDb = { channelLinkGroup: { findMany } };
+
+/** Un pont actif reliant les serveurs donnés, un salon par serveur. */
+function pont(...guildIds: string[]): GroupRow {
+  return { members: guildIds.map((guildId) => ({ guildId })) };
+}
 
 const dbPath = path.resolve(import.meta.dir, '../../utils/db.ts');
 const dbJsPath = path.resolve(import.meta.dir, '../../utils/db.js');
@@ -44,7 +49,7 @@ const {
 } = await import('../../services/features/channelLinkGuestService');
 
 beforeEach(() => {
-  linkRows = [];
+  groupRows = [];
   activated.clear();
   linkGuestGuilds.clear();
   linkRelayBus.removeAllListeners();
@@ -54,7 +59,7 @@ beforeEach(() => {
 describe('loadLinkGuestGuilds', () => {
   test('classe comme invité le serveur sans clé relié à un serveur activé', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-B' }];
+    groupRows = [pont('serveur-A', 'serveur-B')];
 
     await loadLinkGuestGuilds();
 
@@ -63,9 +68,9 @@ describe('loadLinkGuestGuilds', () => {
     expect(isLinkGuestGuild('serveur-A')).toBe(false);
   });
 
-  test('fonctionne quel que soit le côté du lien occupé par le serveur activé', async () => {
+  test('fonctionne quelle que soit la place du serveur activé dans le pont', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-B', targetGuildId: 'serveur-A' }];
+    groupRows = [pont('serveur-B', 'serveur-A')];
 
     await loadLinkGuestGuilds();
 
@@ -73,31 +78,43 @@ describe('loadLinkGuestGuilds', () => {
   });
 
   test('refuse le pont entre deux serveurs dépourvus de clé', async () => {
-    linkRows = [{ sourceGuildId: 'serveur-B', targetGuildId: 'serveur-C' }];
+    groupRows = [pont('serveur-B', 'serveur-C')];
 
     await loadLinkGuestGuilds();
 
-    // Sans cette règle, deux serveurs sans licence se relieraient entre eux pour
+    // Sans cette règle, des serveurs sans licence se relieraient entre eux pour
     // obtenir un pont gratuit.
     expect(linkGuestGuilds.size).toBe(0);
   });
 
-  test('ignore un lien interne à un même serveur', async () => {
+  test('ignore un pont interne à un même serveur', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-A' }];
+    groupRows = [pont('serveur-A', 'serveur-A')];
 
     await loadLinkGuestGuilds();
 
     expect(linkGuestGuilds.size).toBe(0);
   });
 
-  test('retire un serveur dont le lien a disparu', async () => {
+  test('classe tous les serveurs sans clé d\'un pont à plusieurs', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-B' }];
+    groupRows = [pont('serveur-A', 'serveur-B', 'serveur-C', 'serveur-D')];
+
+    await loadLinkGuestGuilds();
+
+    expect(isLinkGuestGuild('serveur-B')).toBe(true);
+    expect(isLinkGuestGuild('serveur-C')).toBe(true);
+    expect(isLinkGuestGuild('serveur-D')).toBe(true);
+    expect(isLinkGuestGuild('serveur-A')).toBe(false);
+  });
+
+  test('retire un serveur dont le pont a disparu', async () => {
+    activated.add('serveur-A');
+    groupRows = [pont('serveur-A', 'serveur-B')];
     await loadLinkGuestGuilds();
     expect(isLinkGuestGuild('serveur-B')).toBe(true);
 
-    linkRows = [];
+    groupRows = [];
     await loadLinkGuestGuilds();
 
     expect(isLinkGuestGuild('serveur-B')).toBe(false);
@@ -105,7 +122,7 @@ describe('loadLinkGuestGuilds', () => {
 
   test('perd son statut d\'invité si le serveur porteur de la clé est désactivé', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-B' }];
+    groupRows = [pont('serveur-A', 'serveur-B')];
     await loadLinkGuestGuilds();
 
     activated.delete('serveur-A');
@@ -116,7 +133,7 @@ describe('loadLinkGuestGuilds', () => {
 
   test('une lecture en base en échec laisse le cache intact plutôt que de l\'ouvrir', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-B' }];
+    groupRows = [pont('serveur-A', 'serveur-B')];
     await loadLinkGuestGuilds();
 
     findMany.mockImplementationOnce(() => Promise.reject(new Error('base indisponible')));
@@ -129,7 +146,7 @@ describe('loadLinkGuestGuilds', () => {
 describe('refreshLinkGuestGuilds', () => {
   test('recharge le cache même sans client Discord disponible', async () => {
     activated.add('serveur-A');
-    linkRows = [{ sourceGuildId: 'serveur-A', targetGuildId: 'serveur-B' }];
+    groupRows = [pont('serveur-A', 'serveur-B')];
 
     await refreshLinkGuestGuilds();
 

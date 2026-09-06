@@ -14,6 +14,7 @@ import { generateTranscriptFromMessages } from '../../services/features/transcri
 import { logger } from '../../utils/logger.js';
 import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
 import * as m from '../../lib/paraglide/messages.js';
+import { parseDateTimeInTimezone, toWallClockUtcMs, zonedTimeToInstant } from '../../utils/timezone.js';
 
 const meta = getCommandMetadata('b4_transcript');
 const genererMeta = getCommandMetadata('b4_transcript_generer');
@@ -142,14 +143,32 @@ export function parseDurationToMs(durationStr: string): number | null {
   }
 }
 
-export function parseDateTimeOrDuration(input: string): number | null {
+export type DateTimeParseOptions = {
+  /**
+   * Fuseau dans lequel lire une date sans indication d'heure : celui du
+   * serveur. Omis, la saisie est lue dans celui du process - UTC en conteneur.
+   */
+  timezone?: string;
+  /**
+   * Sens d'une duree relative (`2h`). `/transcript` remonte le temps, `/rappel`
+   * le descend : sans ce reglage, « 2h » planifiait un rappel deux heures dans
+   * le passe, donc systematiquement refuse comme deja echu.
+   */
+  direction?: 'past' | 'future';
+};
+
+export function parseDateTimeOrDuration(
+  input: string,
+  options: DateTimeParseOptions = {},
+): number | null {
+  const { timezone, direction = 'past' } = options;
   const trimmed = input.trim();
   if (!trimmed) return null;
 
   // 1. Check relative duration first (e.g., 2h, 30m)
   const durationMs = parseDurationToMs(trimmed);
   if (durationMs !== null) {
-    return Date.now() - durationMs;
+    return direction === 'future' ? Date.now() + durationMs : Date.now() - durationMs;
   }
 
   // 2. Check if digits only (unix timestamp)
@@ -172,13 +191,27 @@ export function parseDateTimeOrDuration(input: string): number | null {
     const minute = match[5] ? parseInt(match[5], 10) : 0;
     const second = match[6] ? parseInt(match[6], 10) : 0;
 
-    const date = new Date(year, month, day, hour, minute, second);
-    if (!isNaN(date.getTime())) {
-      return date.getTime();
-    }
+    // Sans `timezone`, la date est lue dans le fuseau du process - UTC en
+    // conteneur. Les appelants qui planifient une action a venir doivent donc
+    // passer celui du serveur, sous peine de decaler la saisie de l'admin.
+    //
+    // `toWallClockUtcMs` refuse une date qui n'existe pas au lieu de la reporter :
+    // « 31/02/2026 » devenait le 3 mars sans le moindre message. Le format etant
+    // reconnu, on rend `null` plutot que de laisser le repli plus bas retenter.
+    const wallClock = toWallClockUtcMs(year, month, day, hour, minute, second);
+    if (wallClock === null) return null;
+
+    return timezone
+      ? zonedTimeToInstant(wallClock, timezone).getTime()
+      : new Date(year, month, day, hour, minute, second).getTime();
   }
 
-  // 4. Fallback JS parse
+  // 4. Fallback JS parse. Avec un fuseau, il passe par le meme chemin que les
+  //    autres saisies sans indication d'heure : `Date.parse` les lirait en UTC.
+  if (timezone) {
+    return parseDateTimeInTimezone(trimmed, timezone)?.getTime() ?? null;
+  }
+
   const parsed = Date.parse(trimmed);
   if (!isNaN(parsed)) {
     return parsed;

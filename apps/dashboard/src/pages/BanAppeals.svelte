@@ -10,6 +10,20 @@
   import { m, dateLocale } from '../lib/i18n';
 
   // ── Types ──────────────────────────────────────────────────────────────────
+  type Outcome = 'PENDING' | 'UPHELD' | 'ARCHIVED' | 'DELETED' | 'LOCKED';
+
+  interface AppealItem {
+    id: string;
+    sanctionId: string | null;
+    sanctionType: string;
+    sanctionReason: string;
+    sanctionCreatedAt: string;
+    moderatorTag: string | null;
+    memberStatement: string | null;
+    outcome: Outcome;
+    outcomeNote: string | null;
+    decidedByTag: string | null;
+  }
   interface Appeal {
     id: string; userId: string; userTag: string | null; avatar: string | null;
     data: Record<string, unknown>; status: string; banReason: string | null;
@@ -17,10 +31,11 @@
     decidedByTag: string | null; decisionReason: string | null; decidedAt: string | null;
     dmDelivered: boolean; createdAt: string;
     messages?: any[] | null;
+    sanctions?: AppealItem[] | null;
   }
   interface AppealDetail {
     appeal: Appeal;
-    sanctions: { id: string; type: string; status: string; reason: string; createdAt: string; moderatorTag: string | null }[];
+    sanctions: { id: string; type: string; status: string; reason: string; createdAt: string; moderatorTag: string | null; archivedAt: string | null; appealable: boolean }[];
     previousAppeals: { id: string; status: string; createdAt: string; decidedAt: string | null; decisionReason: string | null }[];
   }
   interface AppealConfig {
@@ -32,8 +47,19 @@
     appealSaveIp: boolean;
     appealSaveDevice: boolean;
     appealVerificationLevel: string;
+    appealableTypes: string[];
+    maxSanctionsPerAppeal: number;
+    appealWindowDays: number | null;
+    cooldownByType: Record<string, number> | null;
+    formIdByType: Record<string, string> | null;
+    notifyOnSanctionDM: boolean;
+    excludeIssuingModerator: boolean;
+    notifyIssuingModerator: boolean;
     form?: { id: string; name: string } | null;
   }
+
+  /** Ordre d'affichage des types, aligné sur le service côté bot. */
+  const SANCTION_TYPES = ['WARN', 'TIMEOUT', 'KICK', 'SOFTBAN', 'TEMP_BAN', 'BAN'] as const;
   interface BlacklistEntry { id: string; userId: string; reason: string | null; addedByTag: string | null; createdAt: string; }
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -56,6 +82,28 @@
   const queue = $derived(appeals.filter(a => a.status === 'PENDING' || a.status === 'NEEDS_INFO'));
   const history = $derived(appeals.filter(a => a.status !== 'PENDING' && a.status !== 'NEEDS_INFO'));
   const publicUrl = $derived(`${window.location.origin}/appeal/${authStore.selectedGuildId}`);
+
+  // Verdict choisi (mais pas encore appliqué) pour chaque sanction contestée.
+  let itemOutcomes = $state<Record<string, Outcome>>({});
+  let itemInProgress = $state<string | null>(null);
+  let moderatorStats = $state<{ moderatorUserId: string; moderatorTag: string | null; contested: number; overturned: number; upheld: number; pending: number; overturnRate: number }[]>([]);
+
+  const TYPE_LABELS: Record<string, string> = $derived({
+    WARN: m.ba_type_warn(),
+    KICK: m.ba_type_kick(),
+    TIMEOUT: m.ba_type_timeout(),
+    TEMP_BAN: m.ba_type_temp_ban(),
+    BAN: m.ba_type_ban(),
+    SOFTBAN: m.ba_type_softban(),
+  });
+
+  const OUTCOME_META: Record<Outcome, { label: string; classes: string; icon: string }> = $derived({
+    PENDING: { label: m.ba_outcome_pending(), classes: 'bg-amber-500/10 text-amber-500 border-amber-500/30', icon: 'clock' },
+    UPHELD: { label: m.ba_outcome_upheld(), classes: 'bg-surface-container text-on-surface-variant border-outline-variant/30', icon: 'gavel' },
+    ARCHIVED: { label: m.ba_outcome_archived(), classes: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30', icon: 'inbox' },
+    DELETED: { label: m.ba_outcome_deleted(), classes: 'bg-rose-500/10 text-rose-500 border-rose-500/30', icon: 'trash' },
+    LOCKED: { label: m.ba_outcome_locked(), classes: 'bg-rose-900/20 text-rose-400 border-rose-900/40', icon: 'lock' },
+  });
 
   const STATUS_META: Record<string, { label: string; classes: string }> = $derived({
     PENDING: { label: m.ba_status_pending(), classes: 'bg-amber-500/10 text-amber-500 border-amber-500/30' },
@@ -92,10 +140,21 @@
           appealSaveIp: fetched.appealSaveIp ?? true,
           appealSaveDevice: fetched.appealSaveDevice ?? true,
           appealVerificationLevel: fetched.appealVerificationLevel ?? 'HIGH',
+          appealableTypes: fetched.appealableTypes?.length ? fetched.appealableTypes : ['BAN'],
+          maxSanctionsPerAppeal: fetched.maxSanctionsPerAppeal ?? 3,
+          appealWindowDays: fetched.appealWindowDays ?? null,
+          cooldownByType: fetched.cooldownByType ?? null,
+          formIdByType: fetched.formIdByType ?? null,
+          notifyOnSanctionDM: fetched.notifyOnSanctionDM ?? false,
+          excludeIssuingModerator: fetched.excludeIssuingModerator ?? true,
+          notifyIssuingModerator: fetched.notifyIssuingModerator ?? true,
         } : {
           enabled: false, formId: null, staffChannelId: null, inviteChannelId: null,
           cooldownDays: 30, welcomeText: null, acceptMessage: null, denyMessage: null, notifyOnBanDM: false,
           appealVerification: false, appealSaveIp: true, appealSaveDevice: true, appealVerificationLevel: 'HIGH',
+          appealableTypes: ['BAN'], maxSanctionsPerAppeal: 3, appealWindowDays: null,
+          cooldownByType: null, formIdByType: null, notifyOnSanctionDM: false,
+          excludeIssuingModerator: true, notifyIssuingModerator: true,
         };
       }
       if (formsRes.ok) forms = ((await formsRes.json()).forms ?? []).map((f: { id: string; name: string }) => ({ id: f.id, name: f.name }));
@@ -120,9 +179,76 @@
     actionReason = '';
     try {
       const res = await fetch(`${base()}/${appealId}`, { headers: headers() });
-      if (res.ok) detail = await res.json();
+      if (res.ok) {
+        detail = await res.json();
+        // Un verdict déjà rendu reste sélectionné ; sinon on part de « maintenue »,
+        // le choix qui ne modifie rien.
+        itemOutcomes = Object.fromEntries(
+          (detail?.appeal.sanctions ?? []).map((item) => [item.id, item.outcome === 'PENDING' ? 'UPHELD' : item.outcome])
+        ) as Record<string, Outcome>;
+      }
     } catch { /* ignore */ }
     detailLoading = false;
+  }
+
+  /** Applique immédiatement le verdict d'une sanction, sans clore l'appel. */
+  async function applyItemOutcome(item: AppealItem) {
+    if (!detail) return;
+    const outcome = itemOutcomes[item.id] ?? 'UPHELD';
+    if (outcome === 'DELETED' && !(await confirmDialog.ask({
+      title: m.ba_item_delete_title(),
+      description: m.ba_item_delete_desc(),
+      confirmLabel: m.ba_item_delete_confirm(),
+      variant: 'danger',
+    }))) return;
+
+    itemInProgress = item.id;
+    try {
+      const res = await fetch(`${base()}/${detail.appeal.id}/items/${item.id}`, {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ outcome, note: actionReason.trim() || undefined }),
+      });
+      if (res.ok) {
+        toast.success(m.ba_item_applied());
+        const appealId = detail.appeal.id;
+        detail = null;
+        await openDetail(appealId);
+      } else {
+        toast.error((await res.json()).error || m.ba_error());
+      }
+    } catch { toast.error(m.ba_error_network()); }
+    itemInProgress = null;
+  }
+
+  async function loadModeratorStats() {
+    try {
+      const res = await fetch(`${base()}/moderator-stats`, { headers: headers() });
+      if (res.ok) moderatorStats = (await res.json()).stats ?? [];
+    } catch { /* ignore */ }
+  }
+
+  function toggleAppealableType(type: string, enabled: boolean) {
+    if (!config) return;
+    const set = new Set(config.appealableTypes);
+    if (enabled) set.add(type); else set.delete(type);
+    config.appealableTypes = SANCTION_TYPES.filter((t) => set.has(t));
+  }
+
+  function setTypeCooldown(type: string, raw: string) {
+    if (!config) return;
+    const next = { ...(config.cooldownByType ?? {}) };
+    const parsed = Number(raw);
+    if (raw === '' || !Number.isFinite(parsed) || parsed < 0) delete next[type];
+    else next[type] = Math.min(365, Math.round(parsed));
+    config.cooldownByType = Object.keys(next).length > 0 ? next : null;
+  }
+
+  function setTypeForm(type: string, formId: string) {
+    if (!config) return;
+    const next = { ...(config.formIdByType ?? {}) };
+    if (!formId) delete next[type];
+    else next[type] = formId;
+    config.formIdByType = Object.keys(next).length > 0 ? next : null;
   }
 
   async function decide(decision: 'ACCEPTED' | 'DENIED' | 'DENIED_PERMANENT') {
@@ -136,7 +262,11 @@
     try {
       const res = await fetch(`${base()}/${detail.appeal.id}/decide`, {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ decision, reason: actionReason.trim() || undefined }),
+        body: JSON.stringify({
+          decision,
+          reason: actionReason.trim() || undefined,
+          outcomes: itemOutcomes,
+        }),
       });
       if (res.ok) {
         toast.success(decision === 'ACCEPTED' ? m.ba_accepted_toast() : m.ba_denied_toast());
@@ -191,6 +321,14 @@
           appealSaveIp: config.appealSaveIp,
           appealSaveDevice: config.appealSaveDevice,
           appealVerificationLevel: config.appealVerificationLevel,
+          appealableTypes: config.appealableTypes,
+          maxSanctionsPerAppeal: config.maxSanctionsPerAppeal,
+          appealWindowDays: config.appealWindowDays,
+          cooldownByType: config.cooldownByType,
+          formIdByType: config.formIdByType,
+          notifyOnSanctionDM: config.notifyOnSanctionDM,
+          excludeIssuingModerator: config.excludeIssuingModerator,
+          notifyIssuingModerator: config.notifyIssuingModerator,
           ...extra,
         }),
       });
@@ -225,7 +363,7 @@
   }
 
   onMount(async () => {
-    await Promise.all([loadAppeals(), loadConfig(), loadBlacklist()]);
+    await Promise.all([loadAppeals(), loadConfig(), loadBlacklist(), loadModeratorStats()]);
   });
 </script>
 
@@ -292,6 +430,9 @@
                 <p class="font-semibold text-on-surface text-sm truncate">{appeal.userTag || appeal.userId}</p>
                 <p class="text-xs text-on-surface-variant/60 mt-0.5 truncate">
                   {formatDate(appeal.createdAt)}
+                  {#if appeal.sanctions && appeal.sanctions.length > 0}
+                    · {m.ba_contested_count({ count: appeal.sanctions.length })}
+                  {/if}
                   {#if appeal.banReason} · {m.ba_ban_label()} {appeal.banReason}{/if}
                 </p>
               </div>
@@ -306,6 +447,63 @@
                     <div class="w-7 h-7 rounded-full border-3 border-primary/20 border-t-primary animate-spin"></div>
                   </div>
                 {:else}
+                  <!-- Sanctions contestées : un verdict par ligne -->
+                  {#if detail.appeal.sanctions && detail.appeal.sanctions.length > 0}
+                    {@const decided = detail.appeal.status !== 'PENDING' && detail.appeal.status !== 'NEEDS_INFO'}
+                    <div>
+                      <p class="text-[13px] font-medium text-on-surface-variant/50 mb-2">
+                        {m.ba_contested_sanctions({ count: detail.appeal.sanctions.length })}
+                      </p>
+                      <div class="space-y-2">
+                        {#each detail.appeal.sanctions as item (item.id)}
+                          {@const ometa = OUTCOME_META[item.outcome] ?? OUTCOME_META.PENDING}
+                          <div class="rounded-lg bg-surface border border-outline-variant/15 p-3 space-y-2">
+                            <div class="flex items-start justify-between gap-3">
+                              <div class="min-w-0">
+                                <p class="text-sm font-bold text-on-surface">
+                                  {TYPE_LABELS[item.sanctionType] ?? item.sanctionType}
+                                  <span class="text-xs font-normal text-on-surface-variant/50">
+                                    · {formatDate(item.sanctionCreatedAt)}{item.moderatorTag ? ` · ${item.moderatorTag}` : ''}
+                                  </span>
+                                </p>
+                                <p class="text-xs text-on-surface-variant/80 mt-0.5 break-words">{item.sanctionReason}</p>
+                                {#if !item.sanctionId}
+                                  <p class="text-[11px] text-rose-400 mt-1">{m.ba_item_sanction_gone()}</p>
+                                {/if}
+                              </div>
+                              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold border shrink-0 {ometa.classes}">{ometa.label}</span>
+                            </div>
+
+                            {#if item.memberStatement}
+                              <p class="text-xs text-on-surface-variant/70 italic border-l-2 border-outline-variant/30 pl-2.5">
+                                {item.memberStatement}
+                              </p>
+                            {/if}
+
+                            {#if !decided && item.sanctionId}
+                              <div class="flex flex-wrap items-center gap-2 pt-1">
+                                <select bind:value={itemOutcomes[item.id]}
+                                  class="flex-1 min-w-[180px] bg-surface-container rounded-lg px-3 py-2 text-xs outline-none border border-outline-variant/20">
+                                  <option value="UPHELD">{m.ba_outcome_upheld()}</option>
+                                  <option value="ARCHIVED">{m.ba_outcome_archived()}</option>
+                                  <option value="LOCKED">{m.ba_outcome_locked()}</option>
+                                  <option value="DELETED">{m.ba_outcome_deleted()}</option>
+                                </select>
+                                <button onclick={() => applyItemOutcome(item)} disabled={itemInProgress === item.id}
+                                  class="px-3 py-2 rounded-lg bg-primary/10 text-primary text-xs font-bold hover:bg-primary/20 transition-colors disabled:opacity-50">
+                                  {m.ba_item_apply()}
+                                </button>
+                              </div>
+                            {:else if item.outcomeNote}
+                              <p class="text-[11px] text-on-surface-variant/60">{item.outcomeNote}</p>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                      <p class="text-[11px] text-on-surface-variant/50 mt-2">{m.ba_contested_hint()}</p>
+                    </div>
+                  {/if}
+
                   <!-- Réponses du formulaire -->
                   <div>
                     <p class="text-[13px] font-medium text-on-surface-variant/50 mb-2">{m.ba_answers()}</p>
@@ -375,9 +573,11 @@
                       {:else}
                         <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                           {#each detail.sanctions as s}
-                            <div class="rounded-lg bg-surface border border-outline-variant/15 px-3 py-2 text-xs">
-                              <span class="font-bold">{s.type}</span>
+                            <div class="rounded-lg bg-surface border border-outline-variant/15 px-3 py-2 text-xs {s.archivedAt ? 'opacity-60' : ''}">
+                              <span class="font-bold">{TYPE_LABELS[s.type] ?? s.type}</span>
                               <span class="text-on-surface-variant/50"> · {formatDate(s.createdAt)}{s.moderatorTag ? ` · ${s.moderatorTag}` : ''}</span>
+                              {#if s.archivedAt}<span class="ml-1 text-emerald-500 font-semibold">· {m.ba_badge_archived()}</span>{/if}
+                              {#if !s.appealable}<span class="ml-1 text-rose-400 font-semibold">· {m.ba_badge_locked()}</span>{/if}
                               <p class="text-on-surface-variant/80 mt-0.5 truncate">{s.reason}</p>
                             </div>
                           {/each}
@@ -594,6 +794,111 @@
             </p>
             <input type="range" min="0" max="180" bind:value={config.cooldownDays} class="w-full accent-primary" />
           </div>
+
+          <!-- Portée de la contestation : quels types, combien, dans quel délai -->
+          <div class="space-y-4 p-4 rounded-xl border border-outline-variant/10 bg-surface-container/40">
+            <div>
+              <p class="font-semibold text-on-surface text-sm">{m.ba_scope_title()}</p>
+              <p class="text-xs text-on-surface-variant/60 mt-0.5">{m.ba_scope_desc()}</p>
+            </div>
+
+            <div class="space-y-2">
+              {#each SANCTION_TYPES as type}
+                {@const active = config.appealableTypes.includes(type)}
+                <div class="rounded-lg border border-outline-variant/15 bg-surface p-3">
+                  <label class="flex items-center justify-between cursor-pointer">
+                    <span class="text-sm font-semibold text-on-surface">{TYPE_LABELS[type] ?? type}</span>
+                    <input type="checkbox" checked={active} class="accent-primary w-5 h-5 shrink-0 ml-4"
+                      onchange={(e) => toggleAppealableType(type, e.currentTarget.checked)} />
+                  </label>
+
+                  {#if active}
+                    <div class="grid sm:grid-cols-2 gap-3 mt-3 pt-3 border-t border-outline-variant/10">
+                      <label class="space-y-1">
+                        <span class="text-[11px] font-semibold text-on-surface-variant/60">{m.ba_type_cooldown()}</span>
+                        <input type="number" min="0" max="365"
+                          placeholder={String(config.cooldownDays)}
+                          value={config.cooldownByType?.[type] ?? ''}
+                          oninput={(e) => setTypeCooldown(type, e.currentTarget.value)}
+                          class="w-full bg-surface-container rounded-lg px-3 py-2 text-sm outline-none border border-outline-variant/20" />
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[11px] font-semibold text-on-surface-variant/60">{m.ba_type_form()}</span>
+                        <select value={config.formIdByType?.[type] ?? ''}
+                          onchange={(e) => setTypeForm(type, e.currentTarget.value)}
+                          class="w-full bg-surface-container rounded-lg px-3 py-2 text-sm outline-none border border-outline-variant/20">
+                          <option value="">{m.ba_type_form_default()}</option>
+                          {#each forms as f}
+                            <option value={f.id}>{f.name}</option>
+                          {/each}
+                        </select>
+                      </label>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+
+            <div class="grid sm:grid-cols-2 gap-4 pt-2 border-t border-outline-variant/10">
+              <label class="space-y-1.5">
+                <span class="text-xs font-semibold text-on-surface-variant/60">{m.ba_max_sanctions()}</span>
+                <input type="number" min="1" max="10" bind:value={config.maxSanctionsPerAppeal}
+                  class="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm outline-none border border-outline-variant/20" />
+              </label>
+              <label class="space-y-1.5">
+                <span class="text-xs font-semibold text-on-surface-variant/60">{m.ba_appeal_window()}</span>
+                <input type="number" min="0" max="3650" placeholder={m.ba_appeal_window_none()}
+                  value={config.appealWindowDays ?? ''}
+                  oninput={(e) => { if (config) config.appealWindowDays = e.currentTarget.value === '' ? null : Number(e.currentTarget.value); }}
+                  class="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm outline-none border border-outline-variant/20" />
+              </label>
+            </div>
+
+            <label class="flex items-center justify-between cursor-pointer pt-2 border-t border-outline-variant/10">
+              <div>
+                <p class="font-semibold text-on-surface text-sm">{m.ba_dm_on_sanction()}</p>
+                <p class="text-xs text-on-surface-variant/60 mt-0.5">{m.ba_dm_on_sanction_desc()}</p>
+              </div>
+              <input type="checkbox" bind:checked={config.notifyOnSanctionDM} class="accent-primary w-5 h-5 shrink-0 ml-4" />
+            </label>
+
+            <label class="flex items-center justify-between cursor-pointer">
+              <div>
+                <p class="font-semibold text-on-surface text-sm">{m.ba_exclude_moderator()}</p>
+                <p class="text-xs text-on-surface-variant/60 mt-0.5">{m.ba_exclude_moderator_desc()}</p>
+              </div>
+              <input type="checkbox" bind:checked={config.excludeIssuingModerator} class="accent-primary w-5 h-5 shrink-0 ml-4" />
+            </label>
+
+            <label class="flex items-center justify-between cursor-pointer">
+              <div>
+                <p class="font-semibold text-on-surface text-sm">{m.ba_notify_moderator()}</p>
+                <p class="text-xs text-on-surface-variant/60 mt-0.5">{m.ba_notify_moderator_desc()}</p>
+              </div>
+              <input type="checkbox" bind:checked={config.notifyIssuingModerator} class="accent-primary w-5 h-5 shrink-0 ml-4" />
+            </label>
+          </div>
+
+          <!-- Contestations par modérateur : un taux d'annulation élevé
+               interroge la qualité des sanctions, pas la clémence du staff. -->
+          {#if moderatorStats.length > 0}
+            <div class="space-y-2 p-4 rounded-xl border border-outline-variant/10 bg-surface-container/40">
+              <div>
+                <p class="font-semibold text-on-surface text-sm">{m.ba_mod_stats_title()}</p>
+                <p class="text-xs text-on-surface-variant/60 mt-0.5">{m.ba_mod_stats_desc()}</p>
+              </div>
+              <div class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                {#each moderatorStats as stat (stat.moderatorUserId)}
+                  <div class="rounded-lg bg-surface border border-outline-variant/15 px-3 py-2 text-xs flex items-center justify-between gap-3">
+                    <span class="font-semibold text-on-surface truncate">{stat.moderatorTag || stat.moderatorUserId}</span>
+                    <span class="text-on-surface-variant/60 shrink-0">
+                      {m.ba_mod_stats_row({ contested: stat.contested, overturned: stat.overturned, rate: stat.overturnRate })}
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <div>
             <p class="text-xs font-semibold text-on-surface-variant/60 mb-1.5">{m.ba_welcome_text()}</p>

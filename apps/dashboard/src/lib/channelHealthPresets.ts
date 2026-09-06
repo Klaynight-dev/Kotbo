@@ -98,6 +98,7 @@ export const CHANNEL_HEALTH_DEFAULT_CONFIG = {
   archiveMode: 'NOTIFY',
   weeklyDigestEnabled: true,
   weeklyDigestDay: 1,
+  excludedChannelIds: [] as string[],
   ...BALANCED_VALUES,
 };
 

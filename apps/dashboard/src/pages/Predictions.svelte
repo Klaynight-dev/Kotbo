@@ -90,8 +90,8 @@
     <!-- Trends Charts -->
     {#each [
       { title: m.pred_trend_members(), data: data.membersTrend, color: 'var(--color-primary)' },
-      { title: m.pred_trend_messages(), data: data.messagesTrend, color: 'var(--color-success)' },
-      { title: m.pred_trend_voice(), data: data.voiceTrend, color: 'var(--color-warning)' },
+      { title: m.pred_trend_messages(), data: data.messagesTrend, color: '#22c55e' },
+      { title: m.pred_trend_voice(), data: data.voiceTrend, color: '#f59e0b' },
     ] as trend}
       {@const maxVal = Math.max(...trend.data.map((p: any) => p.value), 1)}
       <div class="card trend-card">
@@ -134,19 +134,19 @@
 <style>
   .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; }
   .header-left h1 { display: flex; align-items: center; gap: 0.5rem; font-size: 1.5rem; margin: 0; }
-  .subtitle { color: var(--color-text-muted); margin: 0.25rem 0 0; font-size: 0.875rem; }
+  .subtitle { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); margin: 0.25rem 0 0; font-size: 0.875rem; }
   .period-selector { display: flex; gap: 0.25rem; }
   .period-selector .active { background: var(--color-primary); color: white; }
 
   .pred-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  .card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 1.25rem; }
-  .card h3 { margin: 0 0 1rem; font-size: 0.95rem; color: var(--color-text-secondary); }
+  .card { background: var(--color-surface); border: 1px solid var(--color-outline-variant); border-radius: 12px; padding: 1.25rem; }
+  .card h3 { margin: 0 0 1rem; font-size: 0.95rem; color: var(--color-on-surface-variant); }
 
   .forecast-card { grid-column: 1; }
   .forecast-numbers { display: flex; gap: 1.5rem; }
   .forecast-item { display: flex; flex-direction: column; }
-  .forecast-value { font-size: 1.75rem; font-weight: 700; color: var(--color-text); }
-  .forecast-label { font-size: 0.75rem; color: var(--color-text-muted); }
+  .forecast-value { font-size: 1.75rem; font-weight: 700; color: var(--color-on-surface); }
+  .forecast-label { font-size: 0.75rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
 
   .season-items { display: flex; flex-direction: column; gap: 0.5rem; }
   .season-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; }
@@ -183,7 +183,7 @@
     transform: translateX(-50%) translateY(0);
   }
 
-  .chart-legend { display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.75rem; color: var(--color-text-muted); }
+  .chart-legend { display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.75rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
   .legend-item { display: flex; align-items: center; gap: 0.25rem; }
   .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
   .predicted-dot { opacity: 0.4; }
@@ -192,8 +192,8 @@
   .anomalies-list { display: flex; flex-direction: column; gap: 0.5rem; }
   .anomaly { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.75rem; border-radius: 8px; font-size: 0.85rem; }
   .anomaly-msg { flex: 1; }
-  .anomaly-range { font-size: 0.75rem; color: var(--color-text-muted); }
-  .anomaly-danger { background: rgba(237, 66, 69, 0.1); color: var(--color-danger); }
+  .anomaly-range { font-size: 0.75rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
+  .anomaly-danger { background: rgba(237, 66, 69, 0.1); color: var(--color-error); }
   .anomaly-warning { background: rgba(254, 231, 92, 0.1); color: var(--color-warning); }
   .anomaly-info { background: rgba(88, 101, 242, 0.1); color: var(--color-primary); }
 

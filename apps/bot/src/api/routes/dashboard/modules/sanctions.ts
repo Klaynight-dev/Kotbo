@@ -1,6 +1,12 @@
 /** Routes dashboard du module `sanctions`. */
 import { generateTranscriptFromMessages } from '../../../../services/features/transcriptService.js';
 import { formatSanctionDurationLabel, registerImportedSanction } from '../../../../services/moderation/sanctionService.js';
+import {
+  archiveSanctions,
+  deleteSanctions,
+  setSanctionAppealLock,
+  unarchiveSanctions,
+} from '../../../../services/moderation/sanctionArchiveService.js';
 import prisma from '../../../../utils/db.js';
 import { logger } from '../../../../utils/logger.js';
 import { EVIDENCE_CHANNEL_CONCURRENCY, type FetchedEvidenceChannel, fetchUserMessagesInChannel, MAX_EVIDENCE_MESSAGES, parseEvidenceLinks, resolveEvidenceChannel, serializeEvidenceMessage } from '../../../evidence.js';
@@ -160,6 +166,80 @@ export async function handleSanctionsRoutes(ctx: ModuleRouteContext): Promise<bo
     } catch (err) {
       logger.error('SanctionsAPI', 'Error updating sanction tables:', err);
       json(res, 500, { error: 'Erreur lors de la mise à jour des tableaux de sanction' });
+    }
+    return true;
+  }
+
+  // POST /api/dashboard/guilds/:guildId/sanctions/bulk
+  //
+  // Actions groupées sur une sélection de sanctions :
+  //   archive / unarchive : désactiver (ou réactiver) en gardant la trace
+  //   lock / unlock       : retirer (ou rendre) le droit de contester
+  //   delete              : purger définitivement (administrateurs seulement)
+  if (moduleKey === 'sanctions' && parts.length === 6 && parts[5] === 'bulk' && method === 'POST') {
+    if (!access.canModerateContent) {
+      json(res, 403, { error: 'Permissions insuffisantes pour gérer les infractions.' });
+      return true;
+    }
+
+    try {
+      const body = await readJsonBody<{ action?: string; sanctionIds?: unknown; reason?: string }>(req);
+      const action = body?.action;
+      const ids = Array.isArray(body?.sanctionIds)
+        ? (body.sanctionIds as unknown[]).filter((id): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+
+      if (!action || !['archive', 'unarchive', 'lock', 'unlock', 'delete'].includes(action)) {
+        json(res, 400, { error: 'Action invalide.' });
+        return true;
+      }
+      if (ids.length === 0) {
+        json(res, 400, { error: 'Aucune infraction sélectionnée.' });
+        return true;
+      }
+      if (ids.length > 200) {
+        json(res, 400, { error: 'Sélection trop large (200 infractions maximum).' });
+        return true;
+      }
+      // La suppression est irréversible : elle reste réservée aux admins, comme
+      // la suppression unitaire existante.
+      if (action === 'delete' && access.level !== 'admin') {
+        json(res, 403, { error: 'Seuls les administrateurs peuvent supprimer une infraction.' });
+        return true;
+      }
+
+      const actor = { userId: user.userId, tag: auditUser };
+      const reason = typeof body?.reason === 'string' ? body.reason : null;
+
+      const result =
+        action === 'archive' ? await archiveSanctions(guildId, ids, actor, reason)
+        : action === 'unarchive' ? await unarchiveSanctions(guildId, ids, actor)
+        : action === 'lock' ? await setSanctionAppealLock(guildId, ids, true, actor, reason)
+        : action === 'unlock' ? await setSanctionAppealLock(guildId, ids, false, actor)
+        : await deleteSanctions(guildId, ids, actor);
+
+      const labels: Record<string, string> = {
+        archive: 'Archivage infractions',
+        unarchive: 'Désarchivage infractions',
+        lock: 'Verrouillage contestation',
+        unlock: 'Déverrouillage contestation',
+        delete: 'Suppression infractions',
+      };
+
+      await pushAudit(guildId, {
+        user: auditUser,
+        action: labels[action],
+        context: getGuildName(client, guildId),
+        module: 'Sanctions',
+        eventType: 'Manuel',
+        details: `${result.count} infraction(s) sur ${ids.length} sélectionnée(s).${reason ? ` Motif: ${reason}` : ''}`,
+        channelId: null,
+      });
+
+      json(res, 200, { ok: true, count: result.count });
+    } catch (err) {
+      logger.error('SanctionsAPI', 'Error running bulk sanction action:', err);
+      json(res, 500, { error: "Erreur lors de l'action groupée" });
     }
     return true;
   }

@@ -1,5 +1,7 @@
 import { SanctionType } from '@prisma/client';
+import { normalizeTimezone } from '@kotbo/contracts';
 import prisma, { prismaRead } from '../../utils/db.js';
+import { BucketZoner } from './zonedBuckets.js';
 import { getWarnScore, countWarns } from '../moderation/sanctionService.js';
 import * as altAccountService from '../moderation/altAccountService.js';
 
@@ -78,6 +80,8 @@ export type MemberRankEntry = {
 export type MemberInsights = {
   userId: string;
   period: number;
+  /** Fuseau dans lequel la heatmap et l'heure de pointe ont ete calculees. */
+  timezone: string;
   loggingEnabled: boolean;
   activity: MemberActivityInsights;
   risk: MemberRiskInsights;
@@ -92,10 +96,6 @@ function toDateKey(date: Date): string {
 }
 
 /** Lundi = 0 … dimanche = 6, pour une heatmap qui se lit comme un calendrier FR. */
-function toMondayFirstWeekday(date: Date): number {
-  return (date.getDay() + 6) % 7;
-}
-
 function percentChange(recent: number, older: number): number | null {
   if (older === 0) return recent > 0 ? 100 : null;
   return Math.round(((recent - older) / older) * 100);
@@ -143,6 +143,7 @@ async function computeActivity(
   guildId: string,
   userIds: string[],
   periodDays: number,
+  zoner: BucketZoner,
 ): Promise<MemberActivityInsights> {
   const since = new Date(Date.now() - periodDays * MS_PER_DAY);
   const sinceKey = toDateKey(since);
@@ -178,8 +179,11 @@ async function computeActivity(
   let peakWeekday: number | null = null;
 
   for (const message of messages) {
-    const weekday = toMondayFirstWeekday(message.createdAt);
-    const hour = message.createdAt.getHours();
+    // Heure murale du fuseau de lecture : le processus tourne en UTC, et
+    // `getHours()` y rendait donc l'heure UTC, decalee de celle du lecteur.
+    const bucket = zoner.fromDate(message.createdAt);
+    const weekday = (bucket.weekday + 6) % 7; // lundi = 0
+    const hour = bucket.hour;
     heatmap[weekday][hour] += 1;
     if (heatmap[weekday][hour] > peakCount) {
       peakCount = heatmap[weekday][hour];
@@ -443,8 +447,10 @@ export async function getMemberInsights(
   guildId: string,
   userId: string,
   periodDays = 30,
+  timezone?: string,
 ): Promise<MemberInsights> {
   const period = Math.min(90, Math.max(7, periodDays));
+  const zoner = new BucketZoner(normalizeTimezone(timezone));
 
   // Les comptes liés comptent comme un seul membre : un multicompte ne doit pas
   // diluer son score de risque ni son activité en se répartissant sur deux profils.
@@ -453,7 +459,7 @@ export async function getMemberInsights(
 
   const [guildConfig, activity, risk, social] = await Promise.all([
     prisma.guild.findUnique({ where: { id: guildId }, select: { messageLoggingEnabled: true } }),
-    computeActivity(guildId, userIds, period),
+    computeActivity(guildId, userIds, period, zoner),
     computeRisk(guildId, userId, userIds),
     computeSocial(guildId, userIds, period),
   ]);
@@ -463,6 +469,7 @@ export async function getMemberInsights(
   return {
     userId,
     period,
+    timezone: zoner.timezone,
     loggingEnabled: guildConfig?.messageLoggingEnabled ?? false,
     activity,
     risk,

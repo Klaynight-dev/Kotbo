@@ -10,8 +10,8 @@ export async function fetchLevelingData(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/leveling', { method: 'GET', guildId, errorContext: 'API Error (Fetch Leveling):' });
 }
 
-export async function updateLevelingConfig(config, guildId = authStore.selectedGuildId) {
-  return dashboardRequest('/leveling', { method: 'PATCH', payload: config, guildId, errorContext: 'API Error (Update Leveling):' });
+export async function updateLevelingConfig(config, guildId = authStore.selectedGuildId, options: { silent?: boolean } = {}) {
+  return dashboardRequest('/leveling', { method: 'PATCH', payload: config, guildId, silent: options.silent, errorContext: 'API Error (Update Leveling):' });
 }
 
 export async function createLevelUpChannel(guildId = authStore.selectedGuildId) {
@@ -50,8 +50,8 @@ export async function fetchLevelingCurveImpact(
   return dashboardRequest(`/leveling/curve-impact?${query}`, { method: 'GET', guildId, silent: true, errorContext: 'API Error (Curve Impact):' });
 }
 
-export async function addLevelingReward(level: number, roleId: string, guildId = authStore.selectedGuildId) {
-  return dashboardRequest('/leveling/rewards', { method: 'POST', payload: { level, roleId }, guildId, errorContext: 'API Error (Add Leveling Reward):' });
+export async function addLevelingReward(level: number, roleId: string, guildId = authStore.selectedGuildId, options: { silent?: boolean } = {}) {
+  return dashboardRequest('/leveling/rewards', { method: 'POST', payload: { level, roleId }, guildId, silent: options.silent, errorContext: 'API Error (Add Leveling Reward):' });
 }
 
 export async function deleteLevelingReward(rewardId: string, guildId = authStore.selectedGuildId) {
@@ -186,8 +186,8 @@ export async function fetchWelcomeConfig(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/announcement', { method: 'GET', guildId, errorContext: 'API Error (Fetch Announcement Config):' });
 }
 
-export async function updateWelcomeConfig(config, guildId = authStore.selectedGuildId) {
-  return dashboardRequest('/announcement', { method: 'PATCH', payload: config, guildId, errorContext: 'API Error (Update Announcement Config):' });
+export async function updateWelcomeConfig(config, guildId = authStore.selectedGuildId, options: { silent?: boolean } = {}) {
+  return dashboardRequest('/announcement', { method: 'PATCH', payload: config, guildId, silent: options.silent, errorContext: 'API Error (Update Announcement Config):' });
 }
 
 export async function rescanIdentityAutoRoles(guildId = authStore.selectedGuildId) {
@@ -253,8 +253,16 @@ export async function fetchAutoModConfig(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/automod', { method: 'GET', guildId, errorContext: 'API Error (Fetch AutoMod):' });
 }
 
-export async function updateAutoModConfig(config, guildId = authStore.selectedGuildId) {
-  return dashboardRequest('/automod', { method: 'PATCH', payload: config, guildId, errorContext: 'API Error (Update AutoMod):' });
+/**
+ * `silent` : ecriture faite depuis le parcours de configuration.
+ *
+ * Le socle annonce « Operation reussie » a chaque mutation. Dans le tableau de
+ * bord c'est la seule confirmation qu'on ait ; dans le parcours, l'ecran change
+ * et le suivant montre le resultat - le toast n'apprend rien, et les etapes qui
+ * ecrivent plusieurs fois en empilent autant.
+ */
+export async function updateAutoModConfig(config, guildId = authStore.selectedGuildId, options: { silent?: boolean } = {}) {
+  return dashboardRequest('/automod', { method: 'PATCH', payload: config, guildId, silent: options.silent, errorContext: 'API Error (Update AutoMod):' });
 }
 
 export async function fetchAdminLockRequests(status?: string, guildId = authStore.selectedGuildId) {

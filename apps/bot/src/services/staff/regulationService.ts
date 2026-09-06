@@ -9,6 +9,7 @@ import {
   ChannelType,
   Guild
 } from 'discord.js';
+import { ensureBotCanPost } from '../../utils/channelAccess.js';
 import prisma from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
 import { resolveGuildLocale, type BotLocale } from '../../utils/i18n.js';
@@ -234,6 +235,11 @@ export async function publishOrUpdateRegulationMessage(client: Client, guildId: 
   if (!channel || !('send' in channel)) {
     throw new Error('Le salon de publication du règlement est introuvable ou inaccessible.');
   }
+
+  // Le salon des regles est repris a Discord plutot que cree : ses surcharges
+  // sont celles du serveur, pas celles de la mise en place, et le bot peut
+  // parfaitement s'y voir refuser la parole.
+  if (discordGuild) await ensureBotCanPost(discordGuild, channel, 'Publication du règlement');
 
   const components = [];
   if (guild?.regulationVerificationEnabled) {

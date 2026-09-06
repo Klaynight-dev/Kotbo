@@ -11,6 +11,8 @@ import {
   RANK_CARD_HEIGHT,
   RANK_CARD_WIDTH,
   DEFAULT_LEVEL_CURVE,
+  MAX_XP,
+  clampXp,
   computeClanLevelUpPoints,
   grantedWithinDailyCap,
   levelFromXp,
@@ -23,6 +25,7 @@ import { ensureCanvasFonts } from '../../utils/canvasFonts.js';
 import { getRankCardCustomization } from './rankCardService.js';
 import { creditRpFromXp } from './ranked/rankedService.js';
 import { visiblePresenceStatus } from '../core/presencePrivacyService.js';
+import { kotboEventBus } from '@kotbo/core';
 import prisma, { prismaRead } from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
 import { cache, getCachedGuild } from '../../utils/cache.js';
@@ -804,9 +807,22 @@ export async function addXp(
   }
 
   const previousLevel = memberLevel.level;
+
+  // L'incrément est atomique, donc non borné : on ramène au plafond après coup,
+  // comme `removeXp` ramène les négatifs à zéro. Sans ça, une ligne poussée
+  // près du maximum de la colonne finirait par faire échouer chaque message.
+  let totalXp = memberLevel.xp;
+  if (totalXp > MAX_XP) {
+    totalXp = MAX_XP;
+    await prisma.memberLevel.update({
+      where: { guildId_userId: { guildId, userId } },
+      data: { xp: MAX_XP },
+    });
+  }
+
   // Le niveau est toujours recalculé depuis l'XP totale : ça gère les montées
   // de niveau et auto-répare les lignes dont le niveau était incohérent.
-  const newLevel = getLevelFromXp(memberLevel.xp, curve);
+  const newLevel = getLevelFromXp(totalXp, curve);
 
   if (newLevel !== previousLevel) {
     if (newLevel > previousLevel) {
@@ -900,6 +916,21 @@ export async function removeXp(guildId: string, userId: string, amount: number, 
   }
 }
 
+/** KotboCoins accordés pour la montée au niveau `level`. */
+export function levelUpCoinReward(level: number): number {
+  return level * 20;
+}
+
+/**
+ * Somme des récompenses de montée de niveau reçues par un membre arrivé au niveau `level`,
+ * soit `20 * (1 + 2 + ... + level)`. Sert à restituer ces pièces après une remise à zéro
+ * des profils RPG : elles ont été gagnées par l'activité sur le serveur, pas dans le RPG.
+ */
+export function totalLevelUpCoins(level: number): number {
+  if (level <= 0) return 0;
+  return 10 * level * (level + 1);
+}
+
 /**
  * Calcule (sans l'appliquer) la récompense en KotboCoins due pour une montée de niveau.
  */
@@ -909,7 +940,7 @@ async function getLevelUpCoinReward(guildId: string, newLevel: number): Promise<
     const econConfig = await getOrCreateEconomyConfig(guildId).catch(() => null);
     if (!econConfig || !econConfig.enabled) return null;
     return {
-      amount: newLevel * 20,
+      amount: levelUpCoinReward(newLevel),
       currencyEmoji: econConfig.currencyEmoji,
       currencyName: econConfig.currencyName,
     };
@@ -924,7 +955,7 @@ async function getLevelUpCoinReward(guildId: string, newLevel: number): Promise<
  * et gère le passage/la perte de niveau qui en découle.
  */
 export async function setXp(guildId: string, userId: string, newXp: number, client: Client, channelId?: string) {
-  const clampedXp = Math.max(0, Math.floor(newXp));
+  const clampedXp = clampXp(newXp);
 
   const memberLevel = await prisma.memberLevel.upsert({
     where: { guildId_userId: { guildId, userId } },
@@ -1006,6 +1037,17 @@ async function processLevelUp(
   } = {},
 ) {
   const { fallbackChannelId, coinReward, creditClanPoints = true } = options;
+
+  // Avant toute résolution Discord : un membre parti entre-temps annule les
+  // notifications et les rôles, pas le fait qu'il ait monté de niveau.
+  kotboEventBus.publish('level:up', {
+    guildId,
+    userId,
+    previousLevel,
+    level: newLevel,
+    timestamp: Date.now(),
+  });
+
   try {
     const config = await getOrCreateLevelConfig(guildId);
     const discordGuild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
@@ -1050,7 +1092,7 @@ async function processLevelUp(
               const canonicalUserId = linkedIds.sort()[0];
 
               const { creditClanContribution, logClanContribution } = await import('../community/clanService.js');
-              const { granted } = await creditClanContribution({
+              const { granted, debtRepaid } = await creditClanContribution({
                 guildId,
                 clanId: clan.id,
                 userId: canonicalUserId,
@@ -1058,12 +1100,16 @@ async function processLevelUp(
                 amount: clanPoints,
               });
 
-              if (granted > 0) {
-                // Journaliser le gain pour le flux public « derniers scores »
-                await logClanContribution(guildId, clan.id, canonicalUserId, granted, 'XP', guildConfig.currentClanSeason);
+              // Le flux public reçoit le gain brut : la part partie en
+              // remboursement d'une dette y est déjà journalisée à part, en
+              // négatif. Loguer le net ferait deux lignes qui ne s'additionnent
+              // pas au gain annoncé au membre.
+              const earned = granted + debtRepaid;
+              if (earned > 0) {
+                await logClanContribution(guildId, clan.id, canonicalUserId, earned, 'XP', guildConfig.currentClanSeason);
               }
 
-              logger.info('LevelingService', `Points de clan (${granted}) attribués à ${member.user.tag} pour son passage au niveau ${newLevel} dans le clan "${clan.id}"`);
+              logger.info('LevelingService', `Points de clan (${earned}) attribués à ${member.user.tag} pour son passage au niveau ${newLevel} dans le clan "${clan.id}"`);
             }
           }
         }

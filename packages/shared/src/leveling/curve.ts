@@ -36,6 +36,24 @@ export const LEVEL_CURVE_LIMITS = {
  */
 export const LEVEL_CURVE_HARD_CAP = LEVEL_CURVE_LIMITS.maxLevel.max;
 
+/**
+ * Plafond d'XP stockable pour un membre.
+ *
+ * `MemberLevel.xp` est un `Int` Postgres, borné à 2 147 483 647 : au-delà,
+ * l'écriture échoue (`value out of range for type integer`) et l'appelant se
+ * prend l'erreur brute - un `/leveling xp set` démesuré, ou une ligne aberrante
+ * dans un classement importé. Le plafond reste volontairement bien en dessous
+ * de la borne réelle, pour que les gains qui s'ajoutent ensuite - un membre
+ * posé au plafond continue d'écrire - gardent de la marge.
+ */
+export const MAX_XP = 1_000_000_000;
+
+/** Ramène une XP dans les bornes stockables (`NaN` et `Infinity` compris). */
+export function clampXp(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  return Math.min(MAX_XP, Math.max(0, Math.floor(value)));
+}
+
 function clamp(value: unknown, fallback: number, min: number, max: number): number {
   const num = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(num)) return fallback;

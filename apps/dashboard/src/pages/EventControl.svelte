@@ -7,6 +7,7 @@
   import UserDisplay from '../lib/components/UserDisplay.svelte';
   import { toast } from '../lib/stores/toast.svelte';
   import { confirmDialog } from '../lib/stores/confirmDialog.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import { API_BASE_URL } from '../lib/api';
   import { m } from '../lib/i18n';
 
@@ -15,7 +16,7 @@
   let event = $state<any>(null);
   let stats = $state<any>(null);
   let registrations = $state<any[]>([]);
-  let interval: any;
+  let unsubscribeRealtime: (() => void) | null = null;
 
   let activeTab = $state<'stats' | 'participants' | 'registrations'>('stats');
 
@@ -28,16 +29,28 @@
     await loadEvent();
     if (event?.type === 'CUSTOM') {
       await loadRegistrations();
-      interval = setInterval(loadRegistrations, 5000);
       activeTab = 'registrations';
+      unsubscribeRealtime = subscribeRealtime({
+        reasons: ['events_updated'],
+        fallbackMs: 5000,
+        onUpdate: () => {
+          void loadRegistrations();
+        },
+      });
     } else {
       await loadStats();
-      interval = setInterval(loadStats, 3000);
+      unsubscribeRealtime = subscribeRealtime({
+        reasons: ['events_updated'],
+        fallbackMs: 3000,
+        onUpdate: () => {
+          void loadStats();
+        },
+      });
     }
   });
 
   onDestroy(() => {
-    if (interval) clearInterval(interval);
+    unsubscribeRealtime?.();
   });
 
   async function loadEvent() {

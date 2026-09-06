@@ -9,7 +9,7 @@
   import Papicon from '../lib/components/Papicon.svelte';
   import SearchableSelect from '../lib/components/SearchableSelect.svelte';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
-  import { fetchChannelsManagementConfig, updateChannelsManagementConfig, rescanChannelsManagementStats, fetchTempVoiceChannels, updateTempVoiceChannel, fetchStickyMessages, saveStickyMessage, deleteStickyMessage, repostStickyMessage } from '../lib/api';
+  import { fetchChannelsManagementConfig, updateChannelsManagementConfig, rescanChannelsManagementStats, fetchTempVoiceChannels, updateTempVoiceChannel, fetchStickyMessages, saveStickyMessage, deleteStickyMessage, repostStickyMessage, fetchChannelsByChannel, toggleChannelFeature, renameDiscordChannel, deleteDiscordChannel } from '../lib/api';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { toast } from '../lib/stores/toast.svelte';
   import { confirmDialog } from '../lib/stores/confirmDialog.svelte';
@@ -122,13 +122,120 @@
 
   let loading = $state(true);
   let loadError = $state('');
-  const channelTabs = ['auto-thread', 'sticky', 'stats', 'temp-voice', 'honeypot'] as const;
-  let activeTab = $state<'auto-thread' | 'sticky' | 'stats' | 'temp-voice' | 'honeypot'>('auto-thread');
+  // « Par salon » d'abord : c'est la question qu'on se pose en arrivant
+  // (« qu'est-ce qui touche ce salon ? »), la ou les onglets par fonctionnalite
+  // repondent a l'inverse (« quels salons ont cette fonctionnalite ? »).
+  const channelTabs = ['by-channel', 'auto-thread', 'sticky', 'stats', 'temp-voice', 'honeypot'] as const;
+  let activeTab = $state<'by-channel' | 'auto-thread' | 'sticky' | 'stats' | 'temp-voice' | 'honeypot'>('by-channel');
   $effect(() => {
     const _path = $router.path;
-    activeTab = resolveTabFromUrl('/channels-management', channelTabs, 'auto-thread') as typeof activeTab;
+    activeTab = resolveTabFromUrl('/channels-management', channelTabs, 'by-channel') as typeof activeTab;
   });
   let searchQuery = $state('');
+
+  // ── Vue « Par salon » ──────────────────────────────────────────────────────
+  type ChannelRow = {
+    id: string;
+    name: string;
+    type: string;
+    categoryId: string | null;
+    categoryName: string | null;
+    manageable: boolean;
+    features: string[];
+  };
+
+  let byChannel = $state<ChannelRow[]>([]);
+  let featureLabels = $state<Record<string, string>>({});
+  let byChannelLoading = $state(false);
+  let byChannelQuery = $state('');
+  let expandedChannelId = $state<string | null>(null);
+  /** Identifiant du salon en cours de bascule : evite les clics concurrents. */
+  let featureBusy = $state<string | null>(null);
+
+  /**
+   * `sticky` et `tempVoiceGenerator` sont affiches mais pas cochables : ils
+   * demandent un contenu (le texte colle, le gabarit de nom) qu'une case ne
+   * peut pas saisir. Ils restent geres dans leur onglet.
+   */
+  const togglableFeatures = $derived(Object.keys(featureLabels));
+
+  const featureLabel = (key: string) =>
+    featureLabels[key]
+      ?? (key === 'sticky' ? 'Message collé' : key === 'tempVoiceGenerator' ? 'Générateur vocal' : key);
+
+  const visibleByChannel = $derived(
+    byChannelQuery.trim()
+      ? byChannel.filter((ch) => {
+          const q = byChannelQuery.trim().toLowerCase();
+          return ch.name.toLowerCase().includes(q) || (ch.categoryName ?? '').toLowerCase().includes(q);
+        })
+      : byChannel
+  );
+
+  async function loadByChannel() {
+    byChannelLoading = true;
+    try {
+      const data = await fetchChannelsByChannel();
+      byChannel = data?.channels ?? [];
+      featureLabels = data?.features ?? {};
+    } catch {
+      toast.error('Chargement des salons impossible');
+    } finally {
+      byChannelLoading = false;
+    }
+  }
+
+  async function setChannelFeature(ch: ChannelRow, feature: string, enabled: boolean) {
+    if (featureBusy) return;
+    featureBusy = ch.id;
+    try {
+      await toggleChannelFeature(ch.id, feature, enabled);
+      // Rechargement complet plutot que mise a jour locale : activer une
+      // fonctionnalite unique la retire d'un autre salon, que l'etat local
+      // n'aurait aucun moyen de deviner.
+      await loadByChannel();
+    } catch (err: any) {
+      toast.error(err?.message || 'Modification impossible');
+    } finally {
+      featureBusy = null;
+    }
+  }
+
+  async function renameChannel(ch: ChannelRow) {
+    const name = window.prompt(`Nouveau nom pour #${ch.name}`, ch.name);
+    if (!name || name.trim() === ch.name) return;
+
+    try {
+      await renameDiscordChannel(ch.id, name.trim());
+      toast.success('Salon renommé');
+      await loadByChannel();
+    } catch (err: any) {
+      toast.error(err?.message || 'Renommage impossible');
+    }
+  }
+
+  async function removeChannel(ch: ChannelRow) {
+    const confirmed = await confirmDialog.ask({
+      title: `Supprimer #${ch.name} ?`,
+      description: 'Le salon et tous ses messages sont définitivement perdus. Cette action est irréversible.',
+      confirmLabel: 'Supprimer',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    try {
+      await deleteDiscordChannel(ch.id);
+      toast.success('Salon supprimé');
+      expandedChannelId = null;
+      await loadByChannel();
+    } catch (err: any) {
+      toast.error(err?.message || 'Suppression impossible');
+    }
+  }
+
+  $effect(() => {
+    if (activeTab === 'by-channel') void loadByChannel();
+  });
 
   const saveAction = createAsyncActionState();
   const rescanAction = createAsyncActionState();
@@ -146,9 +253,28 @@
   const availableCategories = $derived((dashboardStore.state.discordCategories || []) as any[]);
   const availableRoles = $derived((dashboardStore.state.discordRoles || []) as any[]);
 
+  // Les fils ne sont pas configurables ici : le bot les ecarte a l'execution,
+  // qu'il s'agisse des fils automatiques ou du sticky. Les proposer ne faisait
+  // que promettre un reglage sans effet.
+  const selectableChannels = $derived(availableChannels.filter(c => c.type !== 'thread'));
+
   const filteredChannels = $derived(
-    availableChannels.filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    selectableChannels.filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+
+  /**
+   * Choix d'un selecteur, en gardant la valeur deja enregistree meme si elle ne
+   * fait plus partie des choix proposes. Sans ca, un sticky configure sur un
+   * fil avant ce filtrage s'affichait sur un selecteur vide, et on ne pouvait
+   * plus voir ni changer ce qui etait en place.
+   */
+  function channelOptions(selectedId: string | null | undefined) {
+    const options = selectableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }));
+    if (!selectedId || options.some(o => o.id === selectedId)) return options;
+
+    const current = availableChannels.find(c => c.id === selectedId);
+    return current ? [...options, { id: current.id, name: channelDisplayName(current) }] : options;
+  }
 
   let activeTempChannels = $state([] as any[]);
   let loadingTempChannels = $state(false);
@@ -413,10 +539,17 @@
     }
   });
 
-  // Keep toggle state in sync with module header in ModulePage
+  // Keep toggle state in sync with module header in ModulePage.
+  // L'interrupteur du module ecrit deja son etat cote serveur : le repercuter
+  // sur la seule copie locale ferait apparaitre une modification a enregistrer,
+  // et l'enregistrement serait refuse par la garde des modules.
   $effect(() => {
     const activeModule = (dashboardStore.state.modules as any[]).find(m => m.id === 'auto_thread');
-    config.autoThreadEnabled = activeModule?.status === 'active';
+    const enabled = activeModule?.status === 'active';
+    untrack(() => {
+      config.autoThreadEnabled = enabled;
+      savedConfig.autoThreadEnabled = enabled;
+    });
   });
 
   async function handleSave(): Promise<boolean> {
@@ -512,8 +645,18 @@
   {:else}
     <!-- Tab Switcher -->
     <div class="flex border-b border-outline-variant/20 mb-8 overflow-x-auto no-scrollbar">
+      <button
+        onclick={() => gotoTab('/channels-management', 'by-channel', 'by-channel')}
+        class="tab-button {activeTab === 'by-channel' ? 'active' : ''}"
+      >
+        Par salon
+        {#if activeTab === 'by-channel'}
+          <div class="absolute bottom-0 left-6 right-6 h-0.5 bg-primary rounded-t-full"></div>
+        {/if}
+      </button>
+
       <button 
-        onclick={() => gotoTab('/channels-management', 'auto-thread', 'auto-thread')}
+        onclick={() => gotoTab('/channels-management', 'auto-thread', 'by-channel')}
         class="tab-button {activeTab === 'auto-thread' ? 'active' : ''}"
       >
         Auto-Thread
@@ -523,7 +666,7 @@
       </button>
 
       <button
-        onclick={() => gotoTab('/channels-management', 'sticky', 'auto-thread')}
+        onclick={() => gotoTab('/channels-management', 'sticky', 'by-channel')}
         class="tab-button {activeTab === 'sticky' ? 'active' : ''}"
       >
         {m.cm_tab_sticky()}
@@ -533,7 +676,7 @@
       </button>
 
       <button
-        onclick={() => gotoTab('/channels-management', 'stats', 'auto-thread')}
+        onclick={() => gotoTab('/channels-management', 'stats', 'by-channel')}
         class="tab-button {activeTab === 'stats' ? 'active' : ''}"
       >
         {m.cm_tab_stats()}
@@ -543,7 +686,7 @@
       </button>
 
       <button 
-        onclick={() => gotoTab('/channels-management', 'temp-voice', 'auto-thread')}
+        onclick={() => gotoTab('/channels-management', 'temp-voice', 'by-channel')}
         class="tab-button {activeTab === 'temp-voice' ? 'active' : ''}"
       >
         {m.cm_tab_temp_voice()}
@@ -553,7 +696,7 @@
       </button>
 
       <button 
-        onclick={() => gotoTab('/channels-management', 'honeypot', 'auto-thread')}
+        onclick={() => gotoTab('/channels-management', 'honeypot', 'by-channel')}
         class="tab-button {activeTab === 'honeypot' ? 'active' : ''}"
       >
         {m.cm_tab_honeypot()}
@@ -565,7 +708,122 @@
 
     <!-- Active Content Tab -->
     <div class="grid grid-cols-1 gap-8">
-      {#if activeTab === 'auto-thread'}
+      {#if activeTab === 'by-channel'}
+        <!-- VUE PAR SALON -->
+        <section class="bg-surface-container-low/30 border border-outline-variant/10 p-5 lg:p-6 rounded-xl space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold text-on-surface">Fonctionnalités par salon</h3>
+              <p class="text-[13px] text-on-surface-variant mt-0.5">
+                Chaque salon et ce qui y est actif. Les fonctionnalités uniques (comptage,
+                salon piège…) se déplacent : les activer ici les retire du salon précédent.
+              </p>
+            </div>
+            <input
+              type="text"
+              bind:value={byChannelQuery}
+              placeholder="Filtrer un salon…"
+              class="w-full sm:w-56 bg-surface-container-high text-sm px-4 py-2 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none"
+            />
+          </div>
+
+          {#if byChannelLoading}
+            <div class="flex justify-center py-8"><LoadingHint context="config" /></div>
+          {:else if visibleByChannel.length === 0}
+            <p class="text-[13px] text-on-surface-variant/70 py-8 text-center">Aucun salon ne correspond au filtre.</p>
+          {:else}
+            <div class="space-y-1.5">
+              {#each visibleByChannel as ch (ch.id)}
+                <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
+                  <button
+                    type="button"
+                    class="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-white/3 transition-colors text-left"
+                    onclick={() => (expandedChannelId = expandedChannelId === ch.id ? null : ch.id)}
+                  >
+                    <div class="flex items-center gap-2.5 min-w-0">
+                      <Papicon icon={ch.type === 'voice' ? 'volume-2' : ch.type === 'forum' ? 'message-square' : 'hash'} size={15} class="text-on-surface-variant/60 shrink-0" />
+                      <div class="min-w-0">
+                        <p class="text-[13px] font-medium text-on-surface truncate">{ch.name}</p>
+                        {#if ch.categoryName}
+                          <p class="text-[11px] text-on-surface-variant/60 truncate">{ch.categoryName}</p>
+                        {/if}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      {#each ch.features.slice(0, 3) as key}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{featureLabel(key)}</span>
+                      {/each}
+                      {#if ch.features.length > 3}
+                        <span class="text-[10px] text-on-surface-variant/60">+{ch.features.length - 3}</span>
+                      {/if}
+                      <Papicon icon={expandedChannelId === ch.id ? 'chevron-up' : 'chevron-down'} size={15} class="text-on-surface-variant/40" />
+                    </div>
+                  </button>
+
+                  {#if expandedChannelId === ch.id}
+                    <div class="px-4 pb-4 pt-1 border-t border-outline-variant/10 space-y-3">
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
+                        {#each togglableFeatures as key (key)}
+                          <label class="flex items-center gap-2.5 cursor-pointer py-1.5">
+                            <input
+                              type="checkbox"
+                              checked={ch.features.includes(key)}
+                              disabled={featureBusy !== null}
+                              onchange={(e) => setChannelFeature(ch, key, e.currentTarget.checked)}
+                              class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30"
+                            />
+                            <span class="text-[12.5px] text-on-surface">{featureLabel(key)}</span>
+                          </label>
+                        {/each}
+                      </div>
+
+                      <!-- Le sticky et les générateurs vocaux ont leur propre
+                           contenu à saisir : on renvoie vers leur onglet plutôt
+                           que d'en faire une case à cocher trompeuse. -->
+                      {#if ch.features.includes('sticky') || ch.features.includes('tempVoiceGenerator')}
+                        <p class="text-[11.5px] text-on-surface-variant/70">
+                          Ce salon porte aussi :
+                          {#if ch.features.includes('sticky')}<span class="text-on-surface">un message collé</span>{/if}
+                          {#if ch.features.includes('sticky') && ch.features.includes('tempVoiceGenerator')}, {/if}
+                          {#if ch.features.includes('tempVoiceGenerator')}<span class="text-on-surface">un générateur de salon vocal</span>{/if}.
+                          Ils se configurent dans leur onglet dédié.
+                        </p>
+                      {/if}
+
+                      <div class="flex flex-wrap gap-2 pt-1 border-t border-outline-variant/10">
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                          bg-surface-container text-on-surface border border-outline-variant/40
+                          hover:border-outline-variant disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          disabled={!ch.manageable}
+                          title={ch.manageable ? '' : 'Le bot ne peut pas modifier ce salon'}
+                          onclick={() => renameChannel(ch)}
+                        >
+                          <Papicon icon="pencil" size={13} />
+                          Renommer
+                        </button>
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                          bg-error/10 text-error border border-error/30 hover:bg-error/20
+                          disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          disabled={!ch.manageable}
+                          title={ch.manageable ? '' : 'Le bot ne peut pas supprimer ce salon'}
+                          onclick={() => removeChannel(ch)}
+                        >
+                          <Papicon icon="trash" size={13} />
+                          Supprimer
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {:else if activeTab === 'auto-thread'}
         <!-- AUTO-THREAD TAB -->
         <section class="bg-surface-container-low/30 border border-outline-variant/10 p-8 rounded-xl space-y-6">
           <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -693,7 +951,7 @@
                       <label for="sticky-channel-{index}" class="text-xs font-bold text-on-surface/80 block">{m.cm_sticky_channel_label()}</label>
                       <SearchableSelect
                         id="sticky-channel-{index}"
-                        options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+                        options={channelOptions(sticky.channelId)}
                         bind:value={sticky.channelId}
                         placeholder={m.cm_select_channel_placeholder()}
                         disabled={!!sticky.id}
@@ -1832,7 +2090,7 @@
                   <div class="grow">
                     <SearchableSelect
                       id="honeypot-channel-select"
-                      options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+                      options={channelOptions(config.honeypotChannelId)}
                       bind:value={config.honeypotChannelId}
                       placeholder={m.cm_select_channel_placeholder()}
                     />

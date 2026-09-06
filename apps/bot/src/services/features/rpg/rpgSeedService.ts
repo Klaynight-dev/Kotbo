@@ -57,6 +57,8 @@ async function seedItems(): Promise<void> {
       hpBonus: item.hpBonus ?? 0,
       hpRestore: item.hpRestore ?? 0,
       energyRestore: item.energyRestore ?? 0,
+      enchantId: item.enchantId ?? null,
+      enchantTier: item.enchantTier ?? 1,
       price: item.price,
       purchasable: item.purchasable,
     })),

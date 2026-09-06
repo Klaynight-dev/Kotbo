@@ -82,10 +82,13 @@ export async function createWorkflow(
   payload: SaveWorkflowPayload,
   guildId = authStore.selectedGuildId,
 ): Promise<{ workflow: WorkflowDetail }> {
+  // `silent` : la page annonce elle-même l'enregistrement, la duplication et la
+  // suppression. Sans ça, le toast générique du client s'ajoute au sien.
   return dashboardRequest('/workflows', {
     method: 'POST',
     payload,
     guildId,
+    silent: true,
     errorContext: 'API Error (Create Workflow):',
   });
 }
@@ -99,6 +102,7 @@ export async function updateWorkflow(
     method: 'PUT',
     payload,
     guildId,
+    silent: true,
     errorContext: 'API Error (Update Workflow):',
   });
 }
@@ -123,6 +127,7 @@ export async function deleteWorkflow(
   return dashboardRequest(`/workflows/${id}`, {
     method: 'DELETE',
     guildId,
+    silent: true,
     errorContext: 'API Error (Delete Workflow):',
   });
 }

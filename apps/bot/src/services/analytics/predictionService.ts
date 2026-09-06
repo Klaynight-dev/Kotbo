@@ -34,6 +34,8 @@
  */
 import { prismaRead } from '../../utils/db.js';
 import { toDateKey, shiftDateKey, dateKeyWeekday } from './dateKeys.js';
+import { BucketZoner } from './zonedBuckets.js';
+import { resolveGuildTimezone } from '../../utils/timezone.js';
 
 export interface TrendPoint {
   dateKey: string;
@@ -437,6 +439,7 @@ export async function getPredictionData(guildId: string, days = 30): Promise<Pre
 async function computePredictionData(guildId: string, window: number): Promise<PredictionData> {
   const startKey = shiftDateKey(-window);
   const todayKey = toDateKey();
+  const zoner = new BucketZoner(await resolveGuildTimezone(guildId));
 
   const [dailyStats, hourlyBuckets] = await Promise.all([
     prismaRead.guildDailyStat.findMany({
@@ -452,9 +455,13 @@ async function computePredictionData(guildId: string, window: number): Promise<P
       },
       orderBy: { dateKey: 'asc' },
     }),
-    // Agrégation côté base : 24 lignes au lieu de `window × 24`.
+    // Agrégation côté base, jour par jour et non sur les 24 heures d'un coup :
+    // les créneaux sont stockés en UTC, et un même créneau UTC ne tombe pas à
+    // la même heure locale des deux côtés d'un changement d'heure. Le regroupement
+    // final se fait donc après conversion - au plus `window × 24` lignes de deux
+    // entiers, ce qui reste sans commune mesure avec la lecture des messages bruts.
     prismaRead.guildHourlyStat.groupBy({
-      by: ['hour'],
+      by: ['dateKey', 'hour'],
       where: { guildId, dateKey: { gte: startKey, lt: todayKey } },
       _sum: { messagesCount: true },
     }),
@@ -501,7 +508,11 @@ async function computePredictionData(guildId: string, window: number): Promise<P
     voiceTrend: voice.trend,
     growthForecast,
     anomalies,
-    seasonality: buildSeasonality(completeStats, hourlyBuckets as Array<{ hour: number; _sum: { messagesCount: number | null } }>),
+    seasonality: buildSeasonality(
+      completeStats,
+      hourlyBuckets as Array<{ dateKey: string; hour: number; _sum: { messagesCount: number | null } }>,
+      zoner,
+    ),
     observedDays: completeStats.length,
     hasData: completeStats.length >= MIN_DAYS_FOR_FORECAST,
   };
@@ -532,7 +543,8 @@ function buildGrowthForecast(fit: Fit, observations: Observation[]): PredictionD
 
 function buildSeasonality(
   stats: Array<{ dateKey: string; messagesCount: number }>,
-  hourlyBuckets: Array<{ hour: number; _sum: { messagesCount: number | null } }>,
+  hourlyBuckets: Array<{ dateKey: string; hour: number; _sum: { messagesCount: number | null } }>,
+  zoner: BucketZoner,
 ): SeasonalityProfile {
   // Moyennes et non totaux : sur une fenêtre de 30 jours certains jours de la
   // semaine apparaissent 5 fois et d'autres 4, ce qui biaisait le classement.
@@ -557,12 +569,14 @@ function buildSeasonality(
   // vaut 0 message/jour ; l'ancienne version l'excluait purement et simplement,
   // si bien que l'heure la plus creuse ne pouvait jamais être détectée.
   const observedDays = Math.max(stats.length, 1);
-  const hourlyAverages = Array(24).fill(0);
+  // Somme puis moyenne à l'heure murale du serveur : « le serveur s'anime à
+  // 21h » doit désigner 21h sur l'horloge de ses membres, pas 21h UTC.
+  const hourlyTotals = Array(24).fill(0);
   for (const bucket of hourlyBuckets) {
-    if (bucket.hour >= 0 && bucket.hour < 24) {
-      hourlyAverages[bucket.hour] = (bucket._sum.messagesCount ?? 0) / observedDays;
-    }
+    if (bucket.hour < 0 || bucket.hour > 23) continue;
+    hourlyTotals[zoner.fromKeyHour(bucket.dateKey, bucket.hour).hour] += bucket._sum.messagesCount ?? 0;
   }
+  const hourlyAverages = hourlyTotals.map((total) => total / observedDays);
 
   let busiestHour = 0, quietestHour = 0;
   let busiestHourVal = -Infinity, quietestHourVal = Infinity;

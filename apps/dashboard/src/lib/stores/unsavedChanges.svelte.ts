@@ -83,7 +83,10 @@ class UnsavedChangesStore {
     try {
       const result = await this._onSave();
       // If the page callback returns false explicitly, keep dirty
-      if (result === false) return false;
+      if (result === false) {
+        this.saving = false;
+        return false;
+      }
       this.clear();
       return true;
     } catch {

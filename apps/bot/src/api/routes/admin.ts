@@ -1,5 +1,5 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { Client, TextChannel, EmbedBuilder, type ColorResolvable } from 'discord.js';
+import { Client, TextChannel } from 'discord.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BannedWord } from '@prisma/client';
@@ -8,9 +8,21 @@ import { cache } from '../../utils/cache.js';
 import { logger } from '../../utils/logger.js';
 import { activateGuild, deactivateGuild, reconcileStaffGuildActivation } from '../../utils/activation.js';
 import { announceAccessRevoked, announceTrialStart, extendAccess, formatDuration, normalizeAccessGrant, MAX_ACCESS_DURATION_MINUTES } from '../../services/system/accessService.js';
-import { E, resolveEmojiShortcodes, resolveEmojiShortcodesToUnicode, UNICODE_FALLBACKS } from '../../utils/emojis.js';
+import { E, UNICODE_FALLBACKS } from '../../utils/emojis.js';
 import { isReservedByNicknameModeration } from '../../services/moderation/nicknameModerationService.js';
 import { INVITE_SOURCE, recordBotInvite, tagInviteSource } from '../../services/analytics/inviteService.js';
+import {
+  GIFT_DURATIONS_MONTHS,
+  PLAN_KEYS,
+  PLAN_REGISTRY,
+  TRIAL_DAYS,
+  isGiftDuration,
+  normalizePlanKey,
+  type PlanKey,
+} from '@kotbo/contracts';
+import { invalidatePlan } from '../../services/system/planService.js';
+import { isBillingEnabled } from '../../services/billing/stripeService.js';
+import { grantAdminGift } from '../../services/billing/giftService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,14 +37,56 @@ import {
   KOTBO_MODULES,
   type KotboModule,
 } from '../../services/analytics/moduleStatsService.js';
+import {
+  BroadcastMediaError,
+  deleteBroadcastMedia,
+  listBroadcastMedia,
+  markBroadcastMediaUsed,
+  storeBroadcastMedia,
+} from '../../services/system/broadcastMediaService.js';
+import {
+  BroadcastValidationError,
+  deliverBroadcast,
+  finalizeBroadcast,
+  loadGuildChannelMap,
+  normalizeBroadcastContent,
+  resolveTargetGuildIds,
+  type BroadcastChannelPref,
+  type BroadcastTarget,
+} from '../../services/system/broadcastService.js';
+import {
+  listAdminAudit,
+  listAdminAuditActions,
+  recordAdminAudit,
+  resolveRequestIp,
+  type AdminAuditOutcome,
+} from '../../services/system/adminAuditService.js';
+import { ensureAdminHealthSampling, getAdminHealthSeries } from '../../services/system/adminHealthService.js';
 import { collectUserData } from '../../services/system/gdprExportService.js';
 import { buildGdprZip } from '../../services/system/gdprZip.js';
+import { handleAdminAnalyticsRoutes } from './admin/analytics.js';
 
 /**
  * `readJsonBody` refuse (415) toute requête sans Content-Type JSON. Les endpoints
  * dont le corps est facultatif s'en servent pour ne le lire que s'il existe, et
  * rester compatibles avec les appels historiques sans corps.
  */
+/** Corps accepte par `POST /api/admin/broadcast` et par les modeles d'annonce. */
+interface BroadcastRequestBody {
+  title?: string;
+  message: string;
+  color?: string;
+  thumbnailUrl?: string;
+  imageUrl?: string;
+  footerText?: string;
+  target?: BroadcastTarget;
+  targetGuilds?: string[];
+  channelPref?: BroadcastChannelPref;
+  dryRun?: boolean;
+  /** ISO 8601. Present = annonce programmee au lieu d'un envoi immediat. */
+  scheduledAt?: string;
+}
+
 function isJsonRequest(req: IncomingMessage): boolean {
   return req.headers['content-type']?.includes('application/json') ?? false;
 }
@@ -63,9 +117,68 @@ export async function handleAdminRoutes(
     return true;
   }
 
+  // Routes d'analyse commerciale et tunnel d'acquisition
+  if (parts[2] === 'analytics') {
+    return handleAdminAnalyticsRoutes(req, res, parts, url, client, user);
+  }
+
+  // GET /api/admin/health/series - Historique de sante pour les courbes
+  if (parts[2] === 'health' && parts[3] === 'series' && method === 'GET') {
+    try {
+      ensureAdminHealthSampling(client);
+      const minutes = Math.min(Math.max(Number(url.searchParams.get('minutes')) || 60, 5), 24 * 60);
+      const points = Math.min(Math.max(Number(url.searchParams.get('points')) || 180, 20), 720);
+      json(res, 200, getAdminHealthSeries(minutes, points));
+    } catch (err) {
+      logger.error('AdminAPI', 'GET admin health series error:', err);
+      json(res, 500, { error: "Erreur lors du chargement de l'historique de santé" });
+    }
+    return true;
+  }
+
+  // GET /api/admin/audit - Journal des actions admin
+  if (parts[2] === 'audit' && parts.length === 3 && method === 'GET') {
+    try {
+      const sinceHours = Number(url.searchParams.get('sinceHours'));
+      const outcomeParam = url.searchParams.get('outcome');
+      const outcome = outcomeParam === 'OK' || outcomeParam === 'FAILED'
+        ? (outcomeParam as AdminAuditOutcome)
+        : undefined;
+
+      json(res, 200, await listAdminAudit({
+        action: url.searchParams.get('action') || undefined,
+        actorId: url.searchParams.get('actorId') || undefined,
+        targetId: url.searchParams.get('targetId') || undefined,
+        outcome,
+        search: url.searchParams.get('search') || undefined,
+        since: Number.isFinite(sinceHours) && sinceHours > 0
+          ? new Date(Date.now() - sinceHours * 3_600_000)
+          : undefined,
+        limit: Number(url.searchParams.get('limit')) || 50,
+        cursor: url.searchParams.get('cursor') || undefined,
+      }));
+    } catch (err) {
+      logger.error('AdminAPI', 'GET admin audit error:', err);
+      json(res, 500, { error: 'Erreur lors du chargement du journal' });
+    }
+    return true;
+  }
+
+  // GET /api/admin/audit/actions - Valeurs disponibles pour le filtre
+  if (parts[2] === 'audit' && parts[3] === 'actions' && method === 'GET') {
+    try {
+      json(res, 200, { actions: await listAdminAuditActions() });
+    } catch (err) {
+      logger.error('AdminAPI', 'GET admin audit actions error:', err);
+      json(res, 500, { error: 'Erreur lors du chargement des actions' });
+    }
+    return true;
+  }
+
   // GET /api/admin/stats
   if (parts[2] === 'stats' && method === 'GET') {
     try {
+      ensureAdminHealthSampling(client);
       const shardSnapshots = await collectShardSnapshots(client);
       const guilds = await collectShardGuilds(client);
       const guildCount = guilds.length;
@@ -198,6 +311,13 @@ export async function handleAdminRoutes(
 
     // POST /api/admin/shards/restart-all
     if (method === 'POST' && parts.length === 4 && parts[3] === 'restart-all') {
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'shard.restart_all',
+        targetType: 'container',
+        summary: 'Redémarrage complet du conteneur demandé',
+        ip: resolveRequestIp(req),
+      });
       requestContainerRestart();
       json(res, 200, { ok: true, restart: 'container' });
       return true;
@@ -213,8 +333,27 @@ export async function handleAdminRoutes(
 
       try {
         requestShardRespawn(shardId);
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'shard.restart',
+          targetType: 'shard',
+          targetId: String(shardId),
+          summary: `Redémarrage du shard #${shardId}`,
+          ip: resolveRequestIp(req),
+        });
         json(res, 200, { ok: true, restart: 'shard', targetShard: shardId });
       } catch (err) {
+        // Le respawn ciblé a échoué : on retombe sur un redémarrage complet,
+        // ce que l'audit doit refléter tel quel.
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'shard.restart',
+          targetType: 'shard',
+          targetId: String(shardId),
+          summary: `Redémarrage du shard #${shardId} impossible : redémarrage du conteneur à la place`,
+          outcome: 'FAILED',
+          ip: resolveRequestIp(req),
+        });
         requestContainerRestart();
         json(res, 200, { ok: true, restart: 'container', targetShard: shardId });
       }
@@ -348,8 +487,25 @@ export async function handleAdminRoutes(
         if (!result) {
           json(res, 404, { error: 'Serveur introuvable' });
         } else if (result.success) {
+          await recordAdminAudit({
+            actorId: user.userId,
+            action: 'guild.leave',
+            targetType: 'guild',
+            targetId: guildId,
+            summary: `Bot retiré du serveur ${await getGuildName(client, guildId)}`,
+            ip: resolveRequestIp(req),
+          });
           json(res, 200, { success: true });
         } else {
+          await recordAdminAudit({
+            actorId: user.userId,
+            action: 'guild.leave',
+            targetType: 'guild',
+            targetId: guildId,
+            summary: 'Départ du serveur impossible',
+            outcome: 'FAILED',
+            ip: resolveRequestIp(req),
+          });
           json(res, 500, { error: 'Impossible de quitter le serveur' });
         }
       } else {
@@ -359,7 +515,16 @@ export async function handleAdminRoutes(
           return true;
         }
         try {
+          const guildName = guild.name;
           await guild.leave();
+          await recordAdminAudit({
+            actorId: user.userId,
+            action: 'guild.leave',
+            targetType: 'guild',
+            targetId: guildId,
+            summary: `Bot retiré du serveur ${guildName}`,
+            ip: resolveRequestIp(req),
+          });
           json(res, 200, { success: true });
         } catch (err) {
           json(res, 500, { error: 'Impossible de quitter le serveur' });
@@ -408,6 +573,14 @@ export async function handleAdminRoutes(
               update: {},
               create: { userId: body.userId, addedBy: user.userId }
             });
+            await recordAdminAudit({
+              actorId: user.userId,
+              action: 'admin.grant',
+              targetType: 'user',
+              targetId: body.userId,
+              summary: `Droits d'administrateur global accordés à ${discordUser.username}`,
+              ip: resolveRequestIp(req),
+            });
             json(res, 201, { success: true });
          } catch {
             json(res, 400, { error: 'Utilisateur Discord introuvable' });
@@ -427,6 +600,14 @@ export async function handleAdminRoutes(
        }
        try {
          await prisma.globalAdmin.delete({ where: { userId: targetId } }).catch(() => {});
+         await recordAdminAudit({
+           actorId: user.userId,
+           action: 'admin.revoke',
+           targetType: 'user',
+           targetId,
+           summary: "Droits d'administrateur global retirés",
+           ip: resolveRequestIp(req),
+         });
          json(res, 200, { success: true });
        } catch (err) {
          json(res, 500, { error: 'Erreur de base de données' });
@@ -479,6 +660,15 @@ export async function handleAdminRoutes(
             blacklistSet.add(body.userId);
             globalThis.KOTBO_BLACKLIST = blacklistSet;
 
+            await recordAdminAudit({
+              actorId: user.userId,
+              action: 'blacklist.add',
+              targetType: 'user',
+              targetId: body.userId,
+              summary: `${discordUser.username} ajouté à la blacklist globale`,
+              metadata: body.reason ? { reason: body.reason } : undefined,
+              ip: resolveRequestIp(req),
+            });
             json(res, 201, { success: true });
          } catch (err) {
             logger.error('AdminAPI', 'Error adding to blacklist:', err);
@@ -501,6 +691,14 @@ export async function handleAdminRoutes(
            blacklistSet.delete(targetId);
          }
 
+         await recordAdminAudit({
+           actorId: user.userId,
+           action: 'blacklist.remove',
+           targetType: 'user',
+           targetId,
+           summary: 'Utilisateur retiré de la blacklist globale',
+           ip: resolveRequestIp(req),
+         });
          json(res, 200, { success: true });
        } catch (err) {
          json(res, 500, { error: 'Erreur de base de données' });
@@ -779,6 +977,181 @@ export async function handleAdminRoutes(
       return true;
     }
 
+    // ── Medias heberges ─────────────────────────────────────────────────────
+    // Une image de broadcast doit vivre derriere une URL publique stable :
+    // Discord ne charge ni les `data:` URL ni les liens CDN signes expirables.
+
+    // GET /api/admin/broadcast/media - Bibliotheque d'images
+    if (method === 'GET' && parts[3] === 'media' && parts.length === 4) {
+      try {
+        const limit = Number(url.searchParams.get('limit')) || 60;
+        json(res, 200, await listBroadcastMedia(limit));
+      } catch (err) {
+        logger.error('AdminAPI', 'GET broadcast media error:', err);
+        json(res, 500, { error: 'Erreur lors du chargement des images' });
+      }
+      return true;
+    }
+
+    // POST /api/admin/broadcast/media - Upload d'une image
+    if (method === 'POST' && parts[3] === 'media' && parts.length === 4) {
+      try {
+        const body = await readJsonBody<{ fileName?: string; mimeType?: string; data?: string }>(req);
+        if (!body?.mimeType || !body?.data) {
+          json(res, 400, { error: 'mimeType et data sont requis.' });
+          return true;
+        }
+
+        const media = await storeBroadcastMedia({
+          fileName: body.fileName,
+          mimeType: body.mimeType,
+          data: body.data,
+          uploadedBy: user.userId,
+        });
+
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'broadcast.media.upload',
+          targetType: 'broadcast_media',
+          targetId: media.id,
+          summary: `Image de broadcast hébergée : ${media.fileName} (${Math.round(media.size / 1024)} Ko)`,
+          ip: resolveRequestIp(req),
+        });
+
+        json(res, 201, media);
+      } catch (err) {
+        if (err instanceof BroadcastMediaError) {
+          json(res, err.statusCode, { error: err.message });
+          return true;
+        }
+        logger.error('AdminAPI', 'POST broadcast media error:', err);
+        json(res, 500, { error: "Erreur lors de l'upload de l'image" });
+      }
+      return true;
+    }
+
+    // DELETE /api/admin/broadcast/media/:id
+    if (method === 'DELETE' && parts[3] === 'media' && parts.length === 5) {
+      const deleted = await deleteBroadcastMedia(parts[4]);
+      if (deleted) {
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'broadcast.media.delete',
+          targetType: 'broadcast_media',
+          targetId: parts[4],
+          summary: 'Image de broadcast supprimée',
+          ip: resolveRequestIp(req),
+        });
+      }
+      json(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Image introuvable' });
+      return true;
+    }
+
+    // ── Modeles d'annonce ───────────────────────────────────────────────────
+
+    // GET /api/admin/broadcast/templates
+    if (method === 'GET' && parts[3] === 'templates' && parts.length === 4) {
+      try {
+        const templates = await prisma.broadcastTemplate.findMany({ orderBy: { updatedAt: 'desc' }, take: 100 });
+        json(res, 200, { templates });
+      } catch (err) {
+        logger.error('AdminAPI', 'GET broadcast templates error:', err);
+        json(res, 500, { error: 'Erreur lors du chargement des modèles' });
+      }
+      return true;
+    }
+
+    // POST /api/admin/broadcast/templates
+    if (method === 'POST' && parts[3] === 'templates' && parts.length === 4) {
+      try {
+        const body = await readJsonBody<BroadcastRequestBody & { name?: string }>(req);
+        const name = body?.name?.trim();
+        if (!name) {
+          json(res, 400, { error: 'Nom du modèle requis' });
+          return true;
+        }
+        if (!body?.message?.trim()) {
+          json(res, 400, { error: 'Message requis' });
+          return true;
+        }
+
+        const template = await prisma.broadcastTemplate.create({
+          data: {
+            name: name.slice(0, 120),
+            title: body.title?.trim() || null,
+            message: body.message.trim(),
+            color: body.color || '#5865F2',
+            thumbnailUrl: body.thumbnailUrl?.trim() || null,
+            imageUrl: body.imageUrl?.trim() || null,
+            footerText: body.footerText?.trim() || null,
+            target: body.target || 'ALL',
+            targetGuilds: Array.isArray(body.targetGuilds) ? body.targetGuilds : [],
+            channelPref: body.channelPref || 'AUTO',
+            createdBy: user.userId,
+          },
+        });
+        json(res, 201, template);
+      } catch (err) {
+        logger.error('AdminAPI', 'POST broadcast template error:', err);
+        json(res, 500, { error: 'Erreur lors de la création du modèle' });
+      }
+      return true;
+    }
+
+    // DELETE /api/admin/broadcast/templates/:id
+    if (method === 'DELETE' && parts[3] === 'templates' && parts.length === 5) {
+      await prisma.broadcastTemplate.delete({ where: { id: parts[4] } }).catch(() => {});
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // GET /api/admin/broadcast/:id/deliveries - Rapport serveur par serveur
+    if (method === 'GET' && parts.length === 5 && parts[4] === 'deliveries') {
+      try {
+        const statusFilter = url.searchParams.get('status');
+        const deliveries = await prisma.broadcastDelivery.findMany({
+          where: {
+            broadcastId: parts[3],
+            ...(statusFilter && statusFilter !== 'ALL' ? { status: statusFilter } : {}),
+          },
+          orderBy: [{ status: 'asc' }, { guildName: 'asc' }],
+          take: 1000,
+        });
+        json(res, 200, { deliveries });
+      } catch (err) {
+        logger.error('AdminAPI', 'GET broadcast deliveries error:', err);
+        json(res, 500, { error: 'Erreur lors du chargement du rapport de diffusion' });
+      }
+      return true;
+    }
+
+    // POST /api/admin/broadcast/:id/cancel - Annule une annonce programmee
+    if (method === 'POST' && parts.length === 5 && parts[4] === 'cancel') {
+      try {
+        const cancelled = await prisma.broadcastLog.updateMany({
+          where: { id: parts[3], status: 'SCHEDULED' },
+          data: { status: 'CANCELLED', cancelledBy: user.userId, finishedAt: new Date() },
+        });
+        if (cancelled.count === 0) {
+          json(res, 409, { error: "Cette annonce n'est plus annulable (déjà envoyée ou en cours)." });
+          return true;
+        }
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'broadcast.cancel',
+          targetType: 'broadcast',
+          targetId: parts[3],
+          summary: 'Annonce programmée annulée',
+          ip: resolveRequestIp(req),
+        });
+        json(res, 200, { ok: true });
+      } catch (err) {
+        logger.error('AdminAPI', 'POST broadcast cancel error:', err);
+        json(res, 500, { error: "Erreur lors de l'annulation" });
+      }
+      return true;
+    }
+
     // GET /api/admin/broadcast/channels - Per-guild broadcast channel configuration
     if (method === 'GET' && parts[3] === 'channels' && parts.length === 4) {
       try {
@@ -937,232 +1310,138 @@ export async function handleAdminRoutes(
       return true;
     }
 
-    // POST /api/admin/broadcast - Send configurable broadcast
+    // POST /api/admin/broadcast - Envoi immediat, programmation ou simulation
     if (method === 'POST' && parts.length === 3) {
       try {
-        interface BroadcastBody {
-          title?: string;
-          message: string;
-          color?: string;
-          thumbnailUrl?: string;
-          imageUrl?: string;
-          footerText?: string;
-          target?: 'ALL' | 'ACTIVATED' | 'CUSTOM';
-          targetGuilds?: string[];
-          channelPref?: 'AUTO' | 'NEWS' | 'PUBLIC' | 'STAFF' | 'FALLBACK';
-          dryRun?: boolean;
-        }
-
-        const body = await readJsonBody<BroadcastBody>(req);
-        if (!body || !body.message?.trim()) {
-          json(res, 400, { error: 'Message requis' });
+        const body = await readJsonBody<BroadcastRequestBody>(req);
+        if (!body) {
+          json(res, 400, { error: 'Corps de requête requis' });
           return true;
         }
 
-        const title = resolveEmojiShortcodesToUnicode(body.title?.trim() || '📢 Annonce Globale Kotbo');
-        const message = resolveEmojiShortcodes(body.message.trim());
-        const color = (body.color || '#5865F2') as ColorResolvable;
-        const thumbnailUrl = body.thumbnailUrl?.trim() || null;
-        const imageUrl = body.imageUrl?.trim() || null;
-        const footerText = resolveEmojiShortcodesToUnicode(body.footerText?.trim() || "Système d'annonce globale Kotbo");
-        const target = body.target || 'ALL';
-        const targetGuilds = Array.isArray(body.targetGuilds) ? body.targetGuilds : [];
-        const channelPref = body.channelPref || 'AUTO';
-        const dryRun = body.dryRun === true;
-
-        const dbGuilds = await prisma.guild.findMany({
-          select: {
-            id: true,
-            activated: true,
-            broadcastChannelId: true,
-            newsChannelId: true,
-            publicChannelId: true,
-            staffAnnouncementChannelId: true,
-          },
-        });
-
-        const guildChannelMap: Record<string, {
-          broadcastChannelId: string | null;
-          newsChannelId: string | null;
-          publicChannelId: string | null;
-          staffAnnouncementChannelId: string | null;
-        }> = Object.create(null);
-
-        const allowedGuildIds = new Set<string>();
-
-        for (const guild of dbGuilds) {
-          guildChannelMap[guild.id] = {
-            broadcastChannelId: guild.broadcastChannelId,
-            newsChannelId: guild.newsChannelId,
-            publicChannelId: guild.publicChannelId,
-            staffAnnouncementChannelId: guild.staffAnnouncementChannelId,
-          };
-
-          if (target === 'ALL') {
-            allowedGuildIds.add(guild.id);
-          } else if (target === 'ACTIVATED' && guild.activated) {
-            allowedGuildIds.add(guild.id);
-          } else if (target === 'CUSTOM' && targetGuilds.includes(guild.id)) {
-            allowedGuildIds.add(guild.id);
+        let normalized;
+        try {
+          normalized = normalizeBroadcastContent(body);
+        } catch (err) {
+          if (err instanceof BroadcastValidationError) {
+            json(res, 400, { error: err.message, field: err.field });
+            return true;
           }
+          throw err;
         }
 
-        if (target === 'ALL') {
-          const shardGuilds = await collectShardGuilds(client);
-          for (const g of shardGuilds) {
-            allowedGuildIds.add(g.id);
-          }
-        }
-
+        const allowedGuildIds = await resolveTargetGuildIds(
+          client,
+          normalized.target,
+          normalized.targetGuilds,
+          collectShardGuilds,
+        );
         const totalTargeted = allowedGuildIds.size;
 
-        if (dryRun) {
-          json(res, 200, { dryRun: true, totalTargeted, target, channelPref });
+        // Simulation : on renvoie la cible et les avertissements sans rien envoyer.
+        if (body.dryRun === true) {
+          const channelMap = await loadGuildChannelMap();
+          const unconfigured = [...allowedGuildIds].filter((id) => !channelMap[id]?.broadcastChannelId);
+          json(res, 200, {
+            dryRun: true,
+            totalTargeted,
+            target: normalized.target,
+            channelPref: normalized.channelPref,
+            warnings: normalized.warnings,
+            unconfiguredCount: unconfigured.length,
+          });
           return true;
         }
 
-        let successCount = 0;
-        let failCount = 0;
-
-        const embedData = { title, message, color: typeof color === 'string' ? color : '#5865F2', thumbnailUrl, imageUrl, footerText };
-        const allowedIds = [...allowedGuildIds];
-
-        if (client.shard) {
-          const results = await client.shard.broadcastEval<
-            { successCount: number; failCount: number },
-            {
-              embedData: typeof embedData;
-              guildChannelMap: typeof guildChannelMap;
-              allowedIds: string[];
-              channelPref: string;
-              COLORS_PRIMARY: number;
-            }
-          >(async (shardClient, ctx) => {
-            let sc = 0;
-            let fc = 0;
-
-            for (const [id, guild] of shardClient.guilds.cache) {
-              if (!ctx.allowedIds.includes(id)) continue;
-              try {
-                const dbG = ctx.guildChannelMap[id];
-                let channel;
-
-                // Per-guild configured broadcast channel always wins
-                const prefOrder: string[] = [dbG?.broadcastChannelId || ''];
-                if (ctx.channelPref === 'NEWS') prefOrder.push(dbG?.newsChannelId || '', dbG?.publicChannelId || '');
-                else if (ctx.channelPref === 'PUBLIC') prefOrder.push(dbG?.publicChannelId || '', dbG?.newsChannelId || '');
-                else if (ctx.channelPref === 'STAFF') prefOrder.push(dbG?.staffAnnouncementChannelId || '', dbG?.newsChannelId || '');
-                else prefOrder.push(dbG?.newsChannelId || '', dbG?.publicChannelId || '', dbG?.staffAnnouncementChannelId || '');
-
-                for (const chId of prefOrder) {
-                  if (chId) {
-                    const found = guild.channels.cache.get(chId);
-                    if (found && (found.type === 0 || found.type === 5)) { channel = found; break; }
-                  }
-                }
-
-                if (!channel) {
-                  channel = guild.channels.cache.find((c) => c.type === 0 && c.permissionsFor(shardClient.user!)?.has('SendMessages'));
-                }
-
-                if (channel && channel.isTextBased()) {
-                  const { EmbedBuilder: ShardEmbed } = await import('discord.js');
-                  const embed = new ShardEmbed()
-                    .setTitle(ctx.embedData.title)
-                    .setDescription(ctx.embedData.message)
-                    .setColor(parseInt((ctx.embedData.color || '#5865F2').replace('#', ''), 16))
-                    .setFooter({ text: ctx.embedData.footerText || '' })
-                    .setTimestamp();
-                  if (ctx.embedData.thumbnailUrl) embed.setThumbnail(ctx.embedData.thumbnailUrl);
-                  if (ctx.embedData.imageUrl) embed.setImage(ctx.embedData.imageUrl);
-                  await channel.send({ embeds: [embed] });
-                  sc++;
-                } else {
-                  fc++;
-                }
-              } catch {
-                fc++;
-              }
-            }
-            return { successCount: sc, failCount: fc };
-          }, {
-            context: {
-              embedData,
-              guildChannelMap,
-              allowedIds,
-              channelPref,
-              COLORS_PRIMARY: 0x5865f2,
-            },
-          });
-
-          for (const r of results) {
-            successCount += r.successCount;
-            failCount += r.failCount;
-          }
-        } else {
-          for (const [id, guild] of client.guilds.cache) {
-            if (!allowedGuildIds.has(id)) continue;
-            try {
-              const dbG = guildChannelMap[id];
-              let channel;
-
-              // Per-guild configured broadcast channel always wins
-              const prefOrder: (string | null | undefined)[] = [dbG?.broadcastChannelId];
-              if (channelPref === 'NEWS') prefOrder.push(dbG?.newsChannelId, dbG?.publicChannelId);
-              else if (channelPref === 'PUBLIC') prefOrder.push(dbG?.publicChannelId, dbG?.newsChannelId);
-              else if (channelPref === 'STAFF') prefOrder.push(dbG?.staffAnnouncementChannelId, dbG?.newsChannelId);
-              else prefOrder.push(dbG?.newsChannelId, dbG?.publicChannelId, dbG?.staffAnnouncementChannelId);
-
-              for (const chId of prefOrder) {
-                if (chId) {
-                  const found = guild.channels.cache.get(chId);
-                  if (found && (found.type === 0 || found.type === 5)) { channel = found; break; }
-                }
-              }
-
-              if (!channel) {
-                channel = guild.channels.cache.find(c => c.type === 0 && c.permissionsFor(client.user!)?.has('SendMessages'));
-              }
-
-              if (channel && channel.isTextBased()) {
-                const embed = new EmbedBuilder()
-                  .setTitle(title)
-                  .setDescription(message)
-                  .setColor(color)
-                  .setFooter({ text: footerText })
-                  .setTimestamp();
-                if (thumbnailUrl) embed.setThumbnail(thumbnailUrl);
-                if (imageUrl) embed.setImage(imageUrl);
-                await channel.send({ embeds: [embed] });
-                successCount++;
-              } else {
-                failCount++;
-              }
-            } catch {
-              failCount++;
-            }
-          }
+        // Programmation : on persiste sans envoyer, le planificateur reprend la main.
+        const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
+        if (scheduledAt && Number.isNaN(scheduledAt.getTime())) {
+          json(res, 400, { error: 'Date de programmation invalide.', field: 'scheduledAt' });
+          return true;
+        }
+        if (scheduledAt && scheduledAt.getTime() < Date.now() - 60_000) {
+          json(res, 400, { error: 'La date de programmation est dans le passé.', field: 'scheduledAt' });
+          return true;
         }
 
-        await prisma.broadcastLog.create({
+        const record = await prisma.broadcastLog.create({
           data: {
             sentBy: user.userId,
-            title,
+            title: normalized.title,
             message: body.message.trim(),
-            color: typeof color === 'string' ? color : '#5865F2',
-            thumbnailUrl,
-            imageUrl,
-            footerText,
-            target,
-            targetGuilds,
-            channelPref,
-            successCount,
-            failCount,
+            color: normalized.color,
+            thumbnailUrl: normalized.thumbnailUrl,
+            imageUrl: normalized.imageUrl,
+            footerText: normalized.footerText,
+            target: normalized.target,
+            targetGuilds: normalized.targetGuilds,
+            channelPref: normalized.channelPref,
             totalTargeted,
+            status: scheduledAt ? 'SCHEDULED' : 'SENDING',
+            scheduledAt,
+            startedAt: scheduledAt ? null : new Date(),
           },
         });
 
-        json(res, 200, { success: true, successCount, failCount, totalTargeted });
+        if (scheduledAt) {
+          await recordAdminAudit({
+            actorId: user.userId,
+            action: 'broadcast.schedule',
+            targetType: 'broadcast',
+            targetId: record.id,
+            summary: `Annonce programmée pour ${scheduledAt.toISOString()} vers ${totalTargeted} serveur(s)`,
+            metadata: { target: normalized.target, channelPref: normalized.channelPref },
+            ip: resolveRequestIp(req),
+          });
+          json(res, 200, {
+            success: true,
+            scheduled: true,
+            broadcastId: record.id,
+            scheduledAt: scheduledAt.toISOString(),
+            totalTargeted,
+            warnings: normalized.warnings,
+          });
+          return true;
+        }
+
+        const channelMap = await loadGuildChannelMap();
+        const deliveries = await deliverBroadcast(client, {
+          title: normalized.title,
+          message: normalized.message,
+          color: normalized.color,
+          thumbnailUrl: normalized.thumbnailUrl,
+          imageUrl: normalized.imageUrl,
+          footerText: normalized.footerText,
+          channelPref: normalized.channelPref,
+          allowedIds: [...allowedGuildIds],
+          channelMap,
+        });
+
+        const { successCount, failCount } = await finalizeBroadcast(record.id, deliveries, totalTargeted);
+        await markBroadcastMediaUsed([normalized.imageUrl, normalized.thumbnailUrl]);
+
+        await recordAdminAudit({
+          actorId: user.userId,
+          action: 'broadcast.send',
+          targetType: 'broadcast',
+          targetId: record.id,
+          summary: `Annonce envoyée : ${successCount} succès, ${failCount} échec(s) sur ${totalTargeted} serveur(s)`,
+          metadata: { target: normalized.target, channelPref: normalized.channelPref, hasImage: Boolean(normalized.imageUrl) },
+          outcome: successCount > 0 || totalTargeted === 0 ? 'OK' : 'FAILED',
+          ip: resolveRequestIp(req),
+        });
+
+        json(res, 200, {
+          success: true,
+          broadcastId: record.id,
+          successCount,
+          failCount,
+          totalTargeted,
+          warnings: normalized.warnings,
+          // Detail borne : la page en affiche l'essentiel, le reste vient de
+          // `/api/admin/broadcast/:id/deliveries` a la demande.
+          failures: deliveries.filter((d) => d.status !== 'SENT').slice(0, 50),
+        });
       } catch (err: unknown) {
         const errMessage = err instanceof Error ? err.message : String(err);
         logger.error('AdminAPI', `Broadcast error: ${errMessage}`);
@@ -1176,6 +1455,337 @@ export async function handleAdminRoutes(
   const isGlobalAdmin = await resolveAdminAccess(client, user.userId);
   if (!isGlobalAdmin) {
     json(res, 403, { error: 'Accès réservé aux administrateurs globaux Kotbo.' });
+    return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Facturation - reprise en main d'un serveur
+  //
+  // Ces routes existent parce que Stripe ne couvre pas tout : un partenariat,
+  // un geste commercial après une panne, un abonnement créé à la main dans
+  // l'interface Stripe, un essai gâché. Chacune de ces situations se règle ici
+  // plutôt que par un UPDATE en base, ce qui laisse une trace dans le journal
+  // d'audit et purge les caches qu'un UPDATE aurait laissés périmés.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/admin/billing : état commercial de tous les serveurs connus
+  if (parts.length === 3 && parts[2] === 'billing' && method === 'GET') {
+    try {
+      const guildNames = new Map(
+        (await collectShardGuilds(client)).map((g: { id: string; name: string }) => [g.id, g.name] as const),
+      );
+
+      const [rows, trials] = await Promise.all([
+        prisma.guild.findMany({
+          select: {
+            id: true,
+            plan: true,
+            activated: true,
+            accessType: true,
+            accessExpiresAt: true,
+            stripeCustomerId: true,
+            stripeSubscriptionId: true,
+            stripeSubscriptionStatus: true,
+            stripeCurrentPeriodEnd: true,
+            stripeCancelAtPeriodEnd: true,
+          },
+        }),
+        prisma.billingTrial.findMany({
+          select: { guildId: true, discordUserId: true, subscriptionId: true, reservedAt: true, startedAt: true },
+        }),
+      ]);
+
+      const trialByGuild = new Map(trials.map((t) => [t.guildId, t] as const));
+
+      const guilds = rows.map((row) => {
+        const trial = trialByGuild.get(row.id) ?? null;
+        return {
+          id: row.id,
+          // Un serveur peut être en base sans que le bot y soit encore (il l'a
+          // quitté, ou il est sur une autre instance) : on ne le cache pas, son
+          // abonnement continue d'exister.
+          name: guildNames.get(row.id) ?? null,
+          present: guildNames.has(row.id),
+          plan: normalizePlanKey(row.plan),
+          activated: row.activated,
+          accessType: row.accessType,
+          accessExpiresAt: row.accessExpiresAt,
+          stripeCustomerId: row.stripeCustomerId,
+          stripeSubscriptionId: row.stripeSubscriptionId,
+          stripeSubscriptionStatus: row.stripeSubscriptionStatus,
+          stripeCurrentPeriodEnd: row.stripeCurrentPeriodEnd,
+          stripeCancelAtPeriodEnd: row.stripeCancelAtPeriodEnd,
+          trial: trial
+            ? {
+                discordUserId: trial.discordUserId,
+                // Sans abonnement rattaché, la ligne n'est qu'une réservation :
+                // quelqu'un a ouvert la page de paiement sans aller au bout.
+                consumed: Boolean(trial.subscriptionId),
+                reservedAt: trial.reservedAt,
+                startedAt: trial.startedAt,
+              }
+            : null,
+        };
+      });
+
+      const counts: Record<string, number> = {};
+      for (const key of PLAN_KEYS) counts[key] = 0;
+      for (const guild of guilds) counts[guild.plan] = (counts[guild.plan] ?? 0) + 1;
+
+      json(res, 200, {
+        enabled: isBillingEnabled(),
+        plans: PLAN_REGISTRY.map((definition) => ({ key: definition.key, name: definition.name })),
+        counts,
+        trialDays: TRIAL_DAYS,
+        subscriptions: guilds.filter((g) => g.stripeSubscriptionId).length,
+        trials: trials.filter((t) => t.subscriptionId).length,
+        guilds,
+      });
+    } catch (err) {
+      logger.error('AdminAPI', "Erreur lors de la lecture de l'état de facturation :", err);
+      json(res, 500, { error: "Erreur lors de la lecture de l'état de facturation." });
+    }
+    return true;
+  }
+
+  // PUT /api/admin/guilds/:guildId/plan : pose une offre à la main
+  if (parts.length === 5 && parts[2] === 'guilds' && parts[4] === 'plan' && method === 'PUT') {
+    const guildId = parts[3];
+    try {
+      const body = await readJsonBody<{ plan?: string; reason?: string }>(req);
+      const requested = typeof body?.plan === 'string' ? body.plan.toUpperCase() : '';
+
+      // `normalizePlanKey` retomberait silencieusement sur FREE : ici on refuse,
+      // une faute de frappe ne doit pas fermer les modules d'un client.
+      if (!(PLAN_KEYS as readonly string[]).includes(requested)) {
+        json(res, 400, { error: `Offre inconnue. Attendu : ${PLAN_KEYS.join(', ')}.` });
+        return true;
+      }
+
+      const plan = requested as PlanKey;
+      const reason = typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'geste administrateur';
+
+      // `upsert` : un serveur peut n'avoir aucune ligne (jamais configuré) et
+      // recevoir tout de même une offre négociée avant sa première connexion.
+      await prisma.guild.upsert({
+        where: { id: guildId },
+        update: { plan },
+        create: { id: guildId, plan },
+      });
+      await invalidatePlan(guildId);
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.plan.set',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `Offre de ${await getGuildName(client, guildId)} posée à ${plan} (${reason})`,
+        metadata: { plan, reason },
+        ip: resolveRequestIp(req),
+      });
+
+      json(res, 200, {
+        ok: true,
+        plan,
+        message: `Offre posée à ${plan}. Les modules suivent d'ici trente secondes (durée du cache).`,
+      });
+    } catch (err) {
+      logger.error('AdminAPI', "Erreur lors de la pose de l'offre :", err);
+      json(res, 500, { error: "Erreur lors de la pose de l'offre." });
+    }
+    return true;
+  }
+
+  // POST /api/admin/guilds/:guildId/billing/gift : offre une période à un serveur
+  if (parts.length === 6 && parts[2] === 'guilds' && parts[4] === 'billing' && parts[5] === 'gift' && method === 'POST') {
+    const guildId = parts[3];
+    try {
+      const body = await readJsonBody<{ plan?: string; months?: number; note?: string }>(req);
+      const requested = typeof body?.plan === 'string' ? body.plan.toUpperCase() : '';
+
+      if (!(PLAN_KEYS as readonly string[]).includes(requested) || requested === 'FREE') {
+        json(res, 400, { error: `Offre inconnue. Attendu : ${PLAN_KEYS.filter((k) => k !== 'FREE').join(', ')}.` });
+        return true;
+      }
+
+      const months = Number(body?.months);
+      if (!isGiftDuration(months)) {
+        json(res, 400, { error: `Durée invalide. Attendu : ${GIFT_DURATIONS_MONTHS.join(', ')} mois.` });
+        return true;
+      }
+
+      // Passe par le même chemin qu'un cadeau acheté : activation si le serveur
+      // ne l'était pas, offre posée par `planService`, durée par
+      // `accessService`. L'historique d'un serveur ne doit pas dépendre de la
+      // façon dont il a obtenu son offre.
+      const { application, gift } = await grantAdminGift({
+        guildId,
+        plan: requested as PlanKey,
+        months,
+        actorId: user.userId,
+        note: body?.note ?? null,
+      });
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.billing.gift',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `${gift.planName} offert à ${await getGuildName(client, guildId)} pour ${months} mois`,
+        metadata: { plan: gift.plan, months, giftId: gift.id, note: gift.note },
+        ip: resolveRequestIp(req),
+      });
+
+      json(res, 200, {
+        ok: true,
+        gift,
+        message: application.keptPermanentAccess
+          ? `${gift.planName} posé. Ce serveur a un accès permanent : aucune date d'expiration n'a été écrite.`
+          : `${gift.planName} offert pour ${months} mois.`,
+      });
+    } catch (err) {
+      logger.error('AdminAPI', "Erreur lors de l'attribution d'un cadeau :", err);
+      json(res, 500, { error: "Erreur lors de l'attribution du cadeau." });
+    }
+    return true;
+  }
+
+  // POST /api/admin/guilds/:guildId/billing/detach : coupe le lien avec Stripe
+  if (parts.length === 6 && parts[2] === 'guilds' && parts[4] === 'billing' && parts[5] === 'detach' && method === 'POST') {
+    const guildId = parts[3];
+    try {
+      // On n'annule rien côté Stripe : un abonnement continue de se facturer
+      // tant qu'il n'est pas résilié là-bas. Cette route ne fait qu'oublier le
+      // lien de notre côté, pour un serveur dont la facturation est reprise
+      // hors ligne ou dont l'abonnement a été déplacé sur un autre compte.
+      const existing = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: { stripeSubscriptionId: true, stripeCustomerId: true },
+      });
+
+      if (!existing) {
+        json(res, 404, { error: "Ce serveur n'est pas enregistré." });
+        return true;
+      }
+
+      await prisma.guild.update({
+        where: { id: guildId },
+        data: {
+          stripeCustomerId: null,
+          stripeSubscriptionId: null,
+          stripeSubscriptionStatus: null,
+          stripePriceId: null,
+          stripeCancelAtPeriodEnd: false,
+          stripeCurrentPeriodEnd: null,
+        },
+      });
+      await invalidatePlan(guildId);
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.billing.detach',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `Facturation Stripe détachée de ${await getGuildName(client, guildId)}`,
+        metadata: {
+          previousSubscriptionId: existing.stripeSubscriptionId,
+          previousCustomerId: existing.stripeCustomerId,
+        },
+        ip: resolveRequestIp(req),
+      });
+
+      json(res, 200, {
+        ok: true,
+        message: existing.stripeSubscriptionId
+          ? "Lien Stripe oublié. L'abonnement continue d'exister côté Stripe : le résilier là-bas si le client ne doit plus être débité."
+          : 'Lien Stripe oublié.',
+      });
+    } catch (err) {
+      logger.error('AdminAPI', 'Erreur lors du détachement de la facturation :', err);
+      json(res, 500, { error: 'Erreur lors du détachement de la facturation.' });
+    }
+    return true;
+  }
+
+  // POST /api/admin/guilds/:guildId/billing/trial-reset : rend son essai gratuit
+  if (parts.length === 6 && parts[2] === 'guilds' && parts[4] === 'billing' && parts[5] === 'trial-reset' && method === 'POST') {
+    const guildId = parts[3];
+    try {
+      const trial = await prisma.billingTrial.findUnique({ where: { guildId } });
+      if (!trial) {
+        json(res, 404, { error: "Ce serveur n'a jamais ouvert d'essai." });
+        return true;
+      }
+
+      // La ligne porte les deux gardes à la fois : la supprimer rend l'essai au
+      // serveur *et* au compte Discord qui l'avait déclenché. C'est voulu - on
+      // ne peut pas en rendre un sans l'autre - mais ça se dit.
+      await prisma.billingTrial.delete({ where: { guildId } });
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.billing.trial_reset',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `Essai gratuit rendu à ${await getGuildName(client, guildId)}`,
+        metadata: { discordUserId: trial.discordUserId, consumed: Boolean(trial.subscriptionId) },
+        ip: resolveRequestIp(req),
+      });
+
+      json(res, 200, {
+        ok: true,
+        message: `Essai rendu au serveur et au compte ${trial.discordUserId}.`,
+      });
+    } catch (err) {
+      logger.error('AdminAPI', "Erreur lors de la remise à zéro de l'essai :", err);
+      json(res, 500, { error: "Erreur lors de la remise à zéro de l'essai." });
+    }
+    return true;
+  }
+
+  // POST /api/admin/guilds/:guildId/billing/resync : relit l'abonnement Stripe
+  if (parts.length === 6 && parts[2] === 'guilds' && parts[4] === 'billing' && parts[5] === 'resync' && method === 'POST') {
+    const guildId = parts[3];
+    try {
+      const guild = await prisma.guild.findUnique({
+        where: { id: guildId },
+        select: { stripeSubscriptionId: true },
+      });
+
+      if (!guild?.stripeSubscriptionId) {
+        json(res, 404, { error: "Ce serveur n'a pas d'abonnement Stripe rattaché." });
+        return true;
+      }
+
+      // Rattrapage d'un webhook perdu : `syncSubscription` recalcule l'état
+      // complet à partir de l'abonnement, exactement comme le ferait
+      // l'événement manquant. Idempotent, donc sans risque à relancer.
+      const { retrieveSubscription } = await import('../../services/billing/stripeService.js');
+      const { syncSubscription } = await import('../../services/billing/subscriptionSync.js');
+
+      const subscription = await retrieveSubscription(guild.stripeSubscriptionId);
+      if (!subscription) {
+        json(res, 404, { error: "Cet abonnement n'existe plus côté Stripe (ou la clé est celle d'un autre compte)." });
+        return true;
+      }
+
+      await syncSubscription(subscription);
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.billing.resync',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `Abonnement Stripe resynchronisé pour ${await getGuildName(client, guildId)}`,
+        metadata: { subscriptionId: guild.stripeSubscriptionId, status: subscription.status },
+        ip: resolveRequestIp(req),
+      });
+
+      json(res, 200, { ok: true, status: subscription.status, message: `Abonnement relu : statut ${subscription.status}.` });
+    } catch (err) {
+      logger.error('AdminAPI', 'Erreur lors de la resynchronisation Stripe :', err);
+      json(res, 500, { error: 'Erreur lors de la resynchronisation Stripe.' });
+    }
     return true;
   }
 
@@ -1326,6 +1936,14 @@ export async function handleAdminRoutes(
       await announceAccessRevoked(client, guildId).catch((err) =>
         logger.warn('AdminAPI', `Impossible de prévenir ${guildId} de la désactivation :`, err),
       );
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.deactivate',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: `Serveur ${await getGuildName(client, guildId)} désactivé`,
+        ip: resolveRequestIp(req),
+      });
       json(res, 200, { ok: true, message: 'Le serveur a été désactivé.' });
     } catch (err) {
       logger.error('AdminAPI', 'Erreur lors de la désactivation du serveur :', err);
@@ -1367,6 +1985,18 @@ export async function handleAdminRoutes(
           logger.warn('AdminAPI', `Impossible d'annoncer le démarrage de l'essai sur ${guildId} :`, err),
         );
       }
+
+      await recordAdminAudit({
+        actorId: user.userId,
+        action: 'guild.activate',
+        targetType: 'guild',
+        targetId: guildId,
+        summary: result.expiresAt
+          ? `Serveur ${await getGuildName(client, guildId)} activé pour ${formatDuration(result.durationMinutes!)}`
+          : `Serveur ${await getGuildName(client, guildId)} activé (accès permanent)`,
+        metadata: { accessType: result.accessType, code },
+        ip: resolveRequestIp(req),
+      });
 
       json(res, 200, {
         ok: true,
@@ -1923,6 +2553,30 @@ export async function handleAdminRoutes(
     } catch (err) {
       logger.error('AdminAPI', 'DELETE whitelabel guild unbind error:', err);
       json(res, 500, { error: 'Erreur lors du détachement de la guild' });
+    }
+    return true;
+  }
+
+  // ── RGPD : retrait des avis de satisfaction publiés sur Discord ──
+  // DELETE /api/admin/gdpr/:userId/satisfaction-reviews
+  // À appeler avant d'effacer les lignes en base : l'identifiant du message
+  // publié n'existe que sur la ligne de l'avis.
+  if (parts[2] === 'gdpr' && parts[3] && parts[4] === 'satisfaction-reviews' && parts.length === 5 && method === 'DELETE') {
+    const userId = parts[3];
+
+    if (!/^\d{5,25}$/.test(userId)) {
+      json(res, 400, { error: 'Identifiant Discord invalide.' });
+      return true;
+    }
+
+    try {
+      const { deleteSatisfactionReviewMessages } = await import('../../services/features/ticketSatisfactionService.js');
+      const result = await deleteSatisfactionReviewMessages(client, userId);
+      logger.info('AdminAPI', `Avis de satisfaction de ${userId} retirés de Discord (${result.deleted} supprimés, ${result.cleared} déjà absents, ${result.failed} en échec) par ${user.userId}`);
+      json(res, 200, result);
+    } catch (err) {
+      logger.error('AdminAPI', 'GDPR satisfaction reviews deletion error:', err);
+      json(res, 500, { error: 'Erreur lors du retrait des avis publiés.' });
     }
     return true;
   }

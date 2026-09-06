@@ -1,7 +1,9 @@
 /** Outils MCP - write community 2 (permission WRITE_COMMUNITY). */
-import { KOTBO_MODULES, setModuleActivation } from '../../../services/analytics/moduleStatsService.js';
+import {
+  resolveModuleKey,
+  setDashboardModuleStatus,
+} from '../../../services/core/moduleActivationService.js';
 import prisma from '../../../utils/db.js';
-import { invalidateLevelConfigCache } from '../../../services/progression/levelingService.js';
 import { z } from 'zod';
 import { type McpToolContext, err, ok } from '../toolkit.js';
 
@@ -21,58 +23,32 @@ export function registerWriteCommunity2Tools(ctx: McpToolContext) {
         _meta: toolMeta,
       },
       guard('WRITE_COMMUNITY', async ({ module_name, enabled, config }) => {
-        const normalizedModule = module_name.trim();
-        if (!KOTBO_MODULES.includes(normalizedModule as never)) {
-          return err(`Module Kotbo inconnu : ${module_name}`);
+        // La bascule passe par le service du dashboard : lui seul ecrit la cle
+        // canonique que la garde d'execution relit, propage les dependances et
+        // invalide son cache. L'ecriture directe qui vivait ici enregistrait le
+        // nom recu tel quel, sous une cle que personne ne lit.
+        const moduleKey = resolveModuleKey(module_name);
+        if (!moduleKey) {
+          return err(`Module sans equivalent dans le registre des modules : ${module_name}`);
         }
 
         try {
-          await setModuleActivation(guildId, normalizedModule as never, enabled, config);
+          const result = await setDashboardModuleStatus(guildId, moduleKey, enabled);
 
-          if (normalizedModule === 'leveling') {
-            await prisma.levelConfig.upsert({
-              where: { guildId },
-              create: { guildId, enabled },
-              update: { enabled },
+          if (config) {
+            await prisma.dashboardFeatureConfig.update({
+              where: { guildId_featureKey: { guildId, featureKey: result.moduleKey } },
+              data: { metadata: config },
             });
-            await invalidateLevelConfigCache(guildId);
           }
 
-          const updates: Record<string, unknown> = {};
-          if (normalizedModule === 'codePolice') updates.codePoliceEnabled = enabled;
-          if (normalizedModule === 'dailyAlgo') updates.dailyAlgoEnabled = enabled;
-          if (normalizedModule === 'translation') updates.translationEnabled = enabled;
-          if (normalizedModule === 'sanction') {
-            updates.sanctionSyncEnabled = enabled;
-            updates.sanctionReportEnabled = enabled;
-          }
-          if (normalizedModule === 'nicknameModeration') updates.autoNicknameModerationEnabled = enabled;
-          if (normalizedModule === 'autoThread') updates.autoThreadEnabled = enabled;
-          if (normalizedModule === 'fun') updates.funEnabled = enabled;
-
-          if (Object.keys(updates).length > 0) {
-            await prisma.guild.update({ where: { id: guildId }, data: updates });
-          }
-
-          await prisma.dashboardFeatureConfig.upsert({
-            where: { guildId_featureKey: { guildId, featureKey: normalizedModule } },
-            create: {
-              guildId,
-              featureKey: normalizedModule,
-              featureName: normalizedModule,
-              enabled,
-              loggingEnabled: true,
-              userActivityTracking: true,
-              notifyViaDiscordChannel: true,
-              metadata: config ?? {},
-            },
-            update: {
-              enabled,
-              metadata: config ?? {},
-            },
+          return ok({
+            ok: true,
+            moduleName: result.moduleKey,
+            enabled: result.enabled,
+            enabledRequirements: result.enabledRequirements,
+            disabledDependents: result.disabledDependents,
           });
-
-          return ok({ ok: true, moduleName: normalizedModule, enabled });
         } catch (e) {
           return err(`Erreur : ${e instanceof Error ? e.message : String(e)}`);
         }

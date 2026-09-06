@@ -19,6 +19,12 @@ export const publicGiveawaysRateLimiter = new Map<string, number[]>();
 export const errorReportRateLimiter = new Map<string, number[]>();
 export const feedbackReportRateLimiter = new Map<string, number[]>();
 export const partnershipRateLimiter = new Map<string, number[]>();
+/**
+ * Mesure d'audience de la landing. Son propre seau plutot qu'un seau partage :
+ * une page qui part en boucle ne doit pas empecher un visiteur d'installer le
+ * bot ou de signaler une erreur.
+ */
+export const funnelRateLimiter = new Map<string, number[]>();
 
 /**
  * Écritures du dashboard, indexées par membre + serveur (et non par IP : deux

@@ -25,6 +25,22 @@ describe('Transcript markdown & entity parser', () => {
     expect(punctUrl).toBe('Go to <a href="https://example.com" target="_blank" class="discord-link">https://example.com</a>.');
   });
 
+  test('renders masked links instead of their raw syntax', () => {
+    const angled = parseMarkdown('[Voir le message](<https://example.com/path?a=1&b=2>)');
+    expect(angled).toBe('<a href="https://example.com/path?a=1&amp;b=2" target="_blank" class="discord-link">Voir le message</a>');
+
+    const bold = parseMarkdown('**[Titre](https://example.com/x)**');
+    expect(bold).toBe('<strong><a href="https://example.com/x" target="_blank" class="discord-link">Titre</a></strong>');
+
+    // Les crochets echappes par le convertisseur Components V2 reviennent en clair.
+    const bs = String.fromCharCode(92);
+    const escapedLabel = parseMarkdown(`[Live ${bs}[FR${bs}] test](<https://example.com/live>)`);
+    expect(escapedLabel).toContain('>Live [FR] test</a>');
+
+    // Une URL non http reste du texte : pas de href fabrique.
+    expect(parseMarkdown('[Titre](javascript:alert(1))')).toBe('[Titre](javascript:alert(1))');
+  });
+
   test('leaves urls inside code blocks unlinked', () => {
     const inlineResult = parseMarkdown('Do not link `https://example.com` please');
     expect(inlineResult).toContain('<code class="inline-code">https://example.com</code>');

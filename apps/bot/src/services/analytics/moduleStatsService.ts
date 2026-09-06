@@ -147,20 +147,21 @@ export async function incrementModuleUsage(options: UsageIncrementOptions): Prom
     },
   });
 
-  // Mettre à jour lastUsedAt dans ModuleActivationStat
+  // Mettre à jour lastUsedAt dans ModuleActivationStat.
+  // `updateMany` plutôt qu'`update` : le module n'a pas forcément de ligne
+  // d'activation (elle n'est créée que par `setModuleActivation`). Avec
+  // `update`, Prisma lève - et journalise en `prisma:error` - un P2025 à chaque
+  // commande d'un module jamais activé explicitement ; `updateMany` se contente
+  // de ne toucher aucune ligne.
   if (guildId) {
-    await prisma.moduleActivationStat.update({
+    await prisma.moduleActivationStat.updateMany({
       where: {
-        guildId_moduleName: {
-          guildId,
-          moduleName,
-        },
+        guildId,
+        moduleName,
       },
       data: {
         lastUsedAt: new Date(),
       },
-    }).catch(() => {
-      // Ignorer si l'activation stat n'existe pas encore
     });
   }
 

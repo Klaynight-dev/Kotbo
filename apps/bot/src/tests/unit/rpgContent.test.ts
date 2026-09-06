@@ -6,6 +6,7 @@ import {
   RPG_RECIPES,
 } from '../../services/features/rpg/rpgContent.js';
 import { RPG_CLASS_LIST } from '../../services/features/rpg/rpgClasses.js';
+import { RPG_ENCHANTMENTS, getEnchantment } from '../../services/features/rpg/rpgEnchantments.js';
 
 const itemNames = new Set(RPG_ITEMS.map((item) => item.name));
 
@@ -129,5 +130,59 @@ describe('classes', () => {
   test('les identifiants de compétences sont uniques toutes classes confondues', () => {
     const ids = RPG_CLASS_LIST.flatMap((rpgClass) => rpgClass.skills.map((skill) => skill.id));
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('parchemins d enchantement', () => {
+  const scrolls = RPG_ITEMS.filter((item) => item.type === 'SCROLL');
+
+  test('chaque parchemin désigne un enchantement du catalogue', () => {
+    // Un parchemin dont l'identifiant ne résout pas est invisible à l'autel : il occupe une
+    // place dans l'inventaire sans jamais rien pouvoir poser.
+    const orphans = scrolls.filter((scroll) => !scroll.enchantId || !getEnchantment(scroll.enchantId));
+    expect(orphans.map((scroll) => scroll.name)).toEqual([]);
+  });
+
+  test('aucun parchemin ne dépasse le palier maximum de son enchantement', () => {
+    const tooHigh = scrolls.filter((scroll) => {
+      const enchant = getEnchantment(scroll.enchantId ?? '');
+      return enchant !== null && (scroll.enchantTier ?? 1) > enchant.maxTier;
+    });
+
+    expect(tooHigh.map((scroll) => scroll.name)).toEqual([]);
+  });
+
+  test('les parchemins ne sont pas achetables en boutique', () => {
+    // Ils s'obtiennent par l'artisanat : les vendre au comptoir viderait le butin de son sens.
+    expect(scrolls.filter((scroll) => scroll.purchasable)).toEqual([]);
+  });
+
+  test('chaque parchemin est fabricable', () => {
+    // Sans recette, un parchemin ne peut entrer dans aucun inventaire.
+    const craftable = new Set(RPG_RECIPES.map((recipe) => recipe.resultItemName));
+    const unreachable = scrolls.filter((scroll) => !craftable.has(scroll.name));
+
+    expect(unreachable.map((scroll) => scroll.name)).toEqual([]);
+  });
+
+  test('chaque enchantement du catalogue dispose d au moins un parchemin', () => {
+    const posable = new Set(scrolls.map((scroll) => scroll.enchantId));
+    const unreachable = RPG_ENCHANTMENTS.filter((enchant) => !posable.has(enchant.id));
+
+    expect(unreachable.map((enchant) => enchant.id)).toEqual([]);
+  });
+
+  test('les identifiants d enchantement sont uniques', () => {
+    const ids = RPG_ENCHANTMENTS.map((enchant) => enchant.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test('chaque enchantement s applique à au moins un emplacement et a un effet', () => {
+    for (const enchant of RPG_ENCHANTMENTS) {
+      expect(enchant.slots.length).toBeGreaterThan(0);
+      expect(enchant.maxTier).toBeGreaterThanOrEqual(1);
+      // Un enchantement sans aucune valeur non nulle ne ferait strictement rien.
+      expect(Object.values(enchant.perTier).some((value) => value !== 0)).toBe(true);
+    }
   });
 });

@@ -37,6 +37,7 @@
     if (kind === 'member') return tokensOfType(triggerType, 'Member');
     if (kind === 'role') return tokensOfType(triggerType, 'Role');
     if (kind === 'channel') return tokensOfType(triggerType, 'Channel');
+    if (kind === 'message') return tokensOfType(triggerType, 'Message');
     return [];
   });
 
@@ -91,7 +92,7 @@
   const chipClass = $derived(
     `inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
       isEmpty && !optional
-        ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+        ? 'bg-amber-500/10 border-amber-500/40 text-amber-800 dark:text-amber-200'
         : 'bg-surface-container-highest border-outline-variant/25 text-on-surface hover:border-primary/40'
     }`,
   );
@@ -109,7 +110,7 @@
     />
     {#if textTokens.length > 0}
       <span class="flex flex-wrap items-center gap-1">
-        <span class="text-[10px] text-on-surface-variant/40 uppercase tracking-wider">{m.wf_insert()}</span>
+        <span class="text-[10px] text-on-surface-variant/70 uppercase tracking-wider">{m.wf_insert()}</span>
         {#each textTokens.slice(0, 8) as token (token.path)}
           <button
             type="button"
@@ -143,7 +144,7 @@
       class="{chipClass} appearance-none pr-7 cursor-pointer focus:outline-none"
     >
       <option value="" disabled>
-        {kind === 'role' ? m.wf_choose_role() : kind === 'channel' ? m.wf_choose_channel() : m.wf_choose_member()}
+        {kind === 'role' ? m.wf_choose_role() : kind === 'channel' ? m.wf_choose_channel() : kind === 'message' ? m.wf_choose_message() : m.wf_choose_member()}
       </option>
 
       {#if contextChoices.length > 0}
@@ -173,7 +174,7 @@
     <Papicon
       icon="ChevronDown"
       size={12}
-      class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant/50"
+      class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant/70"
     />
   </span>
 {/if}

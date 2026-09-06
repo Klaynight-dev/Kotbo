@@ -110,8 +110,15 @@ export async function fetchMeetings(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/meetings', { method: 'GET', guildId });
 }
 
-export async function createMeeting(title, description, scheduledAt, endedAt?, guildId = authStore.selectedGuildId) {
-  return dashboardMutation('/meetings', { method: 'POST', payload: { title, description, scheduledAt, endedAt }, guildId });
+export async function createMeeting(
+  title: string,
+  description: string,
+  scheduledAt: string,
+  endedAt?: string,
+  timezone?: string | null,
+  guildId = authStore.selectedGuildId,
+) {
+  return dashboardMutation('/meetings', { method: 'POST', payload: { title, description, scheduledAt, endedAt, timezone }, guildId });
 }
 
 export async function deleteMeeting(meetingId, options = { deleteEvent: true, deleteMessage: false, deleteNotifications: false }, guildId = authStore.selectedGuildId) {

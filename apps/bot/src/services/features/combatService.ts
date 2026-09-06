@@ -2,8 +2,10 @@ import prisma from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
 import { checkLevelUp } from './economyService.js';
 import { getAvailableSkills } from './rpg/rpgClasses.js';
+import { listGuildMonsters } from './rpg/rpgBestiaryService.js';
 import { computeAttack } from './rpg/rpgCombatMath.js';
-import { getEffectiveStats, type EffectiveStats, type StatItem } from './rpg/rpgStats.js';
+import { getEffectiveStats, type EffectiveStats, type EquippedPiece, type Equipment, type StatItem } from './rpg/rpgStats.js';
+import { parseEnchants } from './rpg/rpgEnchantments.js';
 
 // ============================================================================
 // TYPES
@@ -42,6 +44,7 @@ type BattleTurn = {
 
 /** Profil minimal nécessaire au calcul des statistiques effectives. */
 type EquippableProfile = {
+  id: string;
   level: number;
   attack: number;
   defense: number;
@@ -51,29 +54,54 @@ type EquippableProfile = {
   weaponId: string | null;
   armorId: string | null;
   accessoryId: string | null;
-  weaponUpgrade: number;
-  armorUpgrade: number;
-  accessoryUpgrade: number;
 };
 
 /**
  * Charge l'équipement porté et en dérive les statistiques effectives.
- * Un seul aller-retour base pour les trois emplacements.
+ *
+ * Deux allers-retours au maximum : un pour les trois objets, un pour les instances qui
+ * portent leur progression (forge + enchantements). Une pièce sans instance n'a tout
+ * simplement jamais été améliorée ni enchantée : elle vaut ses statistiques nues.
  */
 export async function loadEffectiveStats(profile: EquippableProfile): Promise<EffectiveStats> {
+  return getEffectiveStats(profile, await loadEquipment(profile));
+}
+
+/**
+ * Équipement porté, chaque pièce accompagnée de la progression de l'exemplaire possédé.
+ * Exporté parce que le panneau en a besoin pour afficher forge et enchantements sur la fiche.
+ */
+export async function loadEquipment(profile: EquippableProfile): Promise<Equipment> {
   const ids = [profile.weaponId, profile.armorId, profile.accessoryId]
     .filter((id): id is string => Boolean(id));
 
-  const items = ids.length > 0
-    ? await prisma.rpgItem.findMany({ where: { id: { in: ids } } })
-    : [];
-  const byId = new Map<string, StatItem>(items.map((item) => [item.id, item]));
+  if (ids.length === 0) return { weapon: null, armor: null, accessory: null };
 
-  return getEffectiveStats(profile, {
-    weapon: profile.weaponId ? byId.get(profile.weaponId) ?? null : null,
-    armor: profile.armorId ? byId.get(profile.armorId) ?? null : null,
-    accessory: profile.accessoryId ? byId.get(profile.accessoryId) ?? null : null,
-  });
+  const [items, instances] = await Promise.all([
+    prisma.rpgItem.findMany({ where: { id: { in: ids } } }),
+    prisma.rpgItemInstance.findMany({ where: { rpgProfileId: profile.id, itemId: { in: ids } } }),
+  ]);
+
+  const itemById = new Map<string, StatItem>(items.map((item) => [item.id, item]));
+  const instanceByItemId = new Map(instances.map((instance) => [instance.itemId, instance]));
+
+  const piece = (itemId: string | null): EquippedPiece | null => {
+    if (!itemId) return null;
+    const item = itemById.get(itemId);
+    if (!item) return null;
+    const instance = instanceByItemId.get(itemId);
+    return {
+      ...item,
+      upgrade: instance?.upgrade ?? 0,
+      enchants: parseEnchants(instance?.enchants),
+    };
+  };
+
+  return {
+    weapon: piece(profile.weaponId),
+    armor: piece(profile.armorId),
+    accessory: piece(profile.accessoryId),
+  };
 }
 
 type ProfileForCombat = {
@@ -91,9 +119,6 @@ type ProfileForCombat = {
   weaponId: string | null;
   armorId: string | null;
   accessoryId: string | null;
-  weaponUpgrade: number;
-  armorUpgrade: number;
-  accessoryUpgrade: number;
 };
 
 type MonsterForCombat = {
@@ -175,20 +200,11 @@ export async function findRandomMonster(guildId: string, playerLevel: number) {
   const minLevel = Math.max(1, playerLevel - 3);
   const maxLevel = playerLevel + 2;
 
-  const monsters = await prisma.rpgMonster.findMany({
-    where: {
-      OR: [{ guildId: null }, { guildId }],
-      isBoss: false,
-      level: { gte: minLevel, lte: maxLevel }
-    }
-  });
+  const bestiary = await listGuildMonsters(guildId, { isBoss: false });
+  const monsters = bestiary.filter((monster) => monster.level >= minLevel && monster.level <= maxLevel);
 
   if (monsters.length === 0) {
-    const fallback = await prisma.rpgMonster.findMany({
-      where: { OR: [{ guildId: null }, { guildId }], isBoss: false },
-      orderBy: { level: 'asc' },
-      take: 5
-    });
+    const fallback = bestiary.slice(0, 5);
     if (fallback.length === 0) return null;
     return fallback[Math.floor(Math.random() * fallback.length)];
   }
@@ -199,13 +215,7 @@ export async function findRandomMonster(guildId: string, playerLevel: number) {
 export async function listBosses(guildId: string) {
   await seedDefaultMonsters();
 
-  return prisma.rpgMonster.findMany({
-    where: {
-      OR: [{ guildId: null }, { guildId }],
-      isBoss: true
-    },
-    orderBy: { level: 'asc' }
-  });
+  return listGuildMonsters(guildId, { isBoss: true });
 }
 
 export async function listDiscoveredMonsters(guildId: string, userId: string) {
@@ -254,31 +264,35 @@ export async function simulateBattle(
       const useSkill = bestSkill !== null && skillCooldown === 0;
       const skill = useSkill ? bestSkill : null;
 
-      const { damage, critical } = computeAttack({
+      const { damage, critical, healed } = computeAttack({
         attack: stats.attack,
         targetDefense: monster.defense,
         speed: stats.speed,
         critChance: stats.critChance,
         armorPiercing: Math.max(stats.armorPiercing, skill?.effect.armorPiercing ?? 0),
         skillMultiplier: skill?.effect.damageMultiplier ?? 1,
+        // Le vol de vie de la compétence et celui des enchantements se cumulent : ce sont
+        // deux sources distinctes, et une compétence ne doit pas annuler un enchantement.
+        lifesteal: stats.lifesteal + (skill?.effect.lifesteal ?? 0),
       });
 
       monsterHp = Math.max(0, monsterHp - damage);
-      if (skill?.effect.lifesteal) {
-        playerHp = Math.min(stats.maxHealth, playerHp + Math.floor(damage * skill.effect.lifesteal));
-      }
+      if (healed > 0) playerHp = Math.min(stats.maxHealth, playerHp + healed);
       skillCooldown = useSkill ? (bestSkill?.cooldownTurns ?? 0) : Math.max(0, skillCooldown - 1);
 
       turns.push({ attacker: 'player', damage, critical, playerHp, monsterHp, skillName: skill?.name ?? null });
     } else {
-      const { damage, critical } = computeAttack({
+      const { damage, critical, reflected } = computeAttack({
         attack: monster.attack,
         targetDefense: stats.defense,
         speed: monster.speed,
         critChance: 0.08,
         targetDamageReduction: stats.damageReduction,
+        targetThorns: stats.thorns,
       });
       playerHp = Math.max(0, playerHp - damage);
+      // Les épines frappent même si le coup est mortel : l'armure réagit à l'impact.
+      if (reflected > 0) monsterHp = Math.max(0, monsterHp - reflected);
       turns.push({ attacker: 'monster', damage, critical, playerHp, monsterHp, skillName: null });
     }
   }
@@ -302,6 +316,20 @@ export async function simulateBattle(
         itemDropped = drop.itemName;
         itemDropEmoji = drop.emoji;
         if (drop.coinBonus) coinsEarned += drop.coinBonus;
+
+        // Le butin était annoncé dans l'embed mais jamais versé : les boss, qui passent
+        // tous par cette simulation, ne rapportaient donc aucun objet.
+        const dropItem = await prisma.rpgItem.findFirst({
+          where: { OR: [{ guildId: null }, { guildId: profile.guildId }], name: drop.itemName },
+          select: { id: true },
+        });
+        if (dropItem) {
+          await prisma.rpgInventoryItem.upsert({
+            where: { rpgProfileId_itemId: { rpgProfileId: profile.id, itemId: dropItem.id } },
+            update: { quantity: { increment: 1 } },
+            create: { rpgProfileId: profile.id, itemId: dropItem.id, quantity: 1 },
+          });
+        }
         break;
       }
     }

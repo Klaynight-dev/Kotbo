@@ -17,6 +17,8 @@ enum McpKeyPermission {
   WRITE_TICKETS
   WRITE_COMMUNITY
   WRITE_MEMBERS
+  READ_WORKFLOWS
+  WRITE_WORKFLOWS
 }
 
 model McpApiKey {
@@ -30,6 +32,17 @@ model McpApiKey {
   permissions McpKeyPermission[]
   isActive    Boolean  @default(true)
   lastUsedAt  DateTime?
+
+  /// Compte Discord au nom duquel la cle agit.
+  ///
+  /// Une cle sans proprietaire n'est rattachee a personne : elle survivait au
+  /// depart de celui qui s'en servait, puisque rien ne reliait ses droits a un
+  /// compte. Quand il est renseigne, chaque appel verifie que ce compte a
+  /// toujours acces au dashboard du serveur.
+  ///
+  /// Nul sur les cles creees avant ce champ : elles gardent l'ancien
+  /// comportement plutot que de cesser de fonctionner du jour au lendemain.
+  ownerId     String?
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

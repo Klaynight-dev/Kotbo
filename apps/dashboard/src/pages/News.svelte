@@ -1,5 +1,6 @@
 <script lang="ts">
   import { m } from '../lib/i18n';
+  import { escapeHtml, safeUrl } from '../lib/emojiParser';
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount } from 'svelte';
   import { router } from 'tinro';
@@ -288,13 +289,7 @@
   function interpretMarkdown(text: string) {
     if (!text) return `<p class="text-on-surface-variant/40 italic">${m.news_preview_empty_content()}</p>`;
     
-    // Escaping simple HTML tags to avoid XSS (just standard practice)
-    const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    return escaped
+    return escapeHtml(text)
       // Headers
       .replace(/^### (.*$)/gim, '<h5 class="text-sm font-semibold uppercase tracking-wider text-primary mt-4 mb-2">$1</h5>')
       .replace(/^## (.*$)/gim, '<h4 class="text-base font-semibold text-on-surface mt-6 mb-3 border-b border-outline-variant/20 pb-1">$1</h4>')
@@ -303,7 +298,11 @@
       .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-primary">$1</strong>')
       .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
       // Links
-      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" class="text-primary hover:underline font-bold">$1</a>')
+      .replace(/\[(.*?)\]\((.*?)\)/g, (_match, label: string, url: string) => {
+        const href = safeUrl(url);
+        if (!href) return label;
+        return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline font-bold">${label}</a>`;
+      })
       // Blockquotes
       .replace(/^> (.*$)/gim, '<blockquote class="border-l-4 border-primary/30 pl-4 py-1 my-2 bg-primary/5 rounded-r-lg italic text-sm text-on-surface-variant">$1</blockquote>')
       // List items

@@ -2,11 +2,26 @@ model ScheduledTask {
   id              String   @id @default(cuid())
   guildId         String
   name            String
-  type            String   // "CHANNEL_RESET", "SERVER_BACKUP", "DATA_EXPORT"
+  type            String   // "CHANNEL_RESET", "SERVER_BACKUP", "DATA_EXPORT", "SEND_MESSAGE"
   cron            String   // Expression Cron (ex: "0 0 * * *")
   enabled         Boolean  @default(true)
   targetId        String?  // ID Discord cible (ex. ID du salon)
   lastRun         DateTime?
+
+  // ── Type SEND_MESSAGE ──────────────────────────────────────────────────────
+  /// Texte poste dans le salon cible.
+  message         String?
+  /// Embed facultatif : { title, description, color, imageUrl }. Un message
+  /// peut n'avoir que l'un ou l'autre, mais pas ni l'un ni l'autre.
+  messageEmbed    Json?
+  /// Autorise @everyone, @here et les mentions de role. Refuse par defaut : une
+  /// tache qui se repete ne doit pas pouvoir pinger tout le serveur par
+  /// inadvertance, et le reglage se coche en connaissance de cause.
+  allowMentions   Boolean  @default(false)
+  /// Tache a usage unique : desactivee juste apres son execution. Permet de
+  /// programmer un message a une date precise via un cron qui, sans cela, se
+  /// redeclencherait chaque annee.
+  runOnce         Boolean  @default(false)
 
   guild           Guild    @relation(fields: [guildId], references: [id], onDelete: Cascade)
 

@@ -1,6 +1,6 @@
 /** Routes dashboard du module `modules`. */
 import { getModuleActivationStats, getModulePerformanceStats, getModuleStatsSummary, getModuleUsageStats, KOTBO_MODULES, type KotboModule } from '../../../../services/analytics/moduleStatsService.js';
-import { CoreModuleError, setDashboardModuleStatus } from '../../../../services/core/moduleActivationService.js';
+import { CoreModuleError, PlanLockedError, setDashboardModuleStatus } from '../../../../services/core/moduleActivationService.js';
 import { logger } from '../../../../utils/logger.js';
 import { getGuildName, json, type ModuleStatus, pushAudit, readJsonBody } from '../../../shared.js';
 import { type ModuleRouteContext } from './_shared.js';
@@ -37,6 +37,20 @@ export async function handleModuleToggleRoutes(ctx: ModuleRouteContext): Promise
     } catch (err) {
       if (err instanceof CoreModuleError) {
         json(res, 400, { error: err.message, code: 'core_module' });
+        return true;
+      }
+      // 402 et non 400 : ce n'est pas une requete malformee, c'est un module
+      // qui se vend. Le dashboard s'en sert pour ouvrir la page des offres
+      // plutot que d'afficher une erreur que l'administrateur ne peut pas
+      // corriger lui-meme.
+      if (err instanceof PlanLockedError) {
+        json(res, 402, {
+          error: err.message,
+          code: 'plan_locked',
+          moduleKey: err.moduleKey,
+          currentPlan: err.currentPlan,
+          requiredPlan: err.requiredPlan,
+        });
         return true;
       }
       logger.error('ModulesAPI', 'Error updating module:', err);

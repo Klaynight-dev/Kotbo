@@ -1,5 +1,6 @@
 export { kotboEventBus } from './eventBus.js';
 export type { KotboEventHandler } from './eventBus.js';
+export { currentCascadeDepth, runWithCascadeDepth } from './eventCascade.js';
 export type {
   KotboEventMap,
   KotboEventName,
@@ -16,6 +17,8 @@ export type {
   SanctionRevokedEvent,
   AutoModTriggeredEvent,
   ReactionAddEvent,
+  TicketCreatedEvent,
+  LevelUpEvent,
   ThreadCreateEvent,
   ChannelCreateEvent,
   ChannelDeleteEvent,

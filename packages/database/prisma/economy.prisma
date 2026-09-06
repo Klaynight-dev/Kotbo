@@ -38,6 +38,57 @@ model EconomyConfig {
   blackMarketChannelId    String?
   blackMarketRoleId       String?
 
+  // ── Difficulté du bestiaire ─────────────────────────────────────────────
+  // Dernier préréglage appliqué aux créatures du serveur (EASY, NORMAL, HARD).
+  // Il ne modifie rien au jeu : les statistiques sont réécrites sur les fiches au
+  // moment du clic. La valeur n'est gardée que pour savoir de quel palier partir
+  // au préréglage suivant, sans quoi deux clics se multiplieraient entre eux.
+  // Les boss et les monstres ordinaires se règlent séparément.
+  // Les prix de la boutique ont leur propre palier, appliqué aux seuls objets créés par
+  // le serveur : le catalogue livré n'a pas de copie locale, un objet étant désigné par son
+  // identifiant dans les inventaires, les recettes et les offres du marché noir.
+  bossDifficulty    String @default("NORMAL")
+  monsterDifficulty String @default("NORMAL")
+  shopDifficulty    String @default("NORMAL")
+
+  // ── Raid hebdomadaire ───────────────────────────────────────────────────
+  // Chaque équipe affronte sa propre instance du boss, dont la réserve de points de
+  // vie suit son effectif : une instance partagée par tout le serveur laisserait les
+  // petites équipes sans rien à frapper.
+  raidEnabled            Boolean @default(false)
+  /// Ouverture automatique au jour et a l'heure reglés. A faux, le raid n'ouvre que
+  /// sur un lancement manuel depuis le dashboard.
+  raidAutoSchedule       Boolean @default(true)
+  // CLAN = les clans du serveur, par rôle Discord. RPG_GUILD = les guildes du jeu.
+  raidTeamMode           String  @default("CLAN")
+  /// Nom du boss de raid à ouvrir. Nul = tirage au sort parmi les boss actifs.
+  raidBossName           String?
+  raidHealthPerMember    Int     @default(1200) // Réserve ajoutée par membre de l'équipe
+  raidHealthFloor        Int     @default(2500) // Réserve minimale, pour une équipe minuscule
+  raidHealthCap          Int     @default(60000) // Réserve maximale, pour une équipe nombreuse
+  raidAssaultsPerMember  Int     @default(3)
+  /// Assauts supplémentaires qu'un membre peut s'offrir par raid, potions comprises.
+  /// Sans plafond, un joueur fortuné abattrait le boss seul et l'enveloppe proportionnelle
+  /// à l'effectif ne voudrait plus rien dire.
+  raidBoughtAssaultsMax  Int     @default(3)
+  /// Part de l'enveloppe versée à une équipe qui n'abat pas son boss, en pourcentage.
+  /// Zéro ne récompense que la victoire. Trois heures d'assauts pour rien ne ramènent
+  /// personne la semaine suivante, mais l'échec ne doit pas payer autant que la victoire.
+  raidConsolationShare   Int     @default(25)
+  raidEnergyCost         Int     @default(25)
+  raidWeekday            Int     @default(6)  // 0 = dimanche, 6 = samedi
+  raidHour               Int     @default(20) // Heure d'ouverture, sur le fuseau du serveur
+  raidDurationHours      Int     @default(24)
+  /// Récompenses réglées **par membre** : l'enveloppe d'une équipe suit son effectif, comme
+  /// sa réserve de points de vie, puis se partage entre les participants au prorata des
+  /// dégâts. Fixe, elle faisait de l'équipe d'une personne la seule façon rationnelle de jouer.
+  raidXpReward           Int     @default(60)
+  raidCoinReward         Int     @default(45)
+  raidClanPoints         Int     @default(6)
+  raidAnnounce           String  @default("CHANNEL")
+  raidChannelId          String?
+  raidRoleId             String?
+
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   @@map("economy_configs")
@@ -120,10 +171,10 @@ model RpgProfile {
   accessoryId String?
   potionId  String?
 
-  // Niveau d'amélioration (forge) de l'équipement porté, de 0 à 10.
-  weaponUpgrade    Int @default(0)
-  armorUpgrade     Int @default(0)
-  accessoryUpgrade Int @default(0)
+  // Le niveau de forge et les enchantements ne vivent PLUS ici : ils appartiennent à
+  // l'instance d'objet (`RpgItemInstance`), donc à l'objet possédé et non à l'emplacement.
+  // Déséquiper puis rééquiper une arme conserve son +7 et ses enchantements, et améliorer
+  // une babiole n'avantage plus l'arme légendaire qu'on glisse ensuite dans le même slot.
 
   // Combat & Pêche
   totalMonstersKilled Int      @default(0)
@@ -156,6 +207,7 @@ model RpgProfile {
   rpgGuildId String?
   rpgGuild   RpgGuild? @relation(fields: [rpgGuildId], references: [id], onDelete: SetNull)
   inventory  RpgInventoryItem[]
+  itemInstances RpgItemInstance[]
   battles    RpgBattle[]
   fishCatches RpgFishCatch[]
   
@@ -185,16 +237,35 @@ model RpgItem {
   hpBonus     Int      @default(0)  // PV maximum accordés par l'objet (accessoires surtout)
   hpRestore   Int      @default(0)
   energyRestore Int    @default(0)
+  /// Assauts de raid rendus à la consommation, en plus du quota de la semaine. La potion
+  /// ne se boit que pendant une fenêtre ouverte : le bonus vaut pour ce raid et meurt avec.
+  raidAssaultBonus Int @default(0)
+
+  /// Parchemin d'enchantement : identifiant du catalogue `rpgEnchantments.ts` posé par
+  /// cet objet, et palier accordé. Renseignés uniquement pour `type = "SCROLL"`.
+  enchantId   String?
+  enchantTier Int      @default(1)
 
   // Rareté et niveau requis
   rarity        String   @default("COMMON") // COMMON | UNCOMMON | RARE | EPIC | LEGENDARY
   levelRequired Int      @default(0)
 
+  // Récompenses versées par les modules voisins à la consommation. Un objet qui en
+  // porte disparaît de la boutique tant que le module correspondant est éteint : sans
+  // ça, la boutique vendrait de l'XP à un serveur qui n'a pas de niveaux.
+  levelXpReward    Int @default(0)
+  clanPointsReward Int @default(0)
+
   // Prix d'achat en boutique
   price       Int      @default(0)
   purchasable Boolean  @default(true)
+  /// Autorise le tirage de cet objet au marché noir. Les objets qui vendent une
+  /// récompense de module en sortent par défaut : leur prix est un prix, pas une
+  /// base de négociation à -50 %.
+  blackMarketEligible Boolean @default(true)
 
   inventoryEntries  RpgInventoryItem[]
+  instances         RpgItemInstance[]
   recipes           RpgRecipe[]
   blackMarketOffers RpgBlackMarketOffer[]
   guild Guild? @relation(fields: [guildId], references: [id], onDelete: Cascade)
@@ -233,6 +304,33 @@ model RpgInventoryItem {
 
   @@unique([rpgProfileId, itemId])
   @@map("rpg_inventory_items")
+}
+
+/// Exemplaire individualisé d'un objet possédé : c'est lui qui porte la progression
+/// (niveau de forge, enchantements), et non l'emplacement d'équipement.
+///
+/// Une instance par couple (profil, objet) : la progression suit l'objet dans le sac,
+/// survit au déséquipement, et deux joueurs enrichissent chacun leur propre exemplaire.
+/// L'instance est créée paresseusement au premier équipement, et détruite quand la pile
+/// correspondante quitte l'inventaire (vente, don, retrait admin, suppression de l'objet).
+model RpgItemInstance {
+  id           String   @id @default(cuid())
+  rpgProfileId String
+  itemId       String
+
+  /// Niveau d'amélioration (forge), de 0 à 10.
+  upgrade  Int  @default(0)
+  /// Enchantements posés : [{ id: string, tier: number }]. Validé par `parseEnchants`.
+  enchants Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profile RpgProfile @relation(fields: [rpgProfileId], references: [id], onDelete: Cascade)
+  item    RpgItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([rpgProfileId, itemId])
+  @@map("rpg_item_instances")
 }
 
 model RpgGuild {
@@ -315,11 +413,317 @@ model RpgMonster {
   isBoss           Boolean @default(false)
   bossRespawnHours Int?
 
+  /// Points de clan versés au vainqueur, quand le pont RPG vers les clans est
+  /// ouvert (`Guild.clanPointsFromRpg`). À zéro, la créature ne rapporte rien
+  /// au classement des clans.
+  clanPoints Int @default(0)
+
+  /// Un monstre global désactivé par un serveur est remplacé par une copie locale
+  /// portant le même nom avec `enabled = false` : le catalogue global reste intact.
+  enabled Boolean @default(true)
+
   guild Guild? @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   battles RpgBattle[]
 
+  @@unique([guildId, name])
   @@map("rpg_monsters")
+}
+
+/**
+ * Boss de raid propres à un serveur.
+ *
+ * Contrairement au bestiaire, il n'y a pas de catalogue global masqué par des copies :
+ * les fiches livrées de base sont recopiées dans le serveur au premier allumage du raid,
+ * puis lui appartiennent. Un raid est un événement rare et très visible, que chaque
+ * serveur veut écrire à sa main ; le masquage par nom coûterait sa complexité pour un
+ * bénéfice que personne ne demande ici.
+ */
+/// Objectifs qu'une quête RPG peut poser. Ils se comptent tous sur des actions du jeu :
+/// les quêtes de discussion (messages, vocal, réactions) vivent dans leur propre module.
+enum RpgQuestObjective {
+  MONSTER_KILLS
+  BOSS_KILLS
+  RAID_ASSAULTS
+  RAID_DAMAGE
+  ITEMS_LOOTED
+  FISH_CAUGHT
+  ITEMS_CRAFTED
+  UPGRADES_SUCCEEDED
+  SHOP_PURCHASES
+  BLACK_MARKET_PURCHASES
+  COINS_SPENT
+  ADVENTURES_COMPLETED
+  DAILY_CLAIMS
+}
+
+/// MEMBER : chacun sa progression. TEAM : toute une équipe pousse le même compteur.
+enum RpgQuestScope {
+  MEMBER
+  TEAM
+}
+
+/**
+ * Quête RPG d'un serveur.
+ *
+ * La fenêtre est une durée libre en heures, alignée sur l'époque : deux équipes courent
+ * ainsi la même horloge, sans quoi leurs résultats ne seraient pas comparables. Vingt-quatre
+ * heures tombent sur minuit UTC, six heures sur 00, 06, 12 et 18.
+ */
+model RpgQuest {
+  id      String @id @default(cuid())
+  guildId String
+
+  name        String
+  description String
+  emoji       String @default("📜")
+
+  objective RpgQuestObjective
+  target    Int               @default(10)
+
+  scope RpgQuestScope @default(MEMBER)
+  /// Portée TEAM uniquement : CLAN pour les clans du serveur, RPG_GUILD pour les guildes du jeu.
+  teamMode String @default("CLAN")
+
+  windowHours Int @default(24)
+
+  rewardCoins      Int @default(0)
+  rewardXp         Int @default(0)
+  /// Portée TEAM et clans allumés uniquement : versés au clan de chaque participant.
+  rewardClanPoints Int @default(0)
+
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild    Guild                  @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  progress RpgQuestProgress[]
+  teams    RpgQuestTeamProgress[]
+
+  @@unique([guildId, name])
+  @@index([guildId, enabled])
+  @@map("rpg_quests")
+}
+
+/**
+ * Avancement d'un membre.
+ *
+ * Sur une quête d'équipe, cette ligne porte sa contribution et jamais une récompense : c'est
+ * elle qui rend le partage au prorata calculable et vérifiable, comme les assauts le font
+ * pour un raid.
+ */
+model RpgQuestProgress {
+  id      String @id @default(cuid())
+  guildId String
+  questId String
+  userId  String
+
+  /// Numéro de fenêtre depuis l'époque, `floor(maintenant / duree)`.
+  windowKey String
+
+  /// Équipe pour laquelle la contribution a été faite, chaîne vide sur une quête personnelle.
+  ///
+  /// Elle fait partie de la clé : un membre qui change de clan en cours de fenêtre ouvre une
+  /// nouvelle ligne, et ce qu'il avait apporté reste acquis à son ancienne équipe. Une
+  /// colonne facultative n'aurait pas pu servir de clé, Postgres tenant deux NULL pour
+  /// distincts.
+  teamKey String @default("")
+
+  current Int    @default(0)
+  target  Int
+  status  String @default("IN_PROGRESS") // IN_PROGRESS | COMPLETED | CLAIMED
+
+  completedAt DateTime?
+  claimedAt   DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  guild Guild    @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  quest RpgQuest @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  @@unique([questId, userId, windowKey, teamKey])
+  @@index([guildId, userId, windowKey])
+  @@index([questId, windowKey, teamKey])
+  @@map("rpg_quest_progress")
+}
+
+/// Avancement collectif d'une équipe sur une quête de portée TEAM.
+model RpgQuestTeamProgress {
+  id      String @id @default(cuid())
+  guildId String
+  questId String
+
+  teamKey  String
+  teamName String
+
+  windowKey String
+
+  current Int @default(0)
+  target  Int
+
+  completedAt DateTime?
+  /// Posé avant le versement : une équipe n'est jamais payée deux fois.
+  rewardedAt  DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  guild Guild    @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  quest RpgQuest @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  @@unique([questId, teamKey, windowKey])
+  @@index([guildId, windowKey])
+  @@map("rpg_quest_team_progress")
+}
+
+model RpgRaidBoss {
+  id          String  @id @default(cuid())
+  guildId     String
+  name        String
+  description String
+  emoji       String  @default("🐲")
+
+  level   Int @default(20)
+  attack  Int @default(60)
+  defense Int @default(35)
+  speed   Int @default(20)
+
+  /// Sorts du boss : [{ id, name, emoji, cooldownTurns, effect: { ... } }].
+  /// Lus par le moteur de combat, qui ne connaît aucun sort en particulier.
+  spells Json @default("[]")
+
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  raids RpgRaid[]
+
+  @@unique([guildId, name])
+  @@map("rpg_raid_bosses")
+}
+
+/// Un raid par serveur et par semaine. Les caractéristiques du boss y sont recopiées à
+/// l'ouverture : modifier la fiche ou appliquer un palier de difficulté en pleine fenêtre
+/// changerait l'épreuve en cours de route, et les équipes qui ont frappé en premier
+/// n'auraient pas couru la même course que les suivantes.
+model RpgRaid {
+  id      String @id @default(cuid())
+  guildId String
+  bossId  String?
+
+  status   String @default("SCHEDULED") // SCHEDULED | OPEN | RESOLVED
+  teamMode String @default("CLAN")
+
+  bossName    String
+  bossEmoji   String
+  bossLevel   Int
+  bossAttack  Int
+  bossDefense Int
+  bossSpeed   Int
+  bossSpells  Json   @default("[]")
+
+  healthPerMember Int
+  healthFloor     Int
+  healthCap       Int
+  assaultsPerMember Int
+  /// Plafond d'assauts achetables par membre, figé à l'ouverture comme le reste : une
+  /// potion bue en pleine fenêtre doit valoir ce que le serveur annonçait au départ.
+  boughtAssaultsMax Int @default(3)
+  /// Figée à l'ouverture comme le reste : une équipe qui a frappé toute la nuit doit
+  /// toucher ce que le serveur annonçait, pas ce qu'il a réglé depuis.
+  consolationShare  Int @default(25)
+  energyCost        Int
+
+  xpReward    Int
+  coinReward  Int
+  clanPoints  Int
+
+  opensAt    DateTime
+  closesAt   DateTime
+  announcedAt DateTime?
+  resolvedAt  DateTime?
+
+  announceChannelId String?
+  announceMessageId String?
+
+  createdAt DateTime @default(now())
+
+  guild Guild         @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  boss  RpgRaidBoss?  @relation(fields: [bossId], references: [id], onDelete: SetNull)
+  teams RpgRaidTeam[]
+  bonuses RpgRaidBonus[]
+
+  @@index([guildId, opensAt])
+  @@index([guildId, status])
+  @@map("rpg_raids")
+}
+
+/// Instance du boss pour une équipe. `teamKey` est l'identifiant du clan ou de la guilde
+/// RPG selon le mode ; le nom et l'effectif sont recopiés à l'engagement, un clan renommé
+/// ou vidé en cours de route ne devant pas réécrire l'histoire du raid.
+model RpgRaidTeam {
+  id     String @id @default(cuid())
+  raidId String
+
+  teamKey     String
+  teamName    String
+  memberCount Int
+
+  totalHealth     Int
+  remainingHealth Int
+  defeatedAt      DateTime?
+  rewardedAt      DateTime?
+
+  raid     RpgRaid          @relation(fields: [raidId], references: [id], onDelete: Cascade)
+  assaults RpgRaidAssault[]
+
+  @@unique([raidId, teamKey])
+  @@map("rpg_raid_teams")
+}
+
+/// Un assaut livré par un membre. C'est ce qui porte le partage des récompenses : sans le
+/// détail des dégâts, le prorata ne serait ni calculable ni vérifiable.
+/// Assauts achetés par un membre sur un raid donné, cumulés.
+///
+/// La ligne vit et meurt avec le raid : un bonus n'a de sens que dans la fenêtre où il a
+/// été bu, et le garder d'une semaine sur l'autre laisserait arriver au raid suivant avec
+/// une avance que personne n'aurait vu venir.
+model RpgRaidBonus {
+  id     String @id @default(cuid())
+  raidId String
+  userId String
+
+  extraAssaults Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  raid RpgRaid @relation(fields: [raidId], references: [id], onDelete: Cascade)
+
+  @@unique([raidId, userId])
+  @@map("rpg_raid_bonuses")
+}
+
+model RpgRaidAssault {
+  id         String @id @default(cuid())
+  raidTeamId String
+  guildId    String
+  userId     String
+
+  damage      Int     @default(0)
+  killingBlow Boolean @default(false)
+  survived    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  team RpgRaidTeam @relation(fields: [raidTeamId], references: [id], onDelete: Cascade)
+
+  @@index([raidTeamId, userId])
+  /// Le palmarès du serveur agrège les assauts par membre, sans passer par le raid.
+  @@index([guildId, userId])
+  @@map("rpg_raid_assaults")
 }
 
 model RpgBattle {

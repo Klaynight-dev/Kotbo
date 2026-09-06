@@ -1,5 +1,6 @@
-import type { Prisma, NotificationTargetType } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import prisma from '../../utils/db.js';
+import { getDeclaredModuleStates } from './moduleGate.js';
 
 export const defaultFeatures = [
   // ─── Tableau de bord ───
@@ -132,6 +133,12 @@ export const defaultFeatures = [
     description: 'Organisation de quiz et événements communautaires',
     category: 'staff',
   },
+  {
+    featureKey: 'tickets',
+    featureName: 'Tickets',
+    description: 'Tickets de support, transcripts et blacklist',
+    category: 'staff',
+  },
   // ─── Gestion ───
   {
     featureKey: 'regulation',
@@ -162,6 +169,12 @@ export const defaultFeatures = [
     featureKey: 'settings',
     featureName: 'Paramètres',
     description: 'Paramètres généraux du serveur',
+    category: 'config',
+  },
+  {
+    featureKey: 'channel_health',
+    featureName: 'Santé des salons',
+    description: "Analyse d'activité et recommandations sur les salons",
     category: 'config',
   },
   // ─── Intégrations ───
@@ -233,6 +246,12 @@ export const defaultFeatures = [
     category: 'moderation',
   },
   {
+    featureKey: 'raid_protection',
+    featureName: 'Protection anti-raid',
+    description: "Vue d'ensemble sécurité et seuils anti-raid",
+    category: 'moderation',
+  },
+  {
     featureKey: 'suggestions',
     featureName: 'Suggestions',
     description: 'Système de suggestions avec votes et modération via dashboard',
@@ -242,6 +261,30 @@ export const defaultFeatures = [
     featureKey: 'embed_builder',
     featureName: "Créateur d'Embeds",
     description: "Création et édition d'embeds personnalisés sur le serveur",
+    category: 'management',
+  },
+  {
+    featureKey: 'economy',
+    featureName: 'Économie',
+    description: 'Monnaie, boutique, marketplace et quêtes',
+    category: 'management',
+  },
+  {
+    featureKey: 'prestige',
+    featureName: 'Prestige',
+    description: 'Paliers de prestige et récompenses de fin de progression',
+    category: 'management',
+  },
+  {
+    featureKey: 'fun',
+    featureName: 'Salons Fun',
+    description: 'Comptage, histoire à un mot et devine le nombre',
+    category: 'management',
+  },
+  {
+    featureKey: 'workflows',
+    featureName: 'Automatisations',
+    description: 'Déclencheurs et workflows personnalisés',
     category: 'management',
   },
   // ─── Cross-Serveur ───
@@ -283,28 +326,47 @@ export async function getOrCreateFeatureConfigs(guildId: string) {
     return existingConfigs;
   }
 
+  // La ligne cree ici devient l'etat qui fait foi pour la garde de lecture :
+  // l'ecrire a `true` allumait, a la premiere ouverture du Centre de gestion,
+  // tous les modules qui demarrent eteints - niveaux, economie, Daily Algo,
+  // auto-thread... On reprend donc l'etat deja declare ailleurs (table propre au
+  // module, colonne historique, defaut du registre). L'offre commerciale et la
+  // cascade des dependances restent hors de cette valeur : elles s'appliquent a
+  // la lecture, et les figer ici gelerait l'offre du jour dans la base.
+  const declaredStates = await getDeclaredModuleStates(guildId).catch(() => ({} as Record<string, boolean>));
+
   // 3. Initialize missing features in parallel
-  await Promise.all(missingFeatures.map(feature => 
-    prisma.dashboardFeatureConfig.create({
-      data: {
-        guildId,
-        featureKey: feature.featureKey,
-        featureName: feature.featureName,
-        enabled: true,
-        loggingEnabled: true,
-        userActivityTracking: true,
-        notifyViaDiscordChannel: true,
-        notifyViaDM: false,
-        roleAccess: {
-          create: [
-            { guildId, staffRoleLevel: 0, canView: true },
-            { guildId, staffRoleLevel: 1, canView: true, canModerate: true },
-            { guildId, staffRoleLevel: 2, canView: true, canModerate: true, canConfigure: true, canDelete: true },
-          ],
+  //
+  // Plusieurs requetes du dashboard tombent ici en meme temps sur une guilde a
+  // qui il manque des lignes : le chargement de l etat et l appel de la page
+  // ouverte partent ensemble, voient les memes fonctionnalites absentes et les
+  // creent toutes les deux. La violation d unicite qui en resulte ne signale
+  // pas une erreur, seulement que l autre requete a gagne la course.
+  await Promise.all(missingFeatures.map(async (feature) => {
+    try {
+      await prisma.dashboardFeatureConfig.create({
+        data: {
+          guildId,
+          featureKey: feature.featureKey,
+          featureName: feature.featureName,
+          enabled: declaredStates[feature.featureKey] ?? true,
+          loggingEnabled: true,
+          userActivityTracking: true,
+          notifyViaDiscordChannel: true,
+          notifyViaDM: false,
+          roleAccess: {
+            create: [
+              { guildId, staffRoleLevel: 0, canView: true },
+              { guildId, staffRoleLevel: 1, canView: true, canModerate: true },
+              { guildId, staffRoleLevel: 2, canView: true, canModerate: true, canConfigure: true, canDelete: true },
+            ],
+          },
         },
-      },
-    })
-  ));
+      });
+    } catch (err) {
+      if ((err as { code?: string })?.code !== 'P2002') throw err;
+    }
+  }));
 
   // 4. Fetch again to return everything (only happens once when missing)
   return prisma.dashboardFeatureConfig.findMany({
@@ -318,11 +380,16 @@ export async function getOrCreateFeatureConfigs(guildId: string) {
   });
 }
 
+/**
+ * Configuration d'une fonctionnalite - jamais son activation. `enabled` n'y
+ * figure pas : l'ecrire ici changeait la colonne sans propager la cascade des
+ * dependances, sans verifier l'offre, sans toucher la table propre au module et
+ * sans purger le cache d'etats. Voir `setDashboardModuleStatus`.
+ */
 export async function updateFeatureConfig(
   guildId: string,
   featureKey: string,
   data: {
-    enabled?: boolean;
     channelId?: string | null;
     secondaryChannelId?: string | null;
     requiredRoleId?: string | null;
@@ -360,67 +427,32 @@ export async function updateRoleAccess(
     canDelete?: boolean;
   }>
 ) {
-  // Delete existing role accesses for Discord roles
-  await prisma.dashboardFeatureRoleAccess.deleteMany({
-    where: { featureConfigId },
-  });
-
-  // Create new ones in parallel for speed
-  await Promise.all(roleAccessConfigs.map(config => 
-    prisma.dashboardFeatureRoleAccess.create({
-      data: {
-        guildId,
-        featureConfigId,
-        roleId: config.roleId,
-        canView: config.canView ?? false,
-        canModerate: config.canModerate ?? false,
-        canConfigure: config.canConfigure ?? false,
-        canDelete: config.canDelete ?? false,
-      },
-    })
-  ));
+  // Le vidage et la reecriture dans une seule transaction : separes, une
+  // creation qui echoue laissait la fonctionnalite sans aucune regle, donc
+  // ouverte a tout le staff, et rien ne disait que la matrice venait d'etre
+  // perdue. C'est l'endroit ou un etat intermediaire coute le plus cher.
+  await prisma.$transaction([
+    prisma.dashboardFeatureRoleAccess.deleteMany({ where: { featureConfigId } }),
+    ...roleAccessConfigs.map((config) =>
+      prisma.dashboardFeatureRoleAccess.create({
+        data: {
+          guildId,
+          featureConfigId,
+          roleId: config.roleId,
+          canView: config.canView ?? false,
+          canModerate: config.canModerate ?? false,
+          canConfigure: config.canConfigure ?? false,
+          canDelete: config.canDelete ?? false,
+        },
+      })
+    ),
+  ]);
 
   return prisma.dashboardFeatureConfig.findUnique({
     where: { id: featureConfigId },
     include: {
       roleAccess: { orderBy: { staffRoleLevel: 'asc' } },
       roleAccessByRole: { orderBy: { roleId: 'asc' } },
-      notificationTargets: true,
-    },
-  });
-}
-
-export async function updateNotificationTargets(
-  guildId: string,
-  featureConfigId: string,
-  notificationTargets: Array<{
-    targetType: string;
-    targetId?: string | null;
-    enabled?: boolean;
-  }>
-) {
-  // Delete existing notification targets
-  await prisma.notificationTarget.deleteMany({
-    where: { featureConfigId },
-  });
-
-  // Create new ones in parallel
-  await Promise.all(notificationTargets.map(target => 
-    prisma.notificationTarget.create({
-      data: {
-        guildId,
-        featureConfigId,
-        targetType: target.targetType as NotificationTargetType,
-        targetId: target.targetId || null,
-        enabled: target.enabled ?? true,
-      },
-    })
-  ));
-
-  return prisma.dashboardFeatureConfig.findUnique({
-    where: { id: featureConfigId },
-    include: {
-      roleAccess: true,
       notificationTargets: true,
     },
   });

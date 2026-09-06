@@ -78,7 +78,114 @@ model BroadcastLog {
   failCount    Int       @default(0)
   totalTargeted Int      @default(0)
 
+  // DRAFT | SCHEDULED | SENDING | SENT | CANCELLED | FAILED
+  status      String    @default("SENT")
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  cancelledBy String?
+
   createdAt DateTime @default(now())
 
+  deliveries BroadcastDelivery[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
   @@map("broadcast_logs")
+}
+
+// ============================================================================
+// CONSOLE ADMIN - MEDIAS, MODELES ET TRACABILITE DES BROADCASTS
+// ============================================================================
+
+// Image hebergee par Kotbo pour les broadcasts.
+// Discord refuse les URL `data:` et fait expirer ses propres liens CDN signes
+// (`?ex=&is=&hm=`) : une image uploadee doit donc etre servie par une URL
+// publique stable, sinon l'embed affiche "Echec du chargement de l'image".
+model BroadcastMedia {
+  id         String @id @default(cuid())
+  // Jeton secret present dans l'URL publique : le media reste non listable
+  // sans authentification, mais Discord peut le telecharger librement.
+  token      String @unique
+  fileName   String
+  mimeType   String
+  size       Int
+  data       Bytes
+  uploadedBy String
+  usageCount Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([uploadedBy])
+  @@map("broadcast_media")
+}
+
+model BroadcastTemplate {
+  id           String   @id @default(cuid())
+  name         String
+  title        String?
+  message      String
+  color        String   @default("#5865F2")
+  thumbnailUrl String?
+  imageUrl     String?
+  footerText   String?
+  target       String   @default("ALL")
+  targetGuilds String[] @default([])
+  channelPref  String   @default("AUTO")
+
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdBy])
+  @@map("broadcast_templates")
+}
+
+// Resultat d'envoi serveur par serveur : sans ce detail, un broadcast partiel
+// ne remonte qu'un compteur d'echecs sans jamais dire lesquels ni pourquoi.
+model BroadcastDelivery {
+  id          String  @id @default(cuid())
+  broadcastId String
+  guildId     String
+  guildName   String
+  channelId   String?
+  channelName String?
+  // SENT | FAILED | SKIPPED
+  status      String
+  reason      String?
+  messageId   String?
+
+  createdAt DateTime @default(now())
+
+  broadcast BroadcastLog @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@index([broadcastId])
+  @@index([guildId])
+  @@index([status])
+  @@map("broadcast_deliveries")
+}
+
+// Journal des actions sensibles de la console admin globale.
+model AdminAuditLog {
+  id         String  @id @default(cuid())
+  actorId    String
+  actorName  String?
+  // ex: "broadcast.send", "guild.leave", "shard.restart"
+  action     String
+  targetType String?
+  targetId   String?
+  summary    String
+  metadata   Json?
+  ip         String?
+  // OK | FAILED
+  outcome    String  @default("OK")
+
+  createdAt DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@map("admin_audit_logs")
 }

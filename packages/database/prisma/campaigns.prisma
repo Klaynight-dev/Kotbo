@@ -1,0 +1,120 @@
+/// Campagnes marketing : une suite de messages programmes, adressee a une
+/// audience choisie, dont on mesure la portee.
+///
+/// Une campagne se distingue d'un simple message programme sur trois points :
+/// elle enchaine plusieurs envois autour d'une date de depart, elle sait a qui
+/// elle parle, et elle rend compte de ce qu'elle a produit.
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  CANCELLED
+}
+
+enum CampaignStepStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// Ou part le message d'une etape.
+enum CampaignDelivery {
+  /// Un message dans un salon, vu par tous ceux qui y ont acces.
+  CHANNEL
+  /// Un message prive par membre de l'audience.
+  DM
+}
+
+model Campaign {
+  id          String  @id @default(cuid())
+  guildId     String
+  name        String
+  description String?
+
+  status  CampaignStatus @default(DRAFT)
+  /// Origine des temps : les etapes se placent en decalage de cette date.
+  startAt DateTime?
+
+  // ── Audience ───────────────────────────────────────────────────────────────
+  // Tous les criteres se cumulent. Aucun critere = tout le serveur, ce qui
+  // n'a de sens que pour une diffusion en salon.
+
+  /// Roles vises. Vide = pas de filtre par role.
+  audienceRoleIds        String[] @default([])
+  /// Roles exclus, appliques apres les roles vises.
+  audienceExcludeRoleIds String[] @default([])
+  /// Niveau minimum (module Niveaux). null = pas de filtre.
+  audienceMinLevel       Int?
+  /// Anciennete minimale sur le serveur, en jours.
+  audienceMinTenureDays  Int?
+  /// Vise au contraire ceux qui n'ont rien poste depuis N jours.
+  audienceInactiveDays   Int?
+
+  // ── Diffusion multi-serveurs ───────────────────────────────────────────────
+  /// Serveurs supplementaires ou diffuser les etapes de type CHANNEL. Le bot
+  /// doit y etre present ; ceux qu'il ne voit pas sont ignores a l'envoi.
+  targetGuildIds String[] @default([])
+
+  // ── Attribution ────────────────────────────────────────────────────────────
+  /// Code d'invitation attache a la campagne. Les arrivees passees par ce code
+  /// depuis `startAt` lui sont creditees.
+  inviteCode String?
+
+  steps   CampaignStep[]
+  guild   Guild         @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([guildId, status])
+  @@index([status, startAt])
+  @@map("campaigns")
+}
+
+model CampaignStep {
+  id         String @id @default(cuid())
+  campaignId String
+
+  /// Ordre d'affichage. L'envoi suit `offsetMinutes`, pas cette position.
+  position Int @default(0)
+  /// Decalage par rapport a `Campaign.startAt`. Negatif pour un teaser.
+  offsetMinutes Int @default(0)
+
+  delivery  CampaignDelivery @default(CHANNEL)
+  /// Salon vise pour une etape CHANNEL. Ignore pour une etape DM.
+  channelId String?
+  content   String
+  /// Embed facultatif : { title, description, color, imageUrl }.
+  embed     Json?
+
+  status CampaignStepStatus @default(PENDING)
+  sentAt DateTime?
+  /// Message poste, pour aller y relire les reactions.
+  messageId String?
+  /// Erreur de la derniere tentative, conservee pour le diagnostic.
+  lastError String?
+
+  // ── Mesures ────────────────────────────────────────────────────────────────
+  /// Membres retenus par le ciblage au moment de l'envoi.
+  recipientCount Int @default(0)
+  /// Envois reussis (une etape CHANNEL vaut 1 si le message est parti).
+  deliveredCount Int @default(0)
+  /// MP refuses, salon introuvable, permission manquante.
+  failedCount    Int @default(0)
+  /// Reactions relevees sur le message poste, a la derniere mesure.
+  reactionCount  Int @default(0)
+  metricsAt      DateTime?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId, position])
+  @@index([status])
+  @@map("campaign_steps")
+}

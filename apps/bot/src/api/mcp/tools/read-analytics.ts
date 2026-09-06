@@ -1,6 +1,7 @@
 /** Outils MCP - read analytics (permission READ_ANALYTICS). */
 import { analyzeGuildChannelHealth, getChannelHealthDashboardData } from '../../../services/analytics/channelHealthService.js';
 import { getHourlyHeatmapData } from '../../../services/analytics/dashboardAnalyticsService.js';
+import { resolveGuildTimezone } from '../../../utils/timezone.js';
 import { getPredictionData } from '../../../services/analytics/predictionService.js';
 import { getPulseDashboardData } from '../../../services/analytics/pulseService.js';
 import prisma from '../../../utils/db.js';
@@ -53,15 +54,20 @@ export function registerReadAnalyticsTools(ctx: McpToolContext) {
     server.registerTool(
       'get_hourly_activity',
       {
-        description: "Activité horaire du serveur (heatmap) pour visualiser les pics d'activité.",
+        description:
+          "Activité horaire du serveur (heatmap) pour visualiser les pics d'activité. "
+          + 'Les heures sont exprimées dans le fuseau du serveur.',
         inputSchema: {
           days: z.number().int().min(1).max(30).default(7).describe('Nombre de jours à analyser'),
         },
         _meta: toolMeta,
       },
       guard('READ_ANALYTICS', async ({ days }) => {
-        const data = await getHourlyHeatmapData(guildId, { days });
-        return ok(data);
+        // Le fuseau du serveur plutot qu'UTC : une grille jour x heure lue en
+        // UTC decrit des pics que personne n'observe a cette heure-la.
+        const timezone = await resolveGuildTimezone(guildId);
+        const data = await getHourlyHeatmapData(guildId, { days, timezone });
+        return ok({ timezone, heatmap: data });
       })
     );
 

@@ -320,46 +320,10 @@ export const buildModuleUpdatesForPreset = (presetKey: DashboardPresetKey) => {
   };
 };
 
-export const buildCommandRestrictionsForPreset = (
-  presetKey: DashboardPresetKey,
-  options: {
-    moderatorRoleId: string | null;
-    adminRoleIds: string[];
-    fallbackUserId: string;
-    modRoleIds: string[];
-  }
-) => {
-  const list: unknown[] = [];
-  const rules = PRESET_COMMAND_OVERRIDES[presetKey] || {};
-
-  const modRole = options.moderatorRoleId ? [options.moderatorRoleId] : options.modRoleIds;
-  const adminRoles = options.adminRoleIds;
-
-  const getAuthorizedRoles = (level: CommandAccessLevel): string[] => {
-    if (level === 'administration') return adminRoles;
-    if (level === 'modération') return [...adminRoles, ...modRole];
-    return [];
-  };
-
-  const getAuthorizedUsers = (level: CommandAccessLevel): string[] => {
-    if (level === 'tout_le_monde') return [];
-    return [options.fallbackUserId];
-  };
-
-  for (const [cmd, val] of Object.entries(rules)) {
-    const lvl = val as CommandAccessLevel;
-    list.push({
-      commandName: cmd,
-      authorizedRoles: getAuthorizedRoles(lvl),
-      authorizedUsers: getAuthorizedUsers(lvl),
-      bannedUsers: [],
-      bannedRoles: [],
-      mode: lvl === 'tout_le_monde' ? 'ALLOW_ALL' : 'RESTRICTED',
-    });
-  }
-
-  return list;
-};
+// Le builder canonique (et type) vit dans shared/core.ts. En garder une copie
+// ici avait fini par produire une forme de regle que
+// `normalizeCommandRestrictions` ne relisait pas.
+export { buildCommandRestrictionsForPreset } from '../../../shared.js';
 
 /**
  * Verifie la signature binaire (magic bytes) d un fichier televerse, pour ne

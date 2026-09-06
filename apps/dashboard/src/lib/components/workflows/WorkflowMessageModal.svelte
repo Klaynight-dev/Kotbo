@@ -59,12 +59,12 @@
           </div>
           <div>
             <h3 class="text-sm font-bold text-on-surface">{title}</h3>
-            <p class="text-[11px] text-on-surface-variant/60">Éditeur avec aperçu Discord en temps réel</p>
+            <p class="text-[11px] text-on-surface-variant/70">Éditeur avec aperçu Discord en temps réel</p>
           </div>
         </div>
         <button
           onclick={onClose}
-          class="p-1.5 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-surface-container-highest transition-colors"
+          class="p-1.5 rounded-lg text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-highest transition-colors"
         >
           <Papicon icon="Cross" size={16} />
         </button>
@@ -81,7 +81,7 @@
             <button
               type="button"
               onclick={() => insertVariable('{membre}')}
-              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 transition-all flex items-center gap-1"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 transition-all flex items-center gap-1"
             >
               <span>@Membre</span>
               <span class="text-[10px] opacity-60">{"{membre}"}</span>
@@ -89,7 +89,7 @@
             <button
               type="button"
               onclick={() => insertVariable('{salon}')}
-              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 transition-all flex items-center gap-1"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 transition-all flex items-center gap-1"
             >
               <span>#Salon</span>
               <span class="text-[10px] opacity-60">{"{salon}"}</span>
@@ -97,7 +97,7 @@
             <button
               type="button"
               onclick={() => insertVariable('{serveur}')}
-              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all flex items-center gap-1"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all flex items-center gap-1"
             >
               <span>Nom du serveur</span>
               <span class="text-[10px] opacity-60">{"{serveur}"}</span>

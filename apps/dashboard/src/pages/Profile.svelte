@@ -465,10 +465,15 @@
     } : null
   );
 
-  const isRequesterManager = $derived(
-    authStore.guilds.find(g => g.id === authStore.selectedGuildId)?.accessLevel !== 'none' &&
-    authStore.guilds.find(g => g.id === authStore.selectedGuildId)?.accessLevel !== 'moderator'
-  );
+  /**
+   * Le volet des notes de management s'ouvre aux seuls administrateurs. Teste
+   * par la negative, un serveur introuvable rendait `undefined`, different de
+   * 'none' comme de 'moderator' : le volet s'affichait donc quand la liste des
+   * serveurs n'etait pas encore lue. Ici, contrairement aux routes, aucune
+   * raison d'etre permissif pendant l'amorcage - il vaut mieux afficher le
+   * volet une fraction de seconde trop tard que trop tot.
+   */
+  const isRequesterManager = $derived(authStore.isAdmin);
 </script>
 
 <div class="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-1000 pb-24 font-sans">

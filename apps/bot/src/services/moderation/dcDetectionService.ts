@@ -4,6 +4,7 @@ import { logger } from '../../utils/logger.js';
 
 import { LinkedAccountType, LinkedAccountStatus } from '@prisma/client';
 import * as altAccountService from './altAccountService.js';
+import { computeCrossServerLinkSignals } from './crossServerLinkService.js';
 import { createNotification } from '../staff/staffLeadershipService.js';
 import { fetchAllMembers } from '../../utils/discord.js';
 import { memberProfileIdentity } from './memberIdentityService.js';
@@ -51,6 +52,7 @@ export type DetectionReason = {
     | 'inviter_is_suspected_dc'
     | 'no_profile_picture'
     | 'cross_server_alt'
+    | 'cross_server_link'
     | 'username_numeric_suffix'
     | 'same_inviter_multiple'
     // ── Signaux intelligents (analyse profonde) ──
@@ -538,6 +540,15 @@ export async function analyzeMemberJoin(member: GuildMember): Promise<DetectionE
     }
   }
 
+  // ── Signal N8 : Lien déjà posé sur d'autres serveurs de l'instance ────────
+  // Si le staff d'un autre serveur a déjà lié ce membre à un autre compte, on
+  // reprend ce verdict : le score monte avec le nombre de serveurs concernés.
+  const crossLinkSignals = await computeCrossServerLinkSignals(guildId, userId).catch(() => [] as DcSignal[]);
+  for (const s of crossLinkSignals) {
+    reasons.push({ type: s.type, label: s.label, score: s.score, matchedUserId: s.matchedUserId, detail: s.detail });
+    if (s.matchedUserId) suspectedAlts.add(s.matchedUserId);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // ANALYSE PROFONDE - signaux intelligents (comportemental, technique, vocal…)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -711,6 +722,13 @@ export async function getDetectionEvidence(guildId: string, userId: string): Pro
   const joinCount = await prisma.memberInvite.count({ where: { guildId, userId } });
   if (joinCount >= 2) {
     reasons.push({ type: 'repeat_rejoiner', label: `A rejoint ${joinCount} fois le serveur`, score: joinCount >= 4 ? 40 : 30 });
+  }
+
+  // Liens déjà posés sur d'autres serveurs de l'instance : même signal qu'à l'arrivée.
+  const crossLinkSignals = await computeCrossServerLinkSignals(guildId, userId).catch(() => [] as DcSignal[]);
+  for (const s of crossLinkSignals) {
+    reasons.push({ type: s.type, label: s.label, score: s.score, matchedUserId: s.matchedUserId, detail: s.detail });
+    if (s.matchedUserId) suspectedAlts.add(s.matchedUserId);
   }
 
   // Analyse profonde (comportemental, technique, vocal, pattern quotidien) - tout en base.

@@ -42,14 +42,14 @@ describe('resolveRequireApproval', () => {
 
 describe('ticketBlacklistMessage', () => {
   test('mentionne la raison quand elle existe', () => {
-    const message = ticketBlacklistMessage({ reason: 'Abus du système de tickets', expiresAt: null });
+    const message = ticketBlacklistMessage({ reason: 'Abus du système de tickets', expiresAt: null, allowReopen: false });
     expect(message).toContain('Abus du système de tickets');
     expect(message).not.toContain("Jusqu'au");
   });
 
   test('affiche une échéance en horodatage Discord', () => {
     const expiresAt = new Date('2026-09-01T12:00:00.000Z');
-    const message = ticketBlacklistMessage({ reason: null, expiresAt });
+    const message = ticketBlacklistMessage({ reason: null, expiresAt, allowReopen: false });
     expect(message).toContain(`<t:${Math.floor(expiresAt.getTime() / 1000)}:F>`);
     expect(message).not.toContain('Raison');
   });

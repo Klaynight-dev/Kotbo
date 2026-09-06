@@ -2,6 +2,8 @@
   import { m, dateLocale } from '../lib/i18n';
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount, onDestroy } from 'svelte';
+  import { router } from 'tinro';
+  import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import { authStore } from '../lib/stores/auth.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { toast } from '../lib/stores/toast.svelte';
@@ -10,6 +12,7 @@
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
   import { useUnsavedChanges } from '../lib/useUnsavedChanges.svelte';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import {
     API_BASE_URL,
     fetchMemberCase,
@@ -24,16 +27,28 @@
   import FormInput from '../lib/components/FormInput.svelte';
   import FormTextarea from '../lib/components/FormTextarea.svelte';
   import FormSelect from '../lib/components/FormSelect.svelte';
+  import MultiSelect from '../lib/components/MultiSelect.svelte';
   import FormColorPicker from '../lib/components/FormColorPicker.svelte';
   import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
+  import ActionButton from '../lib/components/ActionButton.svelte';
+  import Skeleton from '../lib/components/Skeleton.svelte';
+  import Modal from '../lib/components/Modal.svelte';
 
   // Navigation & Tabs
-  let activeTab = $state<'tickets' | 'transcripts' | 'satisfaction' | 'blacklist' | 'config'>('tickets');
+  const ticketsTabs = ['tickets', 'transcripts', 'satisfaction', 'macros', 'blacklist', 'config'] as const;
+  const DEFAULT_TICKETS_TAB = 'tickets';
+  let activeTab = $state<'tickets' | 'transcripts' | 'satisfaction' | 'macros' | 'blacklist' | 'config'>(DEFAULT_TICKETS_TAB);
+
+  $effect(() => {
+    const _path = $router.path;
+    activeTab = resolveTabFromUrl('/tickets', ticketsTabs, DEFAULT_TICKETS_TAB) as typeof activeTab;
+  });
+
   const TICKETS_PAGE_SIZE = 75;
   let ticketsOffset = $state(0);
   let ticketsHasMore = $state(false);
   let loadingMoreTickets = $state(false);
-  type TicketFilter = 'ALL' | 'PENDING' | 'OPEN' | 'CLAIMED' | 'CLOSED' | 'REJECTED';
+  type TicketFilter = 'ALL' | 'PENDING' | 'OPEN' | 'CLAIMED' | 'CLOSED' | 'ARCHIVED' | 'REJECTED';
   let ticketFilter = $state<TicketFilter>('ALL');
   
   // Data State
@@ -57,7 +72,7 @@
   let showCloseModal = $state(false);
   let showDeleteConfirmModal = $state(false);
   let chatScrollContainer = $state<HTMLDivElement | null>(null);
-  let wsListener = $state<((e: any) => void) | null>(null);
+  let unsubscribeRealtime: (() => void) | null = null;
   
   // Configuration Bindings
   let ticketCategoryId = $state('');
@@ -73,15 +88,36 @@
   let ticketDmRelayChannelId = $state('');
   let ticketAllowOverclaim = $state(true);
   let ticketOverclaimPermission = $state('ANY');
+  let ticketAutoClaimOnReply = $state(false);
   let ticketInactivityEnabled = $state(false);
   let ticketInactivityHours = $state(24);
   let ticketInactivityMessage = $state('');
   let ticketSatisfactionCommentEnabled = $state(true);
   let ticketSatisfactionCommentQuestion = $state('');
   let ticketSatisfactionCommentTimeout = $state(120);
+  let ticketSatisfactionLogChannelId = $state('');
+  let ticketSatisfactionLogAnonymous = $state(false);
   let ticketLockUntilClaim = $state(false);
   let ticketApprovalEnabled = $state(false);
   let ticketApprovalChannelId = $state('');
+  let ticketArchiveCategoryId = $state('');
+  let ticketArchiveKeepOpenerView = $state(false);
+  let ticketHistoryPanelEnabled = $state(true);
+  let ticketSelfReopenEnabled = $state(true);
+  let ticketSelfDeleteEnabled = $state(false);
+  // ── Quotas tickets : chaque interrupteur commande, la valeur est un seuil.
+  let ticketQuotaOpenEnabled = $state(false);
+  let ticketQuotaOpenMax = $state(1);
+  let ticketQuotaCooldownEnabled = $state(false);
+  let ticketQuotaCooldownMinutes = $state(30);
+  let ticketQuotaPeriodEnabled = $state(false);
+  let ticketQuotaPeriodMax = $state(5);
+  let ticketQuotaPeriodHours = $state(24);
+  let ticketQuotaStaffLoadMode = $state('OFF');
+  let ticketQuotaStaffLoadMax = $state(5);
+  let ticketQuotaStaffLoadBypassRoleIds = $state([] as string[]);
+  let ticketQuotaReopenEnabled = $state(false);
+  let ticketQuotaReopenMax = $state(3);
   let ticketEmbedThumbnail = $state('');
   let ticketEmbedImage = $state('');
   let ticketEmbedFooter = $state('');
@@ -163,10 +199,10 @@
   }
 
   function getRatingColor(rating: number): string {
-    if (rating >= 4.5) return 'var(--color-success, #22c55e)';
+    if (rating >= 4.5) return 'var(--color-success)';
     if (rating >= 3.5) return 'var(--color-primary, #5865F2)';
-    if (rating >= 2.5) return 'var(--color-warning, #f59e0b)';
-    return 'var(--color-danger, #ef4444)';
+    if (rating >= 2.5) return 'var(--color-warning)';
+    return 'var(--color-error)';
   }
 
   async function loadSatisfaction() {
@@ -269,15 +305,35 @@
     ticketDmRelayChannelId,
     ticketAllowOverclaim,
     ticketOverclaimPermission,
+    ticketAutoClaimOnReply,
     ticketInactivityEnabled,
     ticketInactivityHours,
     ticketInactivityMessage,
     ticketSatisfactionCommentEnabled,
     ticketSatisfactionCommentQuestion,
     ticketSatisfactionCommentTimeout,
+    ticketSatisfactionLogChannelId,
+    ticketSatisfactionLogAnonymous,
     ticketLockUntilClaim,
     ticketApprovalEnabled,
     ticketApprovalChannelId,
+    ticketArchiveCategoryId,
+    ticketArchiveKeepOpenerView,
+    ticketHistoryPanelEnabled,
+    ticketSelfReopenEnabled,
+    ticketSelfDeleteEnabled,
+    ticketQuotaOpenEnabled,
+    ticketQuotaOpenMax,
+    ticketQuotaCooldownEnabled,
+    ticketQuotaCooldownMinutes,
+    ticketQuotaPeriodEnabled,
+    ticketQuotaPeriodMax,
+    ticketQuotaPeriodHours,
+    ticketQuotaStaffLoadMode,
+    ticketQuotaStaffLoadMax,
+    ticketQuotaStaffLoadBypassRoleIds,
+    ticketQuotaReopenEnabled,
+    ticketQuotaReopenMax,
     ticketTypes,
     ticketEmbedThumbnail,
     ticketEmbedImage,
@@ -317,15 +373,35 @@
     ticketDmRelayChannelId = savedSettingsConfig.ticketDmRelayChannelId;
     ticketAllowOverclaim = savedSettingsConfig.ticketAllowOverclaim;
     ticketOverclaimPermission = savedSettingsConfig.ticketOverclaimPermission;
+    ticketAutoClaimOnReply = savedSettingsConfig.ticketAutoClaimOnReply;
     ticketInactivityEnabled = savedSettingsConfig.ticketInactivityEnabled;
     ticketInactivityHours = savedSettingsConfig.ticketInactivityHours;
     ticketInactivityMessage = savedSettingsConfig.ticketInactivityMessage;
     ticketSatisfactionCommentEnabled = savedSettingsConfig.ticketSatisfactionCommentEnabled;
     ticketSatisfactionCommentQuestion = savedSettingsConfig.ticketSatisfactionCommentQuestion;
     ticketSatisfactionCommentTimeout = savedSettingsConfig.ticketSatisfactionCommentTimeout;
+    ticketSatisfactionLogChannelId = savedSettingsConfig.ticketSatisfactionLogChannelId;
+    ticketSatisfactionLogAnonymous = savedSettingsConfig.ticketSatisfactionLogAnonymous;
     ticketLockUntilClaim = savedSettingsConfig.ticketLockUntilClaim;
     ticketApprovalEnabled = savedSettingsConfig.ticketApprovalEnabled;
     ticketApprovalChannelId = savedSettingsConfig.ticketApprovalChannelId;
+    ticketArchiveCategoryId = savedSettingsConfig.ticketArchiveCategoryId;
+    ticketArchiveKeepOpenerView = savedSettingsConfig.ticketArchiveKeepOpenerView;
+    ticketHistoryPanelEnabled = savedSettingsConfig.ticketHistoryPanelEnabled;
+    ticketSelfReopenEnabled = savedSettingsConfig.ticketSelfReopenEnabled;
+    ticketSelfDeleteEnabled = savedSettingsConfig.ticketSelfDeleteEnabled;
+    ticketQuotaOpenEnabled = savedSettingsConfig.ticketQuotaOpenEnabled;
+    ticketQuotaOpenMax = savedSettingsConfig.ticketQuotaOpenMax;
+    ticketQuotaCooldownEnabled = savedSettingsConfig.ticketQuotaCooldownEnabled;
+    ticketQuotaCooldownMinutes = savedSettingsConfig.ticketQuotaCooldownMinutes;
+    ticketQuotaPeriodEnabled = savedSettingsConfig.ticketQuotaPeriodEnabled;
+    ticketQuotaPeriodMax = savedSettingsConfig.ticketQuotaPeriodMax;
+    ticketQuotaPeriodHours = savedSettingsConfig.ticketQuotaPeriodHours;
+    ticketQuotaStaffLoadMode = savedSettingsConfig.ticketQuotaStaffLoadMode;
+    ticketQuotaStaffLoadMax = savedSettingsConfig.ticketQuotaStaffLoadMax;
+    ticketQuotaStaffLoadBypassRoleIds = savedSettingsConfig.ticketQuotaStaffLoadBypassRoleIds;
+    ticketQuotaReopenEnabled = savedSettingsConfig.ticketQuotaReopenEnabled;
+    ticketQuotaReopenMax = savedSettingsConfig.ticketQuotaReopenMax;
     ticketTypes = JSON.parse(JSON.stringify(savedSettingsConfig.ticketTypes));
     ticketEmbedThumbnail = savedSettingsConfig.ticketEmbedThumbnail;
     ticketEmbedImage = savedSettingsConfig.ticketEmbedImage;
@@ -352,13 +428,207 @@
       unsavedChanges.clear();
       restoreSettingsConfig();
     }
-    activeTab = tab;
+    gotoTab('/tickets', tab, DEFAULT_TICKETS_TAB);
   }
 
   // Derived values from Dashboard Store
   const discordChannels = $derived(dashboardStore.state.discordChannels || []);
   const discordCategories = $derived(dashboardStore.state.discordCategories || []);
   const discordRoles = $derived(dashboardStore.state.discordRoles || []);
+
+  // ── Macros ────────────────────────────────────────────────────────────────
+  type TicketMacro = {
+    id: string;
+    name: string;
+    category: string | null;
+    emoji: string | null;
+    content: string;
+    enabled: boolean;
+    position: number;
+    ticketTypeIds: string[];
+    allowedRoleIds: string[];
+    keywords: string[];
+    autoSendOnOpen: boolean;
+    setTicketTypeId: string | null;
+    addRoleId: string | null;
+    removeRoleId: string | null;
+    requestSatisfaction: boolean;
+    closeTicket: boolean;
+    usageCount: number;
+  };
+
+  let macros = $state<TicketMacro[]>([]);
+  let macrosLoading = $state(false);
+  let macroModalOpen = $state(false);
+  let macroSaving = $state(false);
+  /** `null` = creation ; sinon l'identifiant de la macro modifiee. */
+  let editingMacroId = $state<string | null>(null);
+  let macroForm = $state(emptyMacroForm());
+  /** Saisie libre des mots-cles, convertie en tableau a l'enregistrement. */
+  let macroKeywordsText = $state('');
+
+  function emptyMacroForm() {
+    return {
+      name: '',
+      category: '',
+      emoji: '',
+      content: '',
+      enabled: true,
+      position: 0,
+      ticketTypeIds: [] as string[],
+      allowedRoleIds: [] as string[],
+      autoSendOnOpen: false,
+      setTicketTypeId: '',
+      addRoleId: '',
+      removeRoleId: '',
+      requestSatisfaction: false,
+      closeTicket: false,
+    };
+  }
+
+  /** Resume des actions attachees, pour la ligne de la liste. */
+  function macroActionSummary(macro: TicketMacro): string {
+    const parts: string[] = [];
+    if (macro.setTicketTypeId) parts.push('requalifie');
+    if (macro.addRoleId) parts.push('pose un rôle');
+    if (macro.removeRoleId) parts.push('retire un rôle');
+    if (macro.requestSatisfaction) parts.push('sonde');
+    if (macro.closeTicket) parts.push('ferme');
+    return parts.join(', ');
+  }
+
+  async function loadMacros() {
+    if (!authStore.selectedGuildId) return;
+    macrosLoading = true;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets/macros`, {
+        headers: { Authorization: `Bearer ${authStore.token}` },
+      });
+      if (!res.ok) throw new Error('Chargement des macros impossible');
+      macros = (await res.json()).macros || [];
+    } catch (err: any) {
+      toast.error(err.message || 'Chargement des macros impossible');
+    } finally {
+      macrosLoading = false;
+    }
+  }
+
+  function openNewMacro() {
+    editingMacroId = null;
+    macroForm = emptyMacroForm();
+    macroKeywordsText = '';
+    macroModalOpen = true;
+  }
+
+  function openEditMacro(macro: TicketMacro) {
+    editingMacroId = macro.id;
+    macroForm = {
+      name: macro.name,
+      category: macro.category || '',
+      emoji: macro.emoji || '',
+      content: macro.content,
+      enabled: macro.enabled,
+      position: macro.position,
+      ticketTypeIds: [...(macro.ticketTypeIds || [])],
+      allowedRoleIds: [...(macro.allowedRoleIds || [])],
+      autoSendOnOpen: macro.autoSendOnOpen,
+      setTicketTypeId: macro.setTicketTypeId || '',
+      addRoleId: macro.addRoleId || '',
+      removeRoleId: macro.removeRoleId || '',
+      requestSatisfaction: macro.requestSatisfaction,
+      closeTicket: macro.closeTicket,
+    };
+    macroKeywordsText = (macro.keywords || []).join(', ');
+    macroModalOpen = true;
+  }
+
+  async function saveMacro() {
+    if (!authStore.selectedGuildId || macroSaving) return;
+    if (!macroForm.name.trim() || !macroForm.content.trim()) {
+      toast.error('Le nom et le contenu sont obligatoires.');
+      return;
+    }
+
+    macroSaving = true;
+    try {
+      const base = `${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets/macros`;
+      const res = await fetch(editingMacroId ? `${base}/${editingMacroId}` : base, {
+        method: editingMacroId ? 'PATCH' : 'POST',
+        headers: { Authorization: `Bearer ${authStore.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...macroForm,
+          keywords: macroKeywordsText.split(',').map((k) => k.trim()).filter(Boolean),
+          // Chaines vides = « pas d'action », que l'API attend en `null`.
+          setTicketTypeId: macroForm.setTicketTypeId || null,
+          addRoleId: macroForm.addRoleId || null,
+          removeRoleId: macroForm.removeRoleId || null,
+          category: macroForm.category || null,
+          emoji: macroForm.emoji || null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Enregistrement impossible');
+
+      toast.success(editingMacroId ? 'Macro mise à jour' : 'Macro créée');
+      macroModalOpen = false;
+      await loadMacros();
+    } catch (err: any) {
+      toast.error(err.message || 'Enregistrement impossible');
+    } finally {
+      macroSaving = false;
+    }
+  }
+
+  async function deleteMacro(macro: TicketMacro) {
+    const confirmed = await confirmDialog.ask({
+      title: 'Supprimer cette macro ?',
+      description: `« ${macro.name} » sera définitivement retirée du sélecteur du staff.`,
+      confirmLabel: 'Supprimer',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets/macros/${macro.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${authStore.token}` } },
+      );
+      if (!res.ok) throw new Error('Suppression impossible');
+      toast.success('Macro supprimée');
+      await loadMacros();
+    } catch (err: any) {
+      toast.error(err.message || 'Suppression impossible');
+    }
+  }
+
+  /**
+   * Les seuls reglages qui empechent un ticket d'exister. Tout le reste de la
+   * page en affine le comportement : les melanger ferait passer pour egales
+   * une categorie manquante et une couleur d'embed non choisie.
+   */
+  const configBlockers = $derived(
+    [
+      { key: 'category', label: 'la catégorie', ok: !!ticketCategoryId },
+      { key: 'staffRole', label: 'le rôle du staff', ok: !!ticketStaffRoleId },
+      { key: 'panelChannel', label: 'le salon du panneau', ok: !!ticketChannelId },
+    ].filter((item) => !item.ok)
+  );
+
+  const STAFF_LOAD_MODES = [
+    { value: 'OFF', label: 'Désactivé' },
+    { value: 'WARN', label: 'Avertir' },
+    { value: 'BLOCK', label: 'Bloquer' },
+  ] as const;
+
+  /** Badge de l'accordeon : combien de quotas imposent effectivement une limite. */
+  const activeQuotaCount = $derived(
+    [
+      ticketQuotaOpenEnabled,
+      ticketQuotaCooldownEnabled,
+      ticketQuotaPeriodEnabled,
+      ticketQuotaStaffLoadMode !== 'OFF',
+      ticketQuotaReopenEnabled,
+    ].filter(Boolean).length
+  );
 
 
   const saveAction = createAsyncActionState();
@@ -384,13 +654,48 @@
     return null;
   }
 
-  /** Types de tickets prêts pour l'API : tri-états reconvertis en booléens. */
+  /** Choix d'une question : le texte saisi reste la source de vérité. */
+  function parseChoices(raw: string | undefined): string[] {
+    return (raw ?? '')
+      .split(',')
+      .map((choice) => choice.trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * Types de tickets prêts pour l'API : tri-états reconvertis en booléens et
+   * questions nettoyées. `choicesString` n'existe que pour l'édition, on ne
+   * l'envoie pas ; les choix sont recalculés depuis lui au moment de sauver
+   * pour qu'un collage ou une correction ne soit jamais perdu.
+   */
   function serializeTicketTypes() {
     return ticketTypes.map((type) => ({
       ...type,
       lockUntilClaim: selectToInherited(type.lockUntilClaim),
       requireApproval: selectToInherited(type.requireApproval),
+      formCustomFields: (type.formCustomFields || []).map((field) => ({
+        id: field.id,
+        label: (field.label || '').trim(),
+        placeholder: (field.placeholder || '').trim(),
+        style: field.style,
+        required: field.required !== false,
+        choices: field.style === 'SELECT' || field.style === 'RADIO' ? parseChoices(field.choicesString) : [],
+      })),
     }));
+  }
+
+  /** Une question sans intitulé est refusée par Discord : on bloque avant l'envoi. */
+  function findInvalidQuestion(): { typeLabel: string; index: number } | null {
+    for (const type of ticketTypes) {
+      if (!type.formEnabled) continue;
+      const fields = type.formCustomFields || [];
+      for (let index = 0; index < fields.length; index++) {
+        if (!(fields[index].label || '').trim()) {
+          return { typeLabel: type.label || '', index: index + 1 };
+        }
+      }
+    }
+    return null;
   }
 
   function createTicketTypeDraft(index = 0, legacy?: any) {
@@ -471,8 +776,10 @@
           requireApproval: inheritedToSelect(item.requireApproval),
           formEnabled: item.formEnabled !== undefined ? item.formEnabled : true,
           formCustomFields: Array.isArray(item.formCustomFields)
-            ? item.formCustomFields.map((f: any) => ({
-                id: f.id,
+            ? item.formCustomFields.map((f: any, fieldIndex: number) => ({
+                // Un identifiant vide ferait doublon dans le modal Discord,
+                // qui refuse alors le formulaire entier.
+                id: typeof f.id === 'string' && f.id.trim() ? f.id.trim() : `field_${index + 1}_${fieldIndex + 1}`,
                 label: f.label || '',
                 placeholder: f.placeholder || '',
                 style: f.style || 'SHORT',
@@ -502,7 +809,11 @@
       label: m.e1_tickets_default_question_label({ index: ticketType.formCustomFields.length + 1 }),
       placeholder: '',
       style: 'SHORT',
-      required: true
+      required: true,
+      // Ces deux champs doivent exister des la creation : `bind:value` sur une
+      // valeur `undefined` fait planter la page des qu'on choisit un type a choix.
+      choices: [],
+      choicesString: ''
     }];
   }
 
@@ -607,6 +918,7 @@
       ticketDmRelayChannelId = config.ticketDmRelayChannelId || '';
       ticketAllowOverclaim = config.ticketAllowOverclaim !== undefined ? config.ticketAllowOverclaim : true;
       ticketOverclaimPermission = config.ticketOverclaimPermission || 'ANY';
+      ticketAutoClaimOnReply = config.ticketAutoClaimOnReply === true;
       ticketInactivityEnabled = config.ticketInactivityEnabled !== undefined ? config.ticketInactivityEnabled : false;
       ticketInactivityHours = config.ticketInactivityHours !== undefined ? config.ticketInactivityHours : 24;
       ticketInactivityMessage = config.ticketInactivityMessage || '';
@@ -614,9 +926,30 @@
       // Laisse vide : le bot pose alors sa question par defaut, comme pour les embeds.
       ticketSatisfactionCommentQuestion = config.ticketSatisfactionCommentQuestion || '';
       ticketSatisfactionCommentTimeout = config.ticketSatisfactionCommentTimeout !== undefined ? config.ticketSatisfactionCommentTimeout : 120;
+      ticketSatisfactionLogChannelId = config.ticketSatisfactionLogChannelId || '';
+      ticketSatisfactionLogAnonymous = config.ticketSatisfactionLogAnonymous === true;
       ticketLockUntilClaim = config.ticketLockUntilClaim === true;
       ticketApprovalEnabled = config.ticketApprovalEnabled === true;
       ticketApprovalChannelId = config.ticketApprovalChannelId || '';
+      ticketArchiveCategoryId = config.ticketArchiveCategoryId || '';
+      ticketArchiveKeepOpenerView = config.ticketArchiveKeepOpenerView === true;
+      // Actifs par defaut cote serveur : `!== false` pour qu'une config lue
+      // avant migration ne les affiche pas eteints.
+      ticketHistoryPanelEnabled = config.ticketHistoryPanelEnabled !== false;
+      ticketSelfReopenEnabled = config.ticketSelfReopenEnabled !== false;
+      ticketSelfDeleteEnabled = config.ticketSelfDeleteEnabled === true;
+      ticketQuotaOpenEnabled = config.ticketQuotaOpenEnabled === true;
+      ticketQuotaOpenMax = config.ticketQuotaOpenMax ?? 1;
+      ticketQuotaCooldownEnabled = config.ticketQuotaCooldownEnabled === true;
+      ticketQuotaCooldownMinutes = config.ticketQuotaCooldownMinutes ?? 30;
+      ticketQuotaPeriodEnabled = config.ticketQuotaPeriodEnabled === true;
+      ticketQuotaPeriodMax = config.ticketQuotaPeriodMax ?? 5;
+      ticketQuotaPeriodHours = config.ticketQuotaPeriodHours ?? 24;
+      ticketQuotaStaffLoadMode = config.ticketQuotaStaffLoadMode || 'OFF';
+      ticketQuotaStaffLoadMax = config.ticketQuotaStaffLoadMax ?? 5;
+      ticketQuotaStaffLoadBypassRoleIds = config.ticketQuotaStaffLoadBypassRoleIds || [];
+      ticketQuotaReopenEnabled = config.ticketQuotaReopenEnabled === true;
+      ticketQuotaReopenMax = config.ticketQuotaReopenMax ?? 3;
       ticketTypes = normalizeTicketTypes(config);
       ticketEmbedThumbnail = config.ticketEmbedThumbnail || '';
       ticketEmbedImage = config.ticketEmbedImage || '';
@@ -643,15 +976,35 @@
         ticketDmRelayChannelId,
         ticketAllowOverclaim,
         ticketOverclaimPermission,
+        ticketAutoClaimOnReply,
         ticketInactivityEnabled,
         ticketInactivityHours,
         ticketInactivityMessage,
         ticketSatisfactionCommentEnabled,
         ticketSatisfactionCommentQuestion,
         ticketSatisfactionCommentTimeout,
+        ticketSatisfactionLogChannelId,
+        ticketSatisfactionLogAnonymous,
         ticketLockUntilClaim,
         ticketApprovalEnabled,
         ticketApprovalChannelId,
+        ticketArchiveCategoryId,
+        ticketArchiveKeepOpenerView,
+        ticketHistoryPanelEnabled,
+        ticketSelfReopenEnabled,
+        ticketSelfDeleteEnabled,
+        ticketQuotaOpenEnabled,
+        ticketQuotaOpenMax,
+        ticketQuotaCooldownEnabled,
+        ticketQuotaCooldownMinutes,
+        ticketQuotaPeriodEnabled,
+        ticketQuotaPeriodMax,
+        ticketQuotaPeriodHours,
+        ticketQuotaStaffLoadMode,
+        ticketQuotaStaffLoadMax,
+        ticketQuotaStaffLoadBypassRoleIds,
+        ticketQuotaReopenEnabled,
+        ticketQuotaReopenMax,
         ticketTypes: JSON.parse(JSON.stringify(ticketTypes)),
         ticketEmbedThumbnail,
         ticketEmbedImage,
@@ -670,6 +1023,35 @@
     } finally {
       loading = false;
       loadingMoreTickets = false;
+    }
+  }
+
+  async function refreshTicketsOnly() {
+    if (!authStore.selectedGuildId || !authStore.token) return;
+    try {
+      const params = new URLSearchParams({
+        limit: String(Math.max(TICKETS_PAGE_SIZE, tickets.length || TICKETS_PAGE_SIZE)),
+        offset: '0',
+      });
+      if (ticketFilter !== 'ALL') params.set('status', ticketFilter);
+
+      const res = await fetch(`${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets?${params}`, {
+        headers: { 'Authorization': `Bearer ${authStore.token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      tickets = data.tickets || [];
+      ticketsHasMore = data.pagination?.hasMore === true;
+      ticketsOffset = data.pagination?.nextOffset ?? tickets.length;
+
+      if (selectedTicketId) {
+        const found = tickets.find((t) => t.id === selectedTicketId);
+        if (found && selectedTicketDetail) {
+          selectedTicketDetail = { ...selectedTicketDetail, ...found };
+        }
+      }
+    } catch {
+      // Échec silencieux pour un rafraîchissement d'arrière-plan
     }
   }
 
@@ -708,6 +1090,8 @@
       await loadSatisfaction();
     } else if (activeTab === 'blacklist') {
       await loadBlacklist();
+    } else if (activeTab === 'macros') {
+      await loadMacros();
     } else {
       await loadTicketsAndConfig();
     }
@@ -903,6 +1287,91 @@
     }
   }
 
+  // ─── Archivage et verrou anti-suppression ──────────────────────────────────
+
+  /**
+   * Le verrou peut porter une échéance : un ticket dont la date est passée n'est
+   * plus protégé, même si le drapeau est resté à vrai en base. On le recalcule
+   * ici plutôt que de se fier au seul booléen, comme le fait le bot.
+   */
+  const deletionLock = $derived.by(() => {
+    const t = selectedTicketDetail;
+    if (!t?.deletionLocked) return null;
+    const until = t.deletionLockedUntil ? new Date(t.deletionLockedUntil) : null;
+    if (until && until.getTime() <= Date.now()) return null;
+    return { until, reason: t.deletionLockReason ?? null, byName: t.deletionLockedByName ?? null };
+  });
+
+  let showLockModal = $state(false);
+  let lockDuration = $state<'7d' | '30d' | '90d' | 'permanent'>('30d');
+  let lockReason = $state('');
+  let lockBusy = $state(false);
+
+  const LOCK_DURATION_MS: Record<string, number | null> = {
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+    '90d': 90 * 24 * 60 * 60 * 1000,
+    permanent: null,
+  };
+
+  async function postTicketAction(action: string, body?: unknown): Promise<any> {
+    const res = await fetch(`${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets/${selectedTicketId}/${action}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${authStore.token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || m.e1_tickets_action_failed());
+    return data;
+  }
+
+  async function archiveTicket(unarchive = false) {
+    if (!selectedTicketId || !authStore.selectedGuildId) return;
+    try {
+      await postTicketAction(unarchive ? 'unarchive' : 'archive');
+      toast.success(unarchive ? m.e1_tickets_unarchived_toast() : m.e1_tickets_archived_toast());
+      await loadTicketDetail(selectedTicketId, false);
+      await loadTicketsAndConfig();
+    } catch (err: any) {
+      toast.error(err.message || m.e1_tickets_err_archive());
+    }
+  }
+
+  async function lockTicket() {
+    if (!selectedTicketId || !authStore.selectedGuildId) return;
+    lockBusy = true;
+    try {
+      await postTicketAction('lock', {
+        durationMs: LOCK_DURATION_MS[lockDuration],
+        reason: lockReason.trim() || null,
+      });
+      showLockModal = false;
+      lockReason = '';
+      toast.success(m.e1_tickets_locked_toast());
+      await loadTicketDetail(selectedTicketId, false);
+      await loadTicketsAndConfig();
+    } catch (err: any) {
+      toast.error(err.message || m.e1_tickets_err_lock());
+    } finally {
+      lockBusy = false;
+    }
+  }
+
+  async function unlockTicket() {
+    if (!selectedTicketId || !authStore.selectedGuildId) return;
+    try {
+      await postTicketAction('unlock');
+      toast.success(m.e1_tickets_unlocked_toast());
+      await loadTicketDetail(selectedTicketId, false);
+      await loadTicketsAndConfig();
+    } catch (err: any) {
+      toast.error(err.message || m.e1_tickets_err_lock());
+    }
+  }
+
   // Delete Ticket
   async function deleteTicket() {
     if (!selectedTicketId || !authStore.selectedGuildId) return;
@@ -925,6 +1394,11 @@
 
   // Save Settings Config
   async function saveSettings(): Promise<boolean> {
+    const invalidQuestion = findInvalidQuestion();
+    if (invalidQuestion) {
+      toast.error(m.e1_tickets_err_empty_question({ index: invalidQuestion.index, type: invalidQuestion.typeLabel }));
+      return false;
+    }
     let success = false;
     await saveAction.run(async () => {
       const res = await fetch(`${API_BASE_URL}/api/dashboard/guilds/${authStore.selectedGuildId}/tickets/config`, {
@@ -948,15 +1422,35 @@
           ticketLockUntilClaim,
           ticketApprovalEnabled,
           ticketApprovalChannelId,
+          ticketArchiveCategoryId,
+          ticketArchiveKeepOpenerView,
+          ticketHistoryPanelEnabled,
+          ticketSelfReopenEnabled,
+          ticketSelfDeleteEnabled,
+          ticketQuotaOpenEnabled,
+          ticketQuotaOpenMax,
+          ticketQuotaCooldownEnabled,
+          ticketQuotaCooldownMinutes,
+          ticketQuotaPeriodEnabled,
+          ticketQuotaPeriodMax,
+          ticketQuotaPeriodHours,
+          ticketQuotaStaffLoadMode,
+          ticketQuotaStaffLoadMax,
+          ticketQuotaStaffLoadBypassRoleIds,
+          ticketQuotaReopenEnabled,
+          ticketQuotaReopenMax,
           ticketTypes: serializeTicketTypes(),
           ticketAllowOverclaim,
           ticketOverclaimPermission,
+          ticketAutoClaimOnReply,
           ticketInactivityEnabled,
           ticketInactivityHours,
           ticketInactivityMessage,
           ticketSatisfactionCommentEnabled,
           ticketSatisfactionCommentQuestion,
           ticketSatisfactionCommentTimeout,
+          ticketSatisfactionLogChannelId,
+          ticketSatisfactionLogAnonymous,
           ticketEmbedThumbnail,
           ticketEmbedImage,
           ticketEmbedFooter,
@@ -1085,6 +1579,7 @@
       case 'OPEN': return m.e1_tickets_status_open();
       case 'CLAIMED': return m.e1_tickets_status_claimed();
       case 'CLOSED': return m.e1_tickets_status_closed();
+      case 'ARCHIVED': return m.e1_tickets_status_archived();
       case 'REJECTED': return m.e1_tickets_status_rejected();
       default: return status;
     }
@@ -1096,6 +1591,7 @@
       case 'OPEN': return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
       case 'CLAIMED': return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
       case 'CLOSED': return 'bg-rose-500/10 text-rose-500 border-rose-500/20';
+      case 'ARCHIVED': return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
       case 'REJECTED': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       default: return 'bg-outline-variant/10 text-on-surface-variant border-outline-variant/20';
     }
@@ -1110,6 +1606,7 @@
     reason: string | null;
     addedByTag: string | null;
     expiresAt: string | null;
+    allowReopen: boolean;
     createdAt: string;
   };
 
@@ -1118,6 +1615,7 @@
   let blacklistUserId = $state('');
   let blacklistReason = $state('');
   let blacklistDurationDays = $state('');
+  let blacklistAllowReopen = $state(false);
   const blacklistAddAction = createAsyncActionState();
 
   async function loadBlacklist() {
@@ -1152,12 +1650,14 @@
           userId,
           reason: blacklistReason.trim() || null,
           durationDays: blacklistDurationDays.trim() ? Number(blacklistDurationDays) : null,
+          allowReopen: blacklistAllowReopen,
         })
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || m.e1_tickets_bl_err_add());
       blacklistUserId = '';
       blacklistReason = '';
       blacklistDurationDays = '';
+      blacklistAllowReopen = false;
       await loadBlacklist();
       return true;
     }, { successMessage: m.e1_tickets_bl_added() });
@@ -1190,6 +1690,8 @@
       void loadBlacklist();
     } else if (activeTab === 'satisfaction') {
       void loadSatisfaction();
+    } else if (activeTab === 'macros') {
+      void loadMacros();
     }
   });
 
@@ -1217,27 +1719,36 @@
     await loadTicketsAndConfig();
     void loadStaffServerInfo();
 
-    wsListener = (e: CustomEvent) => {
-      const payload = e.detail;
-      if (payload?.type === 'new_ticket_message' && payload.ticketId === selectedTicketId) {
-        if (!messages.some(m => m.id === payload.message.id)) {
-          // Remplacer les messages temporaires par le message officiel Discord reçu en temps réel
-          messages = [
-            ...messages.filter(m => !m.id.startsWith('temp-') || m.content !== payload.message.content),
-            payload.message
-          ];
-          setTimeout(scrollToBottom, 50);
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: ['tickets_updated'],
+      types: ['new_ticket_message'],
+      onUpdate: (event) => {
+        if (!event) {
+          void refreshTicketsOnly();
+          return;
         }
-      }
-    };
 
-    window.addEventListener('kotbo-ws-message', wsListener as any);
+        if (event.type === 'new_ticket_message' && event.ticketId === selectedTicketId) {
+          const msg = event.message as any;
+          if (msg && !messages.some((m) => m.id === msg.id)) {
+            messages = [
+              ...messages.filter((m) => !m.id.startsWith('temp-') || m.content !== msg.content),
+              msg,
+            ];
+            setTimeout(scrollToBottom, 50);
+          }
+          return;
+        }
+
+        if (event.reason === 'tickets_updated') {
+          void refreshTicketsOnly();
+        }
+      },
+    });
   });
 
   onDestroy(() => {
-    if (wsListener) {
-      window.removeEventListener('kotbo-ws-message', wsListener as any);
-    }
+    unsubscribeRealtime?.();
   });
 </script>
 
@@ -1267,6 +1778,7 @@
       { key: 'tickets', label: m.e1_tickets_tab_tickets() },
       { key: 'transcripts', label: m.e1_tickets_tab_transcripts() },
       { key: 'satisfaction', label: m.e1_tickets_tab_satisfaction() },
+      { key: 'macros', label: 'Macros' },
       { key: 'blacklist', label: m.e1_tickets_tab_blacklist() },
       { key: 'config', label: m.e1_tickets_tab_config() }
     ] as tab}
@@ -1289,7 +1801,7 @@
       <!-- Left Panel: Tickets Browser -->
       <div class="lg:col-span-4 bg-surface-container-low/40 border border-outline-variant/10 rounded-xl p-4 lg:p-6 flex flex-col overflow-hidden {showMobileChat && selectedTicketId ? 'hidden lg:flex' : 'flex'} h-[50vh] lg:h-full">
         <div class="flex items-center gap-1.5 mb-4 overflow-x-auto pb-2 scrollbar-hide">
-          {#each ['ALL', 'PENDING', 'OPEN', 'CLAIMED', 'CLOSED'] as filterType}
+          {#each ['ALL', 'PENDING', 'OPEN', 'CLAIMED', 'CLOSED', 'ARCHIVED'] as filterType}
             <button
               onclick={() => changeTicketFilter(filterType as TicketFilter)}
               class="px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap {ticketFilter === filterType ? 'bg-primary text-white shadow-md shadow-primary/20' : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'}"
@@ -1471,15 +1983,51 @@
                 </button>
               {/if}
 
-              {#if selectedTicketDetail?.status === 'CLOSED'}
+              {#if selectedTicketDetail?.status === 'CLOSED' || selectedTicketDetail?.status === 'ARCHIVED'}
                 {#if selectedTicketDetail.channelId}
                   <button onclick={reopenTicket}
                     class="px-3 py-1.5 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-lg text-[10px] font-semibold uppercase tracking-wider hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-1.5 shrink-0"
                   >
                     <Papicon icon="refresh" size={12} /> {m.e1_tickets_btn_reopen()}
                   </button>
-                  <button onclick={() => showDeleteConfirmModal = true}
-                    class="px-3 py-1.5 bg-rose-600 text-white rounded-lg text-[10px] font-semibold uppercase tracking-wider active:scale-[0.98] transition-all flex items-center gap-1.5 shrink-0"
+
+                  <!-- Archiver conserve tout : le salon passe en lecture seule
+                       au lieu d'être détruit. C'est l'alternative à Supprimer,
+                       posée juste avant lui pour se présenter d'abord. -->
+                  {#if selectedTicketDetail.status === 'ARCHIVED'}
+                    <button onclick={() => archiveTicket(true)}
+                      class="px-3 py-1.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-semibold uppercase tracking-wider hover:bg-sky-500 hover:text-white transition-all flex items-center gap-1.5 shrink-0"
+                    >
+                      <Papicon icon="upload" size={12} /> {m.e1_tickets_btn_unarchive()}
+                    </button>
+                  {:else}
+                    <button onclick={() => archiveTicket(false)}
+                      class="px-3 py-1.5 bg-slate-500/10 text-slate-400 border border-slate-500/20 rounded-lg text-[10px] font-semibold uppercase tracking-wider hover:bg-slate-500 hover:text-white transition-all flex items-center gap-1.5 shrink-0"
+                    >
+                      <Papicon icon="archive" size={12} /> {m.e1_tickets_btn_archive()}
+                    </button>
+                  {/if}
+
+                  {#if deletionLock}
+                    <button onclick={unlockTicket}
+                      class="px-3 py-1.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-lg text-[10px] font-semibold uppercase tracking-wider hover:bg-amber-500 hover:text-white transition-all flex items-center gap-1.5 shrink-0"
+                    >
+                      <Papicon icon="unlock" size={12} /> {m.e1_tickets_btn_unlock()}
+                    </button>
+                  {:else}
+                    <button onclick={() => showLockModal = true}
+                      class="px-3 py-1.5 bg-outline-variant/10 text-on-surface-variant border border-outline-variant/20 rounded-lg text-[10px] font-semibold uppercase tracking-wider hover:bg-on-surface-variant hover:text-surface transition-all flex items-center gap-1.5 shrink-0"
+                    >
+                      <Papicon icon="lock" size={12} /> {m.e1_tickets_btn_lock()}
+                    </button>
+                  {/if}
+
+                  <!-- Sous verrou le bouton reste visible mais inerte : le
+                       masquer laisserait croire que la suppression n'existe pas. -->
+                  <button onclick={() => { if (!deletionLock) showDeleteConfirmModal = true; }}
+                    disabled={!!deletionLock}
+                    title={deletionLock ? m.e1_tickets_delete_locked_hint() : undefined}
+                    class="px-3 py-1.5 rounded-lg text-[10px] font-semibold uppercase tracking-wider active:scale-[0.98] transition-all flex items-center gap-1.5 shrink-0 {deletionLock ? 'bg-surface-container text-on-surface-variant/30 border border-outline-variant/10 cursor-not-allowed' : 'bg-rose-600 text-white'}"
                   >
                     <Papicon icon="delete" size={12} /> {m.e1_tickets_btn_delete()}
                   </button>
@@ -1505,6 +2053,20 @@
                 </a>
               {/if}
             </div>
+
+            {#if deletionLock}
+              <div class="mt-3 flex items-start gap-2 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <Papicon icon="lock" size={14} class="text-amber-500 mt-0.5 shrink-0" />
+                <div class="text-[11px] text-amber-400/90 leading-relaxed">
+                  <p class="font-semibold">
+                    {m.e1_tickets_lock_banner()}
+                    · {deletionLock.until ? m.e1_tickets_lock_until({ date: new Date(deletionLock.until).toLocaleDateString() }) : m.e1_tickets_lock_permanent()}
+                    {#if deletionLock.byName}· {m.e1_tickets_lock_by({ name: deletionLock.byName })}{/if}
+                  </p>
+                  {#if deletionLock.reason}<p class="mt-0.5 opacity-80">{deletionLock.reason}</p>{/if}
+                </div>
+              </div>
+            {/if}
 
             {#if selectedTicketDetail?.channelId && selectedTicketDetail?.mode !== 'DM'}
               <div class="mt-3 flex gap-2 items-center">
@@ -1740,6 +2302,44 @@
         </div>
       </div>
 
+      <!-- ─── Préparation ────────────────────────────────────────────────
+           Les trois réglages sans lesquels un membre ne peut pas ouvrir de
+           ticket, séparés de la trentaine d'options d'affinage qui suivent.
+           Ils étaient noyés dans le premier accordéon, replié par défaut. -->
+      {#if configBlockers.length > 0}
+        <div class="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3.5">
+          <div class="flex items-start gap-3">
+            <Papicon icon="alert-triangle" size={16} class="text-amber-500 mt-0.5 shrink-0" />
+            <div class="min-w-0">
+              <p class="text-[13px] font-semibold text-on-surface">
+                Les tickets ne sont pas encore opérationnels
+              </p>
+              <p class="text-[12px] text-on-surface-variant mt-1 leading-relaxed">
+                Il manque {configBlockers.length === 1 ? 'un réglage' : `${configBlockers.length} réglages`} :
+                {configBlockers.map((b) => b.label).join(', ')}.
+                Un membre qui clique sur le panneau n'obtiendra rien tant qu'ils ne sont pas remplis.
+              </p>
+              <button
+                type="button"
+                class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                bg-amber-500/15 text-amber-500 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
+                onclick={() => (expandedConfigSection = 'channels')}
+              >
+                <Papicon icon="arrow-right" size={13} />
+                Compléter
+              </button>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <div class="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3 flex items-center gap-3">
+          <Papicon icon="check-circle" size={16} class="text-emerald-500 shrink-0" />
+          <p class="text-[12.5px] text-on-surface">
+            Les tickets sont opérationnels. Le reste de cette page en affine le comportement.
+          </p>
+        </div>
+      {/if}
+
       <!-- ─── Section 1: Salons & Rôles ──────────────────────────────────── -->
       <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
         <button onclick={() => toggleConfigSection('channels')} class="w-full flex items-center justify-between p-4 lg:p-5 hover:bg-white/3 transition-colors text-left">
@@ -1811,6 +2411,13 @@
                   </FormSelect>
                 </label>
               {/if}
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketAutoClaimOnReply} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">{m.e1_tickets_autoclaim_label()}</span>
+                  <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_autoclaim_desc()}</p>
+                </div>
+              </label>
             </div>
           </div>
         {/if}
@@ -2011,6 +2618,81 @@
         {/if}
       </div>
 
+      <!-- ─── Section : Archivage & historique côté membre ───────────────── -->
+      <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
+        <button onclick={() => toggleConfigSection('archive')} class="w-full flex items-center justify-between p-4 lg:p-5 hover:bg-white/3 transition-colors text-left">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-lg bg-slate-500/10 text-slate-400 flex items-center justify-center shrink-0">
+              <Papicon icon="archive" size={18} />
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-on-surface">{m.e1_tickets_cfg_archive_title()}</p>
+              <p class="text-[10px] text-on-surface-variant/60 mt-0.5">{m.e1_tickets_cfg_archive_desc()}</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            {#if ticketArchiveCategoryId || ticketHistoryPanelEnabled}
+              <span class="px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">{m.e1_tickets_active_badge()}</span>
+            {/if}
+            <Papicon icon={expandedConfigSection === 'archive' ? 'chevron-up' : 'chevron-down'} size={16} class="text-on-surface-variant/40" />
+          </div>
+        </button>
+        {#if expandedConfigSection === 'archive'}
+          <div class="px-4 lg:px-5 pb-5 space-y-4 border-t border-outline-variant/10 pt-4">
+            <label class="block">
+              <span class="text-xs font-bold text-on-surface-variant/80 mb-2 block">{m.e1_tickets_cfg_archive_category()}</span>
+              <SearchableSelect bind:value={ticketArchiveCategoryId} options={discordCategories.map(c => ({ id: c.id, name: c.name }))} placeholder={m.e1_tickets_select_ph()} className="w-full" />
+              {#if isMissingReference(ticketArchiveCategoryId, discordCategories)}
+                <p class="text-[10px] text-amber-500 mt-1.5">{m.e1_tickets_missing_ref()}</p>
+              {/if}
+              <p class="text-[10px] text-on-surface-variant/50 mt-1.5">{m.e1_tickets_cfg_archive_category_hint()}</p>
+            </label>
+
+            <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+              <input type="checkbox" bind:checked={ticketArchiveKeepOpenerView} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+              <div>
+                <span class="text-xs font-bold text-on-surface">{m.e1_tickets_cfg_archive_keep_view()}</span>
+                <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_cfg_archive_keep_view_desc()}</p>
+              </div>
+            </label>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <div>
+                <p class="text-xs font-bold text-on-surface">{m.e1_tickets_cfg_history_title()}</p>
+                <p class="text-[10px] text-on-surface-variant/60 mt-0.5">{m.e1_tickets_cfg_history_desc()}</p>
+              </div>
+
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketHistoryPanelEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">{m.e1_tickets_cfg_history_panel()}</span>
+                  <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_cfg_history_panel_desc()}</p>
+                </div>
+              </label>
+
+              {#if ticketHistoryPanelEnabled}
+                <div class="ml-7 space-y-3">
+                  <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                    <input type="checkbox" bind:checked={ticketSelfReopenEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                    <div>
+                      <span class="text-xs font-bold text-on-surface">{m.e1_tickets_cfg_self_reopen()}</span>
+                      <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_cfg_self_reopen_desc()}</p>
+                    </div>
+                  </label>
+                  <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                    <input type="checkbox" bind:checked={ticketSelfDeleteEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                    <div>
+                      <span class="text-xs font-bold text-on-surface">{m.e1_tickets_cfg_self_delete()}</span>
+                      <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_cfg_self_delete_desc()}</p>
+                    </div>
+                  </label>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+
       <!-- ─── Section 4: Inactivité ──────────────────────────────────────── -->
       <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
         <button onclick={() => toggleConfigSection('inactivity')} class="w-full flex items-center justify-between p-4 lg:p-5 hover:bg-white/3 transition-colors text-left">
@@ -2055,6 +2737,152 @@
         {/if}
       </div>
 
+      <!-- ─── Quotas ─────────────────────────────────────────────────────── -->
+      <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
+        <button onclick={() => toggleConfigSection('quotas')} class="w-full flex items-center justify-between p-4 lg:p-5 hover:bg-white/3 transition-colors text-left">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
+              <Papicon icon="gauge" size={18} />
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-on-surface">Quotas</p>
+              <p class="text-[10px] text-on-surface-variant/60 mt-0.5">Limites d'ouverture côté membre, plafond de charge côté staff</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            {#if activeQuotaCount > 0}
+              <span class="px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                {activeQuotaCount} actif{activeQuotaCount > 1 ? 's' : ''}
+              </span>
+            {/if}
+            <Papicon icon={expandedConfigSection === 'quotas' ? 'chevron-up' : 'chevron-down'} size={16} class="text-on-surface-variant/40" />
+          </div>
+        </button>
+        {#if expandedConfigSection === 'quotas'}
+          <div class="px-4 lg:px-5 pb-5 space-y-4 border-t border-outline-variant/10 pt-4">
+            <p class="text-[11px] text-on-surface-variant/70 leading-relaxed">
+              Chaque quota s'active indépendamment. Décoché, il n'impose aucune limite.
+              Un type de ticket peut ajuster le seuil depuis l'onglet Types.
+            </p>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketQuotaOpenEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">Tickets ouverts simultanément</span>
+                  <p class="text-[10px] text-on-surface-variant/60">Nombre de tickets qu'un membre peut avoir en cours en même temps.</p>
+                </div>
+              </label>
+              {#if ticketQuotaOpenEnabled}
+                <label class="block ml-7 max-w-[220px]">
+                  <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Maximum par membre</span>
+                  <input type="number" bind:value={ticketQuotaOpenMax} min={1} max={50} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                </label>
+              {/if}
+            </div>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketQuotaCooldownEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">Délai entre deux ouvertures</span>
+                  <p class="text-[10px] text-on-surface-variant/60">Empêche d'enchaîner les tickets sans laisser le temps de répondre.</p>
+                </div>
+              </label>
+              {#if ticketQuotaCooldownEnabled}
+                <label class="block ml-7 max-w-[220px]">
+                  <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Délai (minutes)</span>
+                  <input type="number" bind:value={ticketQuotaCooldownMinutes} min={1} max={10080} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                </label>
+              {/if}
+            </div>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketQuotaPeriodEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">Quota sur une période</span>
+                  <p class="text-[10px] text-on-surface-variant/60">Plafonne le nombre d'ouvertures sur une fenêtre glissante.</p>
+                </div>
+              </label>
+              {#if ticketQuotaPeriodEnabled}
+                <div class="ml-7 grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-[460px]">
+                  <label class="block">
+                    <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Tickets maximum</span>
+                    <input type="number" bind:value={ticketQuotaPeriodMax} min={1} max={500} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Sur (heures)</span>
+                    <input type="number" bind:value={ticketQuotaPeriodHours} min={1} max={720} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                  </label>
+                </div>
+              {/if}
+            </div>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <div>
+                <p class="text-xs font-bold text-on-surface">Charge maximale par modérateur</p>
+                <p class="text-[10px] text-on-surface-variant/60 mt-0.5">
+                  Tickets pris en charge et encore ouverts. Au-delà, le staff est averti ou refusé.
+                </p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                {#each STAFF_LOAD_MODES as opt (opt.value)}
+                  <button
+                    type="button"
+                    class="px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors
+                    {ticketQuotaStaffLoadMode === opt.value
+                      ? 'bg-primary/15 border-primary/40 text-primary'
+                      : 'bg-surface-container-high border-outline-variant/20 text-on-surface-variant hover:text-on-surface'}"
+                    onclick={() => (ticketQuotaStaffLoadMode = opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
+              </div>
+              {#if ticketQuotaStaffLoadMode !== 'OFF'}
+                <div class="space-y-3">
+                  <label class="block max-w-[220px]">
+                    <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Tickets par modérateur</span>
+                    <input type="number" bind:value={ticketQuotaStaffLoadMax} min={1} max={200} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                  </label>
+                  <div>
+                    <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-1 block">Rôles qui passent outre</span>
+                    <p class="text-[10px] text-on-surface-variant/60 ml-1 mb-2">
+                      Sans eux, un serveur dont tout le staff est plein ne peut plus prendre aucun ticket.
+                    </p>
+                    <MultiSelect
+                      bind:values={ticketQuotaStaffLoadBypassRoleIds}
+                      options={discordRoles.map(r => ({ id: r.id, name: `@${r.name}` }))}
+                      placeholder="Aucun rôle"
+                    />
+                  </div>
+                </div>
+              {/if}
+            </div>
+
+            <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+              <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                <input type="checkbox" bind:checked={ticketQuotaReopenEnabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                <div>
+                  <span class="text-xs font-bold text-on-surface">Limiter les réouvertures</span>
+                  <p class="text-[10px] text-on-surface-variant/60">
+                    Nombre de fois qu'un même ticket peut être rouvert. Les délais entre deux réouvertures
+                    (24 h, puis 7 jours) s'appliquent quoi qu'il arrive.
+                  </p>
+                </div>
+              </label>
+              {#if ticketQuotaReopenEnabled}
+                <label class="block ml-7 max-w-[220px]">
+                  <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Réouvertures maximum</span>
+                  <input type="number" bind:value={ticketQuotaReopenMax} min={1} max={50} class="w-full bg-surface-container-high text-sm px-4 py-2.5 rounded-xl border border-outline-variant/10 focus:ring-1 ring-primary/30 transition-all outline-none" />
+                </label>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+
       <!-- ─── Section 5: Sondage de satisfaction ─────────────────────────── -->
       <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 overflow-hidden">
         <button onclick={() => toggleConfigSection('satisfaction')} class="w-full flex items-center justify-between p-4 lg:p-5 hover:bg-white/3 transition-colors text-left">
@@ -2068,7 +2896,7 @@
             </div>
           </div>
           <div class="flex items-center gap-2 shrink-0">
-            {#if ticketSatisfactionCommentEnabled}
+            {#if ticketSatisfactionCommentEnabled || ticketSatisfactionLogChannelId}
               <span class="px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">{m.e1_tickets_active_badge()}</span>
             {/if}
             <Papicon icon={expandedConfigSection === 'satisfaction' ? 'chevron-up' : 'chevron-down'} size={16} class="text-on-surface-variant/40" />
@@ -2096,6 +2924,26 @@
               </div>
               <p class="text-[10px] text-on-surface-variant/50 ml-1">{m.e1_tickets_sat_comment_hint()}</p>
             {/if}
+
+            <div class="pt-2 border-t border-outline-variant/10 space-y-4">
+              <label class="block">
+                <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">{m.e1_tickets_sat_log_label()}</span>
+                <SearchableSelect bind:value={ticketSatisfactionLogChannelId} options={discordChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))} placeholder={m.e1_tickets_select_ph()} className="w-full" />
+                {#if isMissingReference(ticketSatisfactionLogChannelId, discordChannels)}
+                  <p class="text-[10px] text-amber-500 mt-1.5">{m.e1_tickets_missing_ref()}</p>
+                {/if}
+                <p class="text-[10px] text-on-surface-variant/50 ml-1 mt-1.5">{m.e1_tickets_sat_log_desc()}</p>
+              </label>
+              {#if ticketSatisfactionLogChannelId}
+                <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+                  <input type="checkbox" bind:checked={ticketSatisfactionLogAnonymous} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+                  <div>
+                    <span class="text-xs font-bold text-on-surface">{m.e1_tickets_sat_log_anonymous()}</span>
+                    <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_sat_log_anonymous_desc()}</p>
+                  </div>
+                </label>
+              {/if}
+            </div>
           </div>
         {/if}
       </div>
@@ -2414,12 +3262,16 @@
                                             bind:value={field.choicesString}
                                             placeholder={m.e1_tickets_field_choices_ph()}
                                             className="w-full"
-                                            oninput={() => {
-                                              field.choices = field.choicesString ? field.choicesString.split(',').map(s => s.trim()).filter(Boolean) : [];
-                                            }}
                                           />
                                         </label>
+                                        {#if field.style === 'RADIO'}
+                                          <p class="text-[9px] text-on-surface-variant/40 mt-1">{m.e1_tickets_field_choices_radio_hint()}</p>
+                                        {/if}
                                       </div>
+                                    {/if}
+
+                                    {#if field.style === 'SELECT' || field.style === 'RADIO' || field.style === 'FILE'}
+                                      <p class="text-[9px] text-primary/70 leading-snug">{m.e1_tickets_field_interactive_hint()}</p>
                                     {/if}
                                   </div>
                                 {/each}
@@ -2681,6 +3533,87 @@
         <p class="text-xs font-bold">{m.e1_tickets_sat_empty()}</p>
       </div>
     {/if}
+  {:else if activeTab === 'macros'}
+    <div class="max-w-4xl mx-auto space-y-4">
+      <div class="flex items-start justify-between gap-4 pb-2">
+        <div>
+          <h3 class="text-lg font-semibold text-on-surface">Macros</h3>
+          <p class="text-on-surface-variant text-xs mt-0.5">
+            Réponses pré-écrites que le staff insère depuis le bouton « Macros » d'un ticket.
+            Variables disponibles : <code class="px-1 rounded bg-surface-container">{'{user}'}</code>,
+            <code class="px-1 rounded bg-surface-container">{'{staff}'}</code>,
+            <code class="px-1 rounded bg-surface-container">{'{ticket_id}'}</code>,
+            <code class="px-1 rounded bg-surface-container">{'{ticket_type}'}</code>,
+            <code class="px-1 rounded bg-surface-container">{'{server}'}</code>.
+          </p>
+        </div>
+        <ActionButton variant="primary" icon="plus" label="Nouvelle macro" onclick={openNewMacro} />
+      </div>
+
+      {#if macrosLoading}
+        <Skeleton className="h-24 w-full" />
+      {:else if macros.length === 0}
+        <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 p-8 text-center">
+          <Papicon icon="zap" size={28} class="text-on-surface-variant/40 mx-auto mb-2" />
+          <p class="text-sm font-semibold text-on-surface">Aucune macro</p>
+          <p class="text-xs text-on-surface-variant/70 mt-1">
+            Créez vos réponses récurrentes : le staff les enverra en deux clics, avec les actions qui vont avec.
+          </p>
+        </div>
+      {:else}
+        <div class="space-y-2">
+          {#each macros as macro (macro.id)}
+            <div class="rounded-xl border border-outline-variant/10 bg-surface-container-low/40 p-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    {#if macro.emoji}<span class="text-sm">{macro.emoji}</span>{/if}
+                    <span class="text-sm font-semibold text-on-surface">{macro.name}</span>
+                    {#if macro.category}
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant">{macro.category}</span>
+                    {/if}
+                    {#if !macro.enabled}
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-error/10 text-error">désactivée</span>
+                    {/if}
+                    {#if macro.autoSendOnOpen}
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400">auto à l'ouverture</span>
+                    {/if}
+                  </div>
+                  <p class="text-xs text-on-surface-variant/80 mt-1.5 line-clamp-2 whitespace-pre-wrap">{macro.content}</p>
+                  <div class="flex items-center gap-3 mt-2 text-[10px] text-on-surface-variant/60">
+                    <span>{macro.usageCount} utilisation{macro.usageCount > 1 ? 's' : ''}</span>
+                    {#if macro.keywords?.length}
+                      <span>· mots-clés : {macro.keywords.join(', ')}</span>
+                    {/if}
+                    {#if macroActionSummary(macro)}
+                      <span>· {macroActionSummary(macro)}</span>
+                    {/if}
+                  </div>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    class="p-2 rounded-lg hover:bg-white/5 text-on-surface-variant/70 hover:text-on-surface transition-colors"
+                    title="Modifier"
+                    onclick={() => openEditMacro(macro)}
+                  >
+                    <Papicon icon="pencil" size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    class="p-2 rounded-lg hover:bg-error/10 text-on-surface-variant/70 hover:text-error transition-colors"
+                    title="Supprimer"
+                    onclick={() => deleteMacro(macro)}
+                  >
+                    <Papicon icon="trash" size={15} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
   {:else if activeTab === 'blacklist'}
     <div class="max-w-4xl mx-auto space-y-4">
       <div class="pb-2">
@@ -2704,6 +3637,13 @@
             <FormInput type="text" bind:value={blacklistReason} placeholder={m.e1_tickets_bl_reason_ph()} className="w-full" />
           </label>
         </div>
+        <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+          <input type="checkbox" bind:checked={blacklistAllowReopen} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+          <div>
+            <span class="text-xs font-bold text-on-surface">{m.e1_tickets_bl_allow_reopen()}</span>
+            <p class="text-[10px] text-on-surface-variant/60">{m.e1_tickets_bl_allow_reopen_desc()}</p>
+          </div>
+        </label>
         <div class="flex justify-end">
           <button
             onclick={addToBlacklist}
@@ -2747,6 +3687,11 @@
                       : m.e1_tickets_bl_permanent()}
                     {#if entry.addedByTag} · {m.e1_tickets_bl_added_by({ name: entry.addedByTag })}{/if}
                   </p>
+                  {#if entry.allowReopen}
+                    <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                      {m.e1_tickets_bl_reopen_allowed()}
+                    </span>
+                  {/if}
                 </div>
                 <button
                   onclick={() => removeFromBlacklist(entry)}
@@ -2767,6 +3712,144 @@
 <!-- ============================================== -->
 <!-- MODALS -->
 <!-- ============================================== -->
+
+<!-- Creation / edition d'une macro -->
+<Modal
+  bind:open={macroModalOpen}
+  title={editingMacroId ? 'Modifier la macro' : 'Nouvelle macro'}
+  subtitle="Le texte est envoyé dans le salon du ticket, puis les actions s'appliquent."
+  size="lg"
+  closeOnBackdropClick={!macroSaving}
+>
+  <div class="space-y-4">
+    <div class="grid grid-cols-1 sm:grid-cols-[1fr_140px_80px] gap-3">
+      <label class="block">
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Nom</span>
+        <FormInput type="text" bind:value={macroForm.name} placeholder="Demande de preuves" className="w-full" />
+      </label>
+      <label class="block">
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Catégorie</span>
+        <FormInput type="text" bind:value={macroForm.category} placeholder="Modération" className="w-full" />
+      </label>
+      <label class="block">
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Emoji</span>
+        <FormInput type="text" bind:value={macroForm.emoji} placeholder="📎" className="w-full" />
+      </label>
+    </div>
+
+    <label class="block">
+      <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Contenu</span>
+      <FormTextarea
+        bind:value={macroForm.content}
+        placeholder={'Bonjour {user}, pourriez-vous joindre une capture ?'}
+        className="w-full h-28"
+      />
+      <span class="text-[10px] text-on-surface-variant/60 ml-1 mt-1 block">
+        2000 caractères maximum, la limite d'un message Discord.
+      </span>
+    </label>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Types de ticket concernés</span>
+        <MultiSelect
+          bind:values={macroForm.ticketTypeIds}
+          options={ticketTypes.map((t: any) => ({ id: t.id, name: t.label }))}
+          placeholder="Tous les types"
+        />
+      </div>
+      <div>
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Rôles autorisés</span>
+        <MultiSelect
+          bind:values={macroForm.allowedRoleIds}
+          options={discordRoles.map(r => ({ id: r.id, name: `@${r.name}` }))}
+          placeholder="Tout le staff"
+        />
+      </div>
+    </div>
+
+    <label class="block">
+      <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Mots-clés de suggestion</span>
+      <FormInput type="text" bind:value={macroKeywordsText} placeholder="remboursement, facture, paiement" className="w-full" />
+      <span class="text-[10px] text-on-surface-variant/60 ml-1 mt-1 block">
+        Séparés par des virgules. Si l'un d'eux apparaît dans la demande, la macro remonte en tête du sélecteur.
+      </span>
+    </label>
+
+    <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+      <p class="text-xs font-bold text-on-surface">Actions attachées</p>
+      <p class="text-[10px] text-on-surface-variant/60 -mt-2">
+        Appliquées après l'envoi du texte. La fermeture vient toujours en dernier.
+      </p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Requalifier en</span>
+          <FormSelect bind:value={macroForm.setTicketTypeId} className="w-full">
+            <option value="">Ne pas changer</option>
+            {#each ticketTypes as t (t.id)}
+              <option value={t.id}>{t.label}</option>
+            {/each}
+          </FormSelect>
+        </div>
+        <div>
+          <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Ajouter le rôle</span>
+          <FormSelect bind:value={macroForm.addRoleId} className="w-full">
+            <option value="">Aucun</option>
+            {#each discordRoles as role (role.id)}
+              <option value={role.id}>@{role.name}</option>
+            {/each}
+          </FormSelect>
+        </div>
+        <div>
+          <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">Retirer le rôle</span>
+          <FormSelect bind:value={macroForm.removeRoleId} className="w-full">
+            <option value="">Aucun</option>
+            {#each discordRoles as role (role.id)}
+              <option value={role.id}>@{role.name}</option>
+            {/each}
+          </FormSelect>
+        </div>
+      </div>
+
+      <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+        <input type="checkbox" bind:checked={macroForm.requestSatisfaction} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <span class="text-xs font-bold text-on-surface">Déclencher l'enquête de satisfaction</span>
+      </label>
+      <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+        <input type="checkbox" bind:checked={macroForm.closeTicket} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <span class="text-xs font-bold text-on-surface">Fermer le ticket</span>
+      </label>
+    </div>
+
+    <div class="border-t border-outline-variant/10 pt-4 space-y-3">
+      <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+        <input type="checkbox" bind:checked={macroForm.autoSendOnOpen} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <div>
+          <span class="text-xs font-bold text-on-surface">Envoyer automatiquement à l'ouverture</span>
+          <p class="text-[10px] text-on-surface-variant/60">
+            Seul le texte part : les actions attachées ne s'appliquent pas, fermer ou requalifier
+            un ticket qui vient de naître ferait plus de dégâts que de bien.
+          </p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 cursor-pointer p-2.5 hover:bg-white/5 rounded-xl transition-colors">
+        <input type="checkbox" bind:checked={macroForm.enabled} class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <span class="text-xs font-bold text-on-surface">Macro active</span>
+      </label>
+    </div>
+
+    <div class="flex justify-end gap-2 pt-1">
+      <ActionButton variant="neutral" label="Annuler" disabled={macroSaving} onclick={() => (macroModalOpen = false)} />
+      <ActionButton
+        variant="primary"
+        label={macroSaving ? 'Enregistrement…' : 'Enregistrer'}
+        disabled={macroSaving}
+        onclick={saveMacro}
+      />
+    </div>
+  </div>
+</Modal>
 
 <!-- Avis d'un membre du staff (pagines) -->
 {#if reviewsModalStaff}
@@ -2886,6 +3969,50 @@
   </div>
 {/if}
 
+<!-- Ticket Deletion Lock Modal -->
+{#if showLockModal}
+  <div class="fixed inset-0 z-100 flex items-center justify-center p-4 bg-black/60">
+    <div class="bg-surface border border-outline-variant/30 rounded-xl w-full max-w-md shadow-sm p-10 animate-in zoom-in-95 duration-300">
+      <div class="flex items-center gap-4 mb-2 text-amber-500">
+        <Papicon icon="lock" size={36} />
+        <h3 class="text-2xl font-semibold">{m.e1_tickets_lock_modal_title()}</h3>
+      </div>
+      <p class="text-sm text-on-surface-variant/80 mb-6">{m.e1_tickets_lock_modal_intro()}</p>
+
+      <label class="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant/70 mb-2" for="ticket-lock-duration">
+        {m.e1_tickets_lock_duration()}
+      </label>
+      <div id="ticket-lock-duration" class="grid grid-cols-2 gap-2 mb-6">
+        {#each [['7d', m.e1_tickets_lock_duration_7d()], ['30d', m.e1_tickets_lock_duration_30d()], ['90d', m.e1_tickets_lock_duration_90d()], ['permanent', m.e1_tickets_lock_duration_permanent()]] as [value, label]}
+          <button
+            type="button"
+            onclick={() => lockDuration = value as typeof lockDuration}
+            class="py-2.5 rounded-lg text-xs font-semibold transition-all border {lockDuration === value ? 'bg-amber-500 text-white border-amber-500' : 'bg-surface-container border-outline-variant/20 text-on-surface-variant hover:bg-surface-container-high'}"
+          >
+            {label}
+          </button>
+        {/each}
+      </div>
+
+      <label class="block">
+        <span class="text-xs font-bold text-on-surface-variant/80 ml-1 mb-2 block">{m.e1_tickets_lock_reason()}</span>
+        <FormTextarea bind:value={lockReason} placeholder={m.e1_tickets_lock_reason_ph()} rows={3} className="w-full" />
+      </label>
+
+      <div class="flex gap-4 mt-8 pt-6 border-t border-outline-variant/20">
+        <button onclick={() => showLockModal = false} class="flex-1 py-4 rounded-xl font-bold bg-surface-container hover:bg-surface-container-high transition-colors">{m.common_cancel()}</button>
+        <button
+          onclick={lockTicket}
+          disabled={lockBusy}
+          class="flex-1 py-4 rounded-xl font-bold bg-amber-500 text-white active:scale-[0.98] transition-transform shadow-sm disabled:opacity-50"
+        >
+          {lockBusy ? '…' : m.e1_tickets_lock_confirm()}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Ticket Restore Modal -->
 {#if showRestoreModal}
   {@const rc = selectedTicketDetail?.restoreCount ?? 0}
@@ -2995,38 +4122,38 @@
 
   /* Satisfaction Tab Styles */
   .sat-grid { display: grid; grid-template-columns: 300px 1fr; gap: 1rem; }
-  .sat-card { background: var(--color-surface, rgba(255,255,255,0.05)); border: 1px solid var(--color-border, rgba(255,255,255,0.1)); border-radius: 12px; padding: 1.25rem; }
-  .sat-card-title { margin: 0 0 1rem; font-size: 0.95rem; color: var(--color-text-secondary, rgba(255,255,255,0.6)); }
+  .sat-card { background: var(--color-surface, rgba(255,255,255,0.05)); border: 1px solid var(--color-outline-variant); border-radius: 12px; padding: 1.25rem; }
+  .sat-card-title { margin: 0 0 1rem; font-size: 0.95rem; color: var(--color-on-surface-variant); }
 
   .sat-overview-card { text-align: center; }
   .sat-avg-rating { display: flex; align-items: baseline; justify-content: center; gap: 0.25rem; }
   .sat-avg-value { font-size: 3rem; font-weight: 700; }
-  .sat-avg-max { font-size: 1rem; color: var(--color-text-muted, rgba(255,255,255,0.4)); }
-  .sat-avg-label { color: var(--color-text-muted, rgba(255,255,255,0.4)); font-size: 0.875rem; margin: 0.5rem 0 1.5rem; }
+  .sat-avg-max { font-size: 1rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
+  .sat-avg-label { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); font-size: 0.875rem; margin: 0.5rem 0 1.5rem; }
 
   .sat-distribution { display: flex; flex-direction: column; gap: 0.5rem; }
   .sat-dist-row { display: grid; grid-template-columns: 40px 1fr 30px; align-items: center; gap: 0.5rem; }
   .sat-dist-label { font-size: 0.85rem; }
-  .sat-dist-bar { height: 8px; background: var(--color-border, rgba(255,255,255,0.1)); border-radius: 4px; overflow: hidden; }
+  .sat-dist-bar { height: 8px; background: var(--color-outline-variant); border-radius: 4px; overflow: hidden; }
   .sat-dist-fill { height: 100%; background: var(--color-primary, #5865F2); border-radius: 4px; }
-  .sat-dist-count { text-align: right; font-size: 0.8rem; color: var(--color-text-muted, rgba(255,255,255,0.4)); }
+  .sat-dist-count { text-align: right; font-size: 0.8rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
 
   .sat-staff-list { display: flex; flex-direction: column; gap: 0.5rem; }
   .sat-staff-item { border-radius: 10px; border: 1px solid transparent; transition: border-color 160ms ease, background-color 160ms ease; }
-  .sat-staff-item:has(.sat-comment-list) { border-color: var(--color-border, rgba(255,255,255,0.1)); background: var(--color-surface-container, rgba(255,255,255,0.03)); }
+  .sat-staff-item:has(.sat-comment-list) { border-color: var(--color-outline-variant); background: var(--color-surface-container, rgba(255,255,255,0.03)); }
   .sat-staff-row { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.55rem; border-radius: 8px; text-align: left; }
   .sat-staff-rating { font-weight: 600; }
-  .sat-staff-count { font-size: 0.8rem; color: var(--color-text-muted, rgba(255,255,255,0.4)); }
+  .sat-staff-count { font-size: 0.8rem; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
   .sat-staff-actions { display: flex; align-items: center; gap: 0.35rem; margin-left: auto; flex: 0 0 auto; }
   .sat-staff-chip {
     display: inline-flex; align-items: center; gap: 0.3rem;
     padding: 0.28rem 0.55rem; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--color-border, rgba(255,255,255,0.1));
-    background: transparent; color: var(--color-text-secondary, rgba(255,255,255,0.6));
+    border: 1px solid var(--color-outline-variant);
+    background: transparent; color: var(--color-on-surface-variant);
     font: inherit; font-size: 0.72rem; font-weight: 700; white-space: nowrap;
     transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
   }
-  .sat-staff-chip:hover:not(:disabled) { background: var(--color-surface-container-high, rgba(255,255,255,0.08)); color: var(--color-text, rgba(255,255,255,0.9)); }
+  .sat-staff-chip:hover:not(:disabled) { background: var(--color-surface-container-high, rgba(255,255,255,0.08)); color: var(--color-on-surface); }
   .sat-staff-chip:focus-visible { outline: 2px solid var(--color-primary, #5865F2); outline-offset: 2px; }
   .sat-staff-chip-muted { opacity: 0.45; cursor: default; }
   .sat-chip-active { border-color: var(--color-primary, #5865F2); color: var(--color-primary, #5865F2); }
@@ -3040,10 +4167,10 @@
   .sat-comment-emoji { font-size: 0.95rem; }
   .sat-comment-author { font-weight: 700; border-radius: 4px; padding: 0 0.15rem; }
   .sat-comment-rating { font-weight: 600; }
-  .sat-comment-date { color: var(--color-text-muted, rgba(255,255,255,0.4)); margin-left: auto; }
+  .sat-comment-date { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); margin-left: auto; }
   /* Un avis est du texte libre : il doit passer a la ligne, jamais deborder. */
-  .sat-comment-body { margin: 0.2rem 0 0; font-size: 0.82rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text, rgba(255,255,255,0.85)); }
-  .sat-comment-empty { font-style: italic; color: var(--color-text-muted, rgba(255,255,255,0.4)); }
+  .sat-comment-body { margin: 0.2rem 0 0; font-size: 0.82rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-on-surface); }
+  .sat-comment-empty { font-style: italic; color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); }
   .sat-comment-more {
     align-self: flex-start; border: 0; background: transparent; cursor: pointer; padding: 0;
     font: inherit; font-size: 0.72rem; font-weight: 700; color: var(--color-primary, #5865F2);
@@ -3052,19 +4179,19 @@
 
   .sat-recent-card { grid-column: 1 / -1; }
   .sat-recent-list { display: flex; flex-direction: column; gap: 0.25rem; }
-  .sat-review-item { padding: 0.35rem 0; border-bottom: 1px solid var(--color-border, rgba(255,255,255,0.06)); }
+  .sat-review-item { padding: 0.35rem 0; border-bottom: 1px solid var(--color-outline-variant); }
   .sat-review-item:last-child { border-bottom: 0; }
   .sat-review-row { display: grid; grid-template-columns: 2rem minmax(180px, 260px) minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; padding: 0.1rem 0; font-size: 0.85rem; }
   .sat-review-emoji { font-size: 1.1rem; }
   .sat-review-user { min-width: 0; }
-  .sat-review-staff { color: var(--color-text-muted, rgba(255,255,255,0.4)); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sat-review-staff { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sat-review-comment {
     margin: 0.15rem 0 0.35rem 2.75rem; font-size: 0.82rem; line-height: 1.45;
     white-space: pre-wrap; overflow-wrap: anywhere;
-    color: var(--color-text, rgba(255,255,255,0.85));
-    border-left: 2px solid var(--color-border, rgba(255,255,255,0.12)); padding-left: 0.6rem;
+    color: var(--color-on-surface);
+    border-left: 2px solid var(--color-outline-variant); padding-left: 0.6rem;
   }
-  .sat-review-date { color: var(--color-text-muted, rgba(255,255,255,0.4)); font-size: 0.75rem; }
+  .sat-review-date { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); font-size: 0.75rem; }
 
   .sat-clickable-person { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 0; transition: background-color 160ms ease, color 160ms ease; }
   .sat-clickable-person:hover { background: var(--color-surface-container-high, rgba(255,255,255,0.08)); }
@@ -3075,10 +4202,10 @@
   .sat-person-avatar { width: 2rem; height: 2rem; border-radius: 999px; object-fit: cover; flex: 0 0 auto; }
   .sat-avatar-fallback { display: inline-flex; align-items: center; justify-content: center; background: var(--color-primary, #5865F2); color: white; font-size: 0.68rem; font-weight: 800; }
   .sat-person-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
-  .sat-person-name { color: var(--color-text, var(--color-on-surface, rgba(255,255,255,0.9))); font-size: 0.86rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sat-person-handle { color: var(--color-text-muted, rgba(255,255,255,0.4)); font-size: 0.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sat-person-name { color: var(--color-on-surface); font-size: 0.86rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sat-person-handle { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); font-size: 0.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .sat-empty { color: var(--color-text-muted, rgba(255,255,255,0.4)); font-style: italic; }
+  .sat-empty { color: color-mix(in srgb, var(--color-on-surface-variant) 75%, transparent); font-style: italic; }
 
   @media (max-width: 768px) {
     .sat-grid { grid-template-columns: 1fr; }

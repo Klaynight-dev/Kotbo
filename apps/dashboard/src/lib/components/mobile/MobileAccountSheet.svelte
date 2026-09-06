@@ -6,6 +6,7 @@
   import { confirmDialog } from '../../stores/confirmDialog.svelte';
   import { feedbackModal } from '../../stores/feedbackModal.svelte';
   import { mobileNav } from '../../stores/mobileNav.svelte';
+  import { navigationStore } from '../../stores/navigation.svelte';
   import { serverSwitcherStore } from '../../stores/serverSwitcher.svelte';
   import { themeStore } from '../../stores/theme.svelte';
   import { onboardingStore } from '../../stores/tutorial.svelte';
@@ -184,6 +185,13 @@
           <Papicon icon="external-link" size={15} class="account__chevron" />
         </a>
       </li>
+
+      <!-- Même règle que la barre latérale : la facturation n'apparaît que pour
+           l'administrateur, le payeur, ou tout le staff quand le serveur l'a
+           autorisé. -->
+      {#if navigationStore.canViewBilling}
+        {@render action('credit-card', m.nav_billing(), () => go('/billing'))}
+      {/if}
 
       {#if authStore.isBotAdmin}
         {@render action('lock', m.nav_administration(), () => go('/admin'))}

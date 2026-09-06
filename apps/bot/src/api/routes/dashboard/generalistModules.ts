@@ -3,7 +3,7 @@ import { Client, EmbedBuilder, PermissionFlagsBits, type ColorResolvable } from 
 import prisma, { prismaRead } from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
 import { defaultLevelUpMessage, getOrCreateLevelConfig, updateMemberLevelRoles, getXpForLevel, getLevelFromXp, getGuildLevelCurve, invalidateLevelConfigCache, levelCurveFromConfig, resyncGuildLevels, countCurveImpact, invalidateLevelRewardsCache, getRoleResyncStatus, startRoleResync, stopRoleResync } from '../../../services/progression/levelingService.js';
-import { normalizeLevelCurve } from '@kotbo/shared';
+import { clampXp, normalizeLevelCurve } from '@kotbo/shared';
 import { getOrCreateWelcomeConfig } from '../../../services/features/welcomeGoodbyeService.js';
 import { getMemberIdentities, resolveMemberAvatarUrl, resolveSearchedUserIds } from '../../../services/moderation/memberIdentityService.js';
 import {
@@ -19,12 +19,15 @@ import { canManageGiveaways, getGiveawayConfig, normalizeRoleIds, updateGiveaway
 import { createReactionRoleMenu, deleteReactionRoleMenu } from '../../../services/features/reactionRoleService.js';
 import { invalidateAutoResponseCache } from '../../../services/features/autoResponseService.js';
 import { resolveSuggestion } from '../../../services/features/suggestionService.js';
-import { json, readJsonBody, getGuildName, pushAudit, type AuthClaims, type DashboardAccess } from '../../shared.js';
+import { broadcastDashboardStateChange, json, readJsonBody, getGuildName, pushAudit, resolveMemberFeatureAccess, type AuthClaims, type DashboardAccess } from '../../shared.js';
 import { acquireProvisionLock, ensureTextChannel, missingProvisionPermissions, provisionCooldown, provisionCooldownMessage, releaseProvisionLock, startProvisionCooldown } from '../../../services/core/channelProvisioningService.js';
 import { fetchAllMembers } from '../../../utils/discord.js';
 import { resolveEmojiShortcodes } from '../../../utils/emojis.js';
 import { resolveGuildLocale } from '../../../utils/i18n.js';
 import * as m from '../../../lib/paraglide/messages.js';
+
+/** Modules de ce fichier dont l'acces est filtre par les regles de role. */
+const FEATURE_GUARDED_MODULE_KEYS = new Set(['economy', 'fun']);
 
 const LEADERBOARD_PAGE_SIZE = 25;
 /** Plafond des profils retenus par une recherche, avant pagination. */
@@ -72,6 +75,17 @@ export async function handleGeneralistModulesRoutes(
   const method = req.method;
   const moduleKey = parts[4];
   const auditUser = `${user.username ?? 'Utilisateur'} (${user.userId})`;
+
+  // Masquer la section dans la navigation ne suffit pas : sans ce controle,
+  // l'URL et l'API continuent de servir ces modules a un staff a qui le role
+  // interdit la page. La cle de module vaut aussi cle de fonctionnalite ici.
+  if (FEATURE_GUARDED_MODULE_KEYS.has(moduleKey)) {
+    const featureAccess = await resolveMemberFeatureAccess(client, guildId, _access, user.userId);
+    if (!featureAccess[moduleKey]?.canView) {
+      json(res, 403, { error: 'Accès refusé. Votre rôle ne donne pas accès à cette section.' });
+      return true;
+    }
+  }
 
   // Economy & RPG module routes
   if (moduleKey === 'economy') {
@@ -638,11 +652,13 @@ export async function handleGeneralistModulesRoutes(
             xp = getXpForLevel(Math.max(0, level) - 1, importCurve);
           }
 
-          // L'XP est la source de vérité : on clampe les négatifs et on recalcule
-          // toujours le niveau, pour ne jamais stocker de couple incohérent
-          // (ex. niveau importé d'un autre bot avec une autre courbe).
+          // L'XP est la source de vérité : on la ramène dans les bornes stockables
+          // et on recalcule toujours le niveau, pour ne jamais stocker de couple
+          // incohérent (ex. niveau importé d'un autre bot avec une autre courbe).
+          // Sans le plafond, une ligne aberrante du fichier importé fait échouer
+          // tout l'import sur un débordement de la colonne.
           if (xp !== undefined) {
-            xp = Math.max(0, xp);
+            xp = clampXp(xp);
             level = getLevelFromXp(xp, importCurve);
           }
 
@@ -2006,8 +2022,16 @@ export async function handleGeneralistModulesRoutes(
 
         const { getOrCreateFeatureConfigs, updateFeatureConfig } = await import('../../../services/core/dashboardManagementService.js');
         await getOrCreateFeatureConfigs(guildId);
+
+        // L'activation passe par le service dedie : lui seul propage la cascade
+        // des dependances, refuse un module hors offre et purge le cache d'etats
+        // que la garde de lecture consulte.
+        if (typeof body.enabled === 'boolean') {
+          const { setDashboardModuleStatus } = await import('../../../services/core/moduleActivationService.js');
+          await setDashboardModuleStatus(guildId, 'suggestions', body.enabled);
+        }
+
         const updated = await updateFeatureConfig(guildId, 'suggestions', {
-          enabled: body.enabled,
           channelId: body.channelId,
         });
 
@@ -2021,6 +2045,7 @@ export async function handleGeneralistModulesRoutes(
           channelId: updated.channelId,
         });
 
+        broadcastDashboardStateChange(guildId, 'suggestions_updated');
         json(res, 200, {
           config: {
             enabled: updated.enabled,
@@ -2272,6 +2297,11 @@ export async function handleGeneralistModulesRoutes(
             funCountingChannelId: true,
             funOneWordStoryChannelId: true,
             funGuessNumberChannelId: true,
+            funWordChainChannelId: true,
+            funEmojiRiddleChannelId: true,
+            funNeverSayChannelId: true,
+            funEmojiOnlyChannelId: true,
+            funPunitiveMode: true,
           }
         });
 
@@ -2290,6 +2320,9 @@ export async function handleGeneralistModulesRoutes(
             countingLastUserId: gameState.countingLastUserId,
             oneWordStoryLastUserId: gameState.oneWordStoryLastUserId,
             guessNumberTarget: gameState.guessNumberTarget,
+            wordChainLastWord: gameState.wordChainLastWord,
+            wordChainLastUserId: gameState.wordChainLastUserId,
+            emojiRiddleEmojis: gameState.emojiRiddleEmojis,
           }
         });
       } catch (err) {
@@ -2307,6 +2340,11 @@ export async function handleGeneralistModulesRoutes(
           funCountingChannelId?: string | null;
           funOneWordStoryChannelId?: string | null;
           funGuessNumberChannelId?: string | null;
+          funWordChainChannelId?: string | null;
+          funEmojiRiddleChannelId?: string | null;
+          funNeverSayChannelId?: string | null;
+          funEmojiOnlyChannelId?: string | null;
+          funPunitiveMode?: boolean;
         }>(req);
 
         if (!body) {
@@ -2321,11 +2359,16 @@ export async function handleGeneralistModulesRoutes(
             funCountingChannelId: body.funCountingChannelId,
             funOneWordStoryChannelId: body.funOneWordStoryChannelId,
             funGuessNumberChannelId: body.funGuessNumberChannelId,
+            funWordChainChannelId: body.funWordChainChannelId,
+            funEmojiRiddleChannelId: body.funEmojiRiddleChannelId,
+            funNeverSayChannelId: body.funNeverSayChannelId,
+            funEmojiOnlyChannelId: body.funEmojiOnlyChannelId,
+            funPunitiveMode: body.funPunitiveMode,
           },
         });
 
-        // Initialize target if Guess the Number is enabled and target is 0
-        const { getOrCreateFunGameState } = await import('../../../services/features/funService.js');
+        // Initialize targets/riddles the first time their channel is set.
+        const { getOrCreateFunGameState, resetEmojiRiddle } = await import('../../../services/features/funService.js');
         const gameState = await getOrCreateFunGameState(guildId);
         if (body.funGuessNumberChannelId && gameState.guessNumberTarget === 0) {
           const newTarget = Math.floor(Math.random() * 1000) + 1;
@@ -2333,6 +2376,9 @@ export async function handleGeneralistModulesRoutes(
             where: { guildId },
             data: { guessNumberTarget: newTarget }
           });
+        }
+        if (body.funEmojiRiddleChannelId && !gameState.emojiRiddleEmojis) {
+          await resetEmojiRiddle(guildId);
         }
 
         await pushAudit(guildId, {
@@ -2353,12 +2399,20 @@ export async function handleGeneralistModulesRoutes(
             funCountingChannelId: updatedGuild.funCountingChannelId,
             funOneWordStoryChannelId: updatedGuild.funOneWordStoryChannelId,
             funGuessNumberChannelId: updatedGuild.funGuessNumberChannelId,
+            funWordChainChannelId: updatedGuild.funWordChainChannelId,
+            funEmojiRiddleChannelId: updatedGuild.funEmojiRiddleChannelId,
+            funNeverSayChannelId: updatedGuild.funNeverSayChannelId,
+            funEmojiOnlyChannelId: updatedGuild.funEmojiOnlyChannelId,
+            funPunitiveMode: updatedGuild.funPunitiveMode,
           },
           gameState: {
             countingCurrent: latestState?.countingCurrent ?? 0,
             countingLastUserId: latestState?.countingLastUserId ?? null,
             oneWordStoryLastUserId: latestState?.oneWordStoryLastUserId ?? null,
             guessNumberTarget: latestState?.guessNumberTarget ?? 0,
+            wordChainLastWord: latestState?.wordChainLastWord ?? null,
+            wordChainLastUserId: latestState?.wordChainLastUserId ?? null,
+            emojiRiddleEmojis: latestState?.emojiRiddleEmojis ?? null,
           }
         });
       } catch (err) {
@@ -2391,6 +2445,9 @@ export async function handleGeneralistModulesRoutes(
             countingLastUserId: state.countingLastUserId,
             oneWordStoryLastUserId: state.oneWordStoryLastUserId,
             guessNumberTarget: state.guessNumberTarget,
+            wordChainLastWord: state.wordChainLastWord,
+            wordChainLastUserId: state.wordChainLastUserId,
+            emojiRiddleEmojis: state.emojiRiddleEmojis,
           }
         });
       } catch (err) {
@@ -2423,11 +2480,84 @@ export async function handleGeneralistModulesRoutes(
             countingLastUserId: state.countingLastUserId,
             oneWordStoryLastUserId: state.oneWordStoryLastUserId,
             guessNumberTarget: state.guessNumberTarget,
+            wordChainLastWord: state.wordChainLastWord,
+            wordChainLastUserId: state.wordChainLastUserId,
+            emojiRiddleEmojis: state.emojiRiddleEmojis,
           }
         });
       } catch (err) {
         logger.error('FunAPI', 'Error resetting guess target:', err);
         json(res, 500, { error: 'Erreur lors du changement du nombre mystère' });
+      }
+      return true;
+    }
+
+    // POST /api/dashboard/guilds/:guildId/fun/word-chain/reset
+    if (parts.length === 7 && parts[5] === 'word-chain' && parts[6] === 'reset' && method === 'POST') {
+      try {
+        const { resetWordChain } = await import('../../../services/features/funService.js');
+        const state = await resetWordChain(guildId);
+
+        await pushAudit(guildId, {
+          user: auditUser,
+          action: 'Réinitialisation Chaîne de mots',
+          context: getGuildName(client, guildId),
+          module: 'Fun',
+          eventType: 'Manuel',
+          details: `La chaîne de mots a été réinitialisée depuis le dashboard.`,
+          channelId: null
+        });
+
+        json(res, 200, {
+          success: true,
+          gameState: {
+            countingCurrent: state.countingCurrent,
+            countingLastUserId: state.countingLastUserId,
+            oneWordStoryLastUserId: state.oneWordStoryLastUserId,
+            guessNumberTarget: state.guessNumberTarget,
+            wordChainLastWord: state.wordChainLastWord,
+            wordChainLastUserId: state.wordChainLastUserId,
+            emojiRiddleEmojis: state.emojiRiddleEmojis,
+          }
+        });
+      } catch (err) {
+        logger.error('FunAPI', 'Error resetting word chain:', err);
+        json(res, 500, { error: 'Erreur lors de la réinitialisation de la chaîne de mots' });
+      }
+      return true;
+    }
+
+    // POST /api/dashboard/guilds/:guildId/fun/emoji-riddle/reset
+    if (parts.length === 7 && parts[5] === 'emoji-riddle' && parts[6] === 'reset' && method === 'POST') {
+      try {
+        const { resetEmojiRiddle } = await import('../../../services/features/funService.js');
+        const state = await resetEmojiRiddle(guildId);
+
+        await pushAudit(guildId, {
+          user: auditUser,
+          action: 'Nouveau Rébus Emoji',
+          context: getGuildName(client, guildId),
+          module: 'Fun',
+          eventType: 'Manuel',
+          details: `Un nouveau rébus emoji a été généré depuis le dashboard.`,
+          channelId: null
+        });
+
+        json(res, 200, {
+          success: true,
+          gameState: {
+            countingCurrent: state.countingCurrent,
+            countingLastUserId: state.countingLastUserId,
+            oneWordStoryLastUserId: state.oneWordStoryLastUserId,
+            guessNumberTarget: state.guessNumberTarget,
+            wordChainLastWord: state.wordChainLastWord,
+            wordChainLastUserId: state.wordChainLastUserId,
+            emojiRiddleEmojis: state.emojiRiddleEmojis,
+          }
+        });
+      } catch (err) {
+        logger.error('FunAPI', 'Error resetting emoji riddle:', err);
+        json(res, 500, { error: 'Erreur lors de la génération du rébus emoji' });
       }
       return true;
     }

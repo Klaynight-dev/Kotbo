@@ -10,6 +10,7 @@
   import { m, dateLocale } from '../lib/i18n';
   import {
     compileRecipe,
+    getNodeDef,
     getTrigger,
     hasBlockingIssue,
     type ValidationIssue,
@@ -23,8 +24,10 @@
     toggleWorkflow,
     deleteWorkflow,
     fetchWorkflowExecutions,
+    fetchWorkflowExecution,
     type WorkflowSummary,
     type WorkflowExecutionSummary,
+    type WorkflowExecutionDetail,
   } from '../lib/api';
 
   /**
@@ -38,7 +41,7 @@
 
   const canManageSettings = $derived(!!dashboardStore.state.access?.canManageSettings);
 
-  type View = 'list' | 'templates' | 'editor';
+  type View = 'list' | 'templates' | 'editor' | 'replay';
   let view = $state<View>('list');
   let tab = $state<'steps' | 'graph'>('steps');
   /** Vrai quand le graphe ouvert ne se lit pas comme une suite de phrases */
@@ -58,6 +61,22 @@
   let graph = $state<WorkflowGraph>({ nodes: [], edges: [] });
   let issues = $state<ValidationIssue[]>([]);
   let saving = $state(false);
+
+  /**
+   * Rejeu d'une exécution passée.
+   *
+   * Le moteur consigne chaque nœud traversé avec les valeurs qui y sont
+   * entrées et sorties : rejouer, c'est réafficher le graphe enregistré en
+   * s'arrêtant au rang choisi. Rien n'est réexécuté, on relit une trace.
+   */
+  let replay = $state<WorkflowExecutionDetail | null>(null);
+  let replayIndex = $state(0);
+  let replayLoading = $state(false);
+
+  const replayStep = $derived(replay?.steps[replayIndex]);
+  const replayNodeLabel = $derived(
+    replayStep ? getNodeDef(replayStep.nodeType)?.label ?? replayStep.nodeType : '',
+  );
 
   const blocking = $derived(issues.filter((issue) => issue.severity === 'error'));
 
@@ -132,6 +151,73 @@
     }
   }
 
+  // ── Rejeu ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Ouvre une exécution passée sur le graphe du workflow.
+   *
+   * Le graphe vient du workflow et non de l'exécution : seule la trace est
+   * conservée pas à pas. Un workflow modifié depuis fait donc apparaître des
+   * étapes rattachées à des nœuds disparus, que la carte ignore simplement.
+   */
+  async function openReplay(execution: WorkflowExecutionSummary): Promise<void> {
+    if (replayLoading) return;
+    replayLoading = true;
+    try {
+      const [detail, workflow] = await Promise.all([
+        fetchWorkflowExecution(execution.id),
+        fetchWorkflow(execution.workflowId),
+      ]);
+
+      if (!detail?.execution || !workflow?.workflow) return;
+      if (detail.execution.steps.length === 0) {
+        toast.error(m.wf_replay_empty());
+        return;
+      }
+
+      graph = workflow.workflow.graph;
+      replay = detail.execution;
+      replayIndex = 0;
+      view = 'replay';
+    } catch (e: any) {
+      toast.error(e?.message || m.wf_error());
+    } finally {
+      replayLoading = false;
+    }
+  }
+
+  function closeReplay(): void {
+    replay = null;
+    replayIndex = 0;
+    graph = { nodes: [], edges: [] };
+    view = 'list';
+  }
+
+  function seekReplay(delta: number): void {
+    if (!replay) return;
+    replayIndex = Math.min(replay.steps.length - 1, Math.max(0, replayIndex + delta));
+  }
+
+  /**
+   * Rend lisible une valeur consignée.
+   *
+   * Le moteur écrit des entités marquées d'un `kind` (membre, salon, rôle,
+   * message) autant que des scalaires : afficher le JSON brut d'un membre
+   * remplirait la colonne pour rien.
+   */
+  function describeValue(value: unknown): string {
+    if (value === null || value === undefined) return '-';
+    if (Array.isArray(value)) {
+      return value.length === 0 ? '-' : value.map(describeValue).join(', ');
+    }
+    if (typeof value === 'object') {
+      const tagged = value as { kind?: string; name?: string; displayName?: string; tag?: string; content?: string };
+      if (tagged.kind) return tagged.displayName || tagged.name || tagged.tag || tagged.content || tagged.kind;
+      return JSON.stringify(value);
+    }
+    return String(value);
+  }
+
   // ── Enregistrement ────────────────────────────────────────────────────────
 
   async function save(): Promise<void> {
@@ -181,7 +267,7 @@
       if (!full?.workflow) return;
 
       await createWorkflow({
-        name: `${full.workflow.name} (copie)`,
+        name: m.wf_copy_name({ name: full.workflow.name }),
         description: full.workflow.description,
         enabled: false,
         graph: full.workflow.graph,
@@ -206,6 +292,21 @@
 
   // ── Affichage ─────────────────────────────────────────────────────────────
 
+  /**
+   * Un workflow actif qui n'a jamais rien produit.
+   *
+   * Le cas le plus courant d'un « ça ne marche pas » silencieux : déclencheur
+   * mal choisi, condition qui ne passe jamais, module éteint après coup. On ne
+   * le signale qu'au bout d'un moment, sinon tout workflow fraîchement
+   * enregistré s'accuserait lui-même.
+   */
+  const SILENT_AFTER_MS = 24 * 60 * 60 * 1000;
+
+  function isSilent(workflow: WorkflowSummary): boolean {
+    if (!workflow.enabled || workflow.runCount > 0) return false;
+    return Date.now() - new Date(workflow.updatedAt).getTime() > SILENT_AFTER_MS;
+  }
+
   function successRate(workflow: WorkflowSummary): number {
     if (workflow.runCount === 0) return 0;
     return Math.round((workflow.successCount / workflow.runCount) * 100);
@@ -228,17 +329,24 @@
   };
 
   const STATUS_META: Record<string, { label: () => string; color: string }> = {
-    COMPLETED: { label: () => m.wf_exec_status_completed(), color: 'bg-emerald-500/15 text-emerald-300' },
-    FAILED: { label: () => m.wf_exec_status_failed(), color: 'bg-red-500/15 text-red-300' },
-    WAITING: { label: () => m.wf_exec_status_waiting(), color: 'bg-amber-500/15 text-amber-300' },
-    RUNNING: { label: () => m.wf_exec_status_running(), color: 'bg-sky-500/15 text-sky-300' },
-    CANCELLED: { label: () => m.wf_exec_status_cancelled(), color: 'bg-surface-container-highest text-on-surface-variant/60' },
+    COMPLETED: { label: () => m.wf_exec_status_completed(), color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' },
+    FAILED: { label: () => m.wf_exec_status_failed(), color: 'bg-red-500/15 text-red-700 dark:text-red-300' },
+    WAITING: { label: () => m.wf_exec_status_waiting(), color: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' },
+    RUNNING: { label: () => m.wf_exec_status_running(), color: 'bg-sky-500/15 text-sky-700 dark:text-sky-300' },
+    CANCELLED: { label: () => m.wf_exec_status_cancelled(), color: 'bg-surface-container-highest text-on-surface-variant/70' },
   };
 </script>
 
 <ModulePage title={m.wf_page_title()} description={m.wf_page_desc()} icon="Workflow" featureKey="workflows">
   {#snippet actions()}
-    {#if canManageSettings}
+    <!-- Le rejeu ne modifie rien : il reste ouvert aux comptes sans droit de
+         configuration, contrairement aux actions d'édition ci-dessous. -->
+    {#if view === 'replay'}
+      <button
+        onclick={closeReplay}
+        class="px-4 py-2.5 rounded-xl text-xs font-semibold bg-surface-container-high text-on-surface hover:bg-surface-container-highest transition-all"
+      >{m.wf_back()}</button>
+    {:else if canManageSettings}
       <div class="flex items-center gap-2">
         {#if view === 'editor'}
           <button
@@ -247,7 +355,7 @@
           >{m.wf_back()}</button>
           <button
             onclick={save}
-            disabled={saving || hasBlockingIssue(issues)}
+            disabled={saving || hasBlockingIssue(issues) || graph.nodes.length === 0}
             class="px-5 py-2.5 rounded-xl text-xs font-semibold bg-primary text-on-primary hover:opacity-90 transition-all disabled:opacity-40 flex items-center gap-2"
           >
             <Papicon icon={saving ? 'Loader' : 'Check'} size={14} class={saving ? 'animate-spin' : ''} />
@@ -279,7 +387,7 @@
     </div>
 
   {:else if error}
-    <div class="p-6 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-300 flex items-center gap-3">
+    <div class="p-6 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300 flex items-center gap-3">
       <Papicon icon="Warning" size={20} />
       <span>{error}</span>
     </div>
@@ -289,7 +397,7 @@
     <div class="space-y-5">
       <div class="space-y-1">
         <h2 class="text-sm font-bold text-on-surface">{m.wf_start_title()}</h2>
-        <p class="text-xs text-on-surface-variant/60">
+        <p class="text-xs text-on-surface-variant/70">
           {m.wf_start_desc()}
         </p>
       </div>
@@ -307,7 +415,7 @@
             </span>
             <span class="min-w-0 space-y-1">
               <span class="block text-sm font-semibold text-on-surface">{labels?.name()}</span>
-              <span class="block text-xs text-on-surface-variant/60 leading-snug">{labels?.description()}</span>
+              <span class="block text-xs text-on-surface-variant/70 leading-snug">{labels?.description()}</span>
             </span>
           </button>
         {/each}
@@ -317,14 +425,118 @@
           onclick={() => openEditor('', { nodes: [], edges: [] })}
           class="flex items-start gap-3 p-4 rounded-2xl text-left border border-dashed border-outline-variant/30 hover:border-primary/40 transition-all"
         >
-          <span class="p-2.5 rounded-xl bg-surface-container-highest text-on-surface-variant/60 shrink-0">
+          <span class="p-2.5 rounded-xl bg-surface-container-highest text-on-surface-variant/70 shrink-0">
             <Papicon icon="Plus" size={16} />
           </span>
           <span class="min-w-0 space-y-1">
             <span class="block text-sm font-semibold text-on-surface">{m.wf_start_blank()}</span>
-            <span class="block text-xs text-on-surface-variant/60 leading-snug">{m.wf_start_blank_desc()}</span>
+            <span class="block text-xs text-on-surface-variant/70 leading-snug">{m.wf_start_blank_desc()}</span>
           </span>
         </button>
+      </div>
+    </div>
+
+  <!-- ══ Rejeu d'une exécution ══════════════════════════════════════════ -->
+  {:else if view === 'replay' && replay}
+    <div class="space-y-3">
+      <!-- Transport -->
+      <div class="flex flex-wrap items-center gap-3 p-3 rounded-2xl bg-surface-container-high/50 border border-outline-variant/10">
+        <div class="flex items-center gap-1">
+          <button
+            onclick={() => seekReplay(-1)}
+            disabled={replayIndex === 0}
+            class="p-2 rounded-xl bg-surface-container-highest text-on-surface hover:bg-surface-container-highest/70 disabled:opacity-30 transition-all"
+            aria-label={m.wf_replay_previous()}
+          ><Papicon icon="ChevronLeft" size={14} /></button>
+          <button
+            onclick={() => seekReplay(1)}
+            disabled={replayIndex >= replay.steps.length - 1}
+            class="p-2 rounded-xl bg-surface-container-highest text-on-surface hover:bg-surface-container-highest/70 disabled:opacity-30 transition-all"
+            aria-label={m.wf_replay_next()}
+          ><Papicon icon="ChevronRight" size={14} /></button>
+        </div>
+
+        <span class="text-xs font-semibold text-on-surface tabular-nums">
+          {m.wf_replay_position({ n: replayIndex + 1, total: replay.steps.length })}
+        </span>
+
+        <input
+          type="range"
+          min="0"
+          max={replay.steps.length - 1}
+          value={replayIndex}
+          oninput={(event) => (replayIndex = Number(event.currentTarget.value))}
+          class="flex-1 min-w-40 accent-primary cursor-pointer"
+          aria-label={m.wf_replay_position({ n: replayIndex + 1, total: replay.steps.length })}
+        />
+
+        {#if replay.error}
+          <span class="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-red-500/10 text-red-700 dark:text-red-300 max-w-72 truncate" title={replay.error}>
+            {replay.error}
+          </span>
+        {/if}
+      </div>
+
+      <div class="flex flex-col lg:flex-row gap-3">
+        <div class="flex-1 min-w-0">
+          <WorkflowEditor
+            {graph}
+            replaySteps={replay.steps}
+            {replayIndex}
+            readonly
+            onSelectNode={(nodeId) => {
+              // Cliquer un nœud rejoue jusqu'à son dernier passage : c'est la
+              // lecture naturelle quand une boucle l'a traversé plusieurs fois.
+              const last = replay!.steps.findLastIndex((step) => step.nodeId === nodeId);
+              if (last >= 0) replayIndex = last;
+            }}
+          />
+        </div>
+
+        <!-- Valeurs consignées sur l'étape courante -->
+        <aside class="w-full lg:w-72 shrink-0 space-y-3">
+          {#if replayStep}
+            {@const stepStatus = replayStep.status}
+            <div class="p-3 rounded-2xl bg-surface-container-high/50 border border-outline-variant/10 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-sm font-bold text-on-surface truncate">{replayNodeLabel}</span>
+                <span
+                  class="px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 {stepStatus === 'ERROR'
+                    ? 'bg-red-500/15 text-red-700 dark:text-red-300'
+                    : stepStatus === 'SKIPPED'
+                      ? 'bg-surface-container-highest text-on-surface-variant'
+                      : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'}"
+                >{stepStatus}</span>
+              </div>
+              <p class="text-[11px] text-on-surface-variant/70">{m.wf_replay_duration({ n: replayStep.durationMs })}</p>
+              {#if replayStep.error}
+                <p class="px-2.5 py-1.5 rounded-lg bg-red-500/10 text-[10px] text-red-700 dark:text-red-300 border border-red-500/20">{replayStep.error}</p>
+              {/if}
+            </div>
+
+            {#each [
+              { label: m.wf_replay_inputs(), values: replayStep.inputs },
+              { label: m.wf_replay_outputs(), values: replayStep.outputs },
+            ] as slot (slot.label)}
+              {@const entries = Object.entries(slot.values ?? {})}
+              <div class="p-3 rounded-2xl bg-surface-container-high/50 border border-outline-variant/10 space-y-2">
+                <h3 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/70">{slot.label}</h3>
+                {#if entries.length === 0}
+                  <p class="text-[11px] text-on-surface-variant/70">{m.wf_replay_no_value()}</p>
+                {:else}
+                  <dl class="space-y-1.5">
+                    {#each entries as [key, value] (key)}
+                      <div class="flex items-baseline gap-2 text-[11px]">
+                        <dt class="font-semibold text-on-surface-variant shrink-0">{key}</dt>
+                        <dd class="text-on-surface truncate" title={describeValue(value)}>{describeValue(value)}</dd>
+                      </div>
+                    {/each}
+                  </dl>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+        </aside>
       </div>
     </div>
 
@@ -365,7 +577,7 @@
       </div>
 
       {#if advancedOnly}
-        <p class="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-200">
+        <p class="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-800 dark:text-amber-200">
           <Papicon icon="Warning" size={13} class="mt-0.5 shrink-0" />
           <span>
             {m.wf_advanced_notice()}
@@ -374,7 +586,7 @@
       {/if}
 
       {#if blocking.length > 0}
-        <p class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-200">
+        <p class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-800 dark:text-amber-200">
           <Papicon icon="Warning" size={13} />
           {m.wf_incomplete({ n: blocking.length })}
         </p>
@@ -414,7 +626,7 @@
         </div>
 
         <div class="relative min-w-64">
-          <Papicon icon="Search" size={14} class="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/50" />
+          <Papicon icon="Search" size={14} class="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/70" />
           <input
             type="text"
             bind:value={searchFilter}
@@ -426,14 +638,14 @@
 
       {#if filteredWorkflows.length === 0}
         <div class="p-10 text-center rounded-2xl bg-surface-container-high/30 space-y-3">
-          <div class="p-3 rounded-2xl bg-surface-container-highest/60 w-fit mx-auto text-on-surface-variant/50">
+          <div class="p-3 rounded-2xl bg-surface-container-highest/60 w-fit mx-auto text-on-surface-variant/70">
             <Papicon icon="Workflow" size={24} />
           </div>
           <div class="space-y-1">
             <p class="text-sm font-semibold text-on-surface">
               {workflows.length === 0 ? m.wf_empty_title() : m.wf_no_result()}
             </p>
-            <p class="text-xs text-on-surface-variant/50">
+            <p class="text-xs text-on-surface-variant/70">
               {workflows.length === 0 ? m.wf_empty_desc() : m.wf_try_other()}
             </p>
           </div>
@@ -453,30 +665,39 @@
                 <div class="min-w-0 space-y-1">
                   <h3 class="text-sm font-bold text-on-surface truncate">{workflow.name}</h3>
                   <p class="flex items-center gap-1.5 text-xs text-on-surface-variant/70">
-                    <Papicon icon={trigger?.icon ?? 'Workflow'} size={11} class="text-primary shrink-0" />
-                    {trigger?.sentence ?? workflow.triggerType}
+                    <Papicon icon={trigger?.icon ?? 'Warning'} size={11} class="{trigger ? 'text-primary' : 'text-amber-700 dark:text-amber-300'} shrink-0" />
+                    {trigger?.sentence ?? m.wf_trigger_unknown({ type: workflow.triggerType })}
                   </p>
                   {#if workflow.description}
-                    <p class="text-[11px] text-on-surface-variant/50 line-clamp-2">{workflow.description}</p>
+                    <p class="text-[11px] text-on-surface-variant/70 line-clamp-2">{workflow.description}</p>
                   {/if}
                 </div>
                 <span
                   class="px-2.5 py-1 rounded-full text-[10px] font-bold shrink-0 {workflow.enabled
-                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                    : 'bg-surface-container-highest text-on-surface-variant/50'}"
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                    : 'bg-surface-container-highest text-on-surface-variant/70'}"
                 >{workflow.enabled ? m.wf_status_active() : m.wf_status_paused()}</span>
               </div>
 
-              <div class="flex flex-wrap items-center gap-3 text-[11px] text-on-surface-variant/60 pt-1 border-t border-outline-variant/10">
+              {#if isSilent(workflow)}
+                <p
+                  class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-800 dark:text-amber-200"
+                >
+                  <Papicon icon="Warning" size={11} class="mt-0.5 shrink-0" />
+                  <span><strong>{m.wf_never_started()}</strong> {m.wf_never_started_hint()}</span>
+                </p>
+              {/if}
+
+              <div class="flex flex-wrap items-center gap-3 text-[11px] text-on-surface-variant/70 pt-1 border-t border-outline-variant/10">
                 <span>{m.wf_runs({ n: workflow.runCount })}</span>
                 {#if workflow.runCount > 0}
-                  <span class="text-emerald-400 font-medium">{m.wf_success_rate({ n: successRate(workflow) })}</span>
+                  <span class="text-emerald-700 dark:text-emerald-400 font-medium">{m.wf_success_rate({ n: successRate(workflow) })}</span>
                 {/if}
                 <span class="ml-auto">{workflow.lastRunAt ? m.wf_last_run({ date: formatDate(workflow.lastRunAt) }) : m.wf_never_run()}</span>
               </div>
 
               {#if workflow.lastError}
-                <p class="px-2.5 py-1.5 rounded-lg bg-red-500/10 text-[10px] text-red-300 truncate border border-red-500/20">{workflow.lastError}</p>
+                <p class="px-2.5 py-1.5 rounded-lg bg-red-500/10 text-[10px] text-red-700 dark:text-red-300 truncate border border-red-500/20">{workflow.lastError}</p>
               {/if}
 
               {#if canManageSettings}
@@ -498,7 +719,7 @@
                   >{workflow.enabled ? m.wf_pause() : m.wf_activate()}</button>
                   <button
                     onclick={() => remove(workflow.id)}
-                    class="p-1.5 rounded-xl text-red-300/70 hover:text-red-300 hover:bg-red-500/10 transition-all ml-auto"
+                    class="p-1.5 rounded-xl text-red-700/70 dark:text-red-300/70 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-500/10 transition-all ml-auto"
                     aria-label={m.wf_delete()}
                   ><Papicon icon="Trash" size={13} /></button>
                 </div>
@@ -509,22 +730,35 @@
       {/if}
 
       <section class="space-y-3 pt-4 border-t border-outline-variant/15">
-        <h2 class="text-sm font-bold text-on-surface">{m.wf_executions()}</h2>
+        <div class="space-y-0.5">
+          <h2 class="text-sm font-bold text-on-surface">{m.wf_executions()}</h2>
+          {#if executions.length > 0}
+            <p class="text-[11px] text-on-surface-variant/70">{m.wf_executions_hint()}</p>
+          {/if}
+        </div>
         {#if executions.length === 0}
-          <p class="text-xs text-on-surface-variant/50">{m.wf_executions_empty()}</p>
+          <p class="text-xs text-on-surface-variant/70">{m.wf_executions_empty()}</p>
         {:else}
           <ul class="space-y-2">
             {#each executions.slice(0, 12) as execution (execution.id)}
               {@const meta = STATUS_META[execution.status] ?? STATUS_META.CANCELLED}
-              <li class="flex flex-wrap items-center gap-3 px-3.5 py-2.5 rounded-xl bg-surface-container-high/50 text-xs border border-outline-variant/10">
-                <span class="px-2.5 py-0.5 rounded-full font-semibold text-[10px] {meta.color}">{meta.label()}</span>
-                <span class="text-on-surface font-medium truncate">
-                  {workflows.find((w) => w.id === execution.workflowId)?.name ?? execution.workflowId}
-                </span>
-                {#if execution.resumeAt}
-                  <span class="text-amber-300">{m.wf_exec_resume_at({ date: formatDate(execution.resumeAt) })}</span>
-                {/if}
-                <span class="text-on-surface-variant/40 ml-auto">{formatDate(execution.startedAt)}</span>
+              <li>
+                <button
+                  type="button"
+                  onclick={() => openReplay(execution)}
+                  disabled={replayLoading}
+                  class="w-full flex flex-wrap items-center gap-3 px-3.5 py-2.5 rounded-xl bg-surface-container-high/50 text-xs text-left border border-outline-variant/10 hover:border-primary/40 hover:bg-surface-container-high transition-all disabled:opacity-50"
+                >
+                  <span class="px-2.5 py-0.5 rounded-full font-semibold text-[10px] {meta.color}">{meta.label()}</span>
+                  <span class="text-on-surface font-medium truncate">
+                    {workflows.find((w) => w.id === execution.workflowId)?.name ?? execution.workflowId}
+                  </span>
+                  {#if execution.resumeAt}
+                    <span class="text-amber-700 dark:text-amber-300">{m.wf_exec_resume_at({ date: formatDate(execution.resumeAt) })}</span>
+                  {/if}
+                  <span class="text-on-surface-variant/70 ml-auto">{formatDate(execution.startedAt)}</span>
+                  <Papicon icon="ChevronRight" size={12} class="text-on-surface-variant/70 shrink-0" />
+                </button>
               </li>
             {/each}
           </ul>

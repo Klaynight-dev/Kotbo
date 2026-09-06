@@ -66,3 +66,56 @@ describe('commande transcript datetime and duration parser', () => {
   });
 });
 
+describe('parseDateTimeOrDuration avec options', () => {
+  test('une duree relative peut designer une echeance a venir', () => {
+    const parsed = parseDateTimeOrDuration('2h', { direction: 'future' });
+    expect(parsed).not.toBeNull();
+    const diff = Math.abs((Date.now() + 2 * 60 * 60 * 1000) - (parsed || 0));
+    expect(diff).toBeLessThan(10_000);
+  });
+
+  test('le sens par defaut reste le passe, pour /transcript', () => {
+    const parsed = parseDateTimeOrDuration('2h');
+    expect(parsed).not.toBeNull();
+    const diff = Math.abs((Date.now() - 2 * 60 * 60 * 1000) - (parsed || 0));
+    expect(diff).toBeLessThan(10_000);
+  });
+
+  test('une date francaise est lue dans le fuseau demande', () => {
+    // 21h a Paris le 20 aout = 19h UTC ; sans fuseau, la lecture suit celui du
+    // process, qui varie d'une machine a l'autre.
+    expect(parseDateTimeOrDuration('20/08/2026-21:00', { timezone: 'Europe/Paris' }))
+      .toBe(Date.parse('2026-08-20T19:00:00.000Z'));
+    expect(parseDateTimeOrDuration('20/08/2026-21:00', { timezone: 'UTC' }))
+      .toBe(Date.parse('2026-08-20T21:00:00.000Z'));
+  });
+
+  test('le repli de parsing suit lui aussi le fuseau demande', () => {
+    expect(parseDateTimeOrDuration('2026-08-20 21:00', { timezone: 'Europe/Paris' }))
+      .toBe(Date.parse('2026-08-20T19:00:00.000Z'));
+  });
+
+  test('une chaine deja horodatee garde son instant, fuseau ou pas', () => {
+    expect(parseDateTimeOrDuration('2026-08-20T19:00:00Z', { timezone: 'Europe/Paris' }))
+      .toBe(Date.parse('2026-08-20T19:00:00.000Z'));
+  });
+
+  test('une saisie inexploitable reste nulle avec un fuseau', () => {
+    expect(parseDateTimeOrDuration('invalide', { timezone: 'Europe/Paris' })).toBeNull();
+    expect(parseDateTimeOrDuration('', { timezone: 'Europe/Paris' })).toBeNull();
+  });
+
+  test('une date francaise qui n existe pas est refusee', () => {
+    // Sans ce controle, « 31/02/2026 » planifiait au 3 mars sans avertir.
+    expect(parseDateTimeOrDuration('31/02/2026-09:00', { timezone: 'Europe/Paris' })).toBeNull();
+    expect(parseDateTimeOrDuration('31/04/2026', { timezone: 'UTC' })).toBeNull();
+    expect(parseDateTimeOrDuration('31/02/2026-09:00')).toBeNull();
+  });
+
+  test('une date francaise limite reste acceptee', () => {
+    expect(parseDateTimeOrDuration('29/02/2028-12:00', { timezone: 'UTC' }))
+      .toBe(Date.parse('2028-02-29T12:00:00.000Z'));
+    expect(parseDateTimeOrDuration('31/12/2026-23:59', { timezone: 'UTC' }))
+      .toBe(Date.parse('2026-12-31T23:59:00.000Z'));
+  });
+});

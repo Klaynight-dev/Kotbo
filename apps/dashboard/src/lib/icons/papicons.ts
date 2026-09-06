@@ -13,6 +13,7 @@ export const iconAliases: Record<string, string> = {
   'book': 'Paper',
   'settings': 'Gears',
   'search': 'Search',
+  'radar': 'Search',
   'chartlineup': 'TrendingUp',
   'chatcircledots': 'MessageCircle',
   'microphone': 'Mic',

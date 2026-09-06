@@ -5,7 +5,7 @@
   import { fetchAdminShards, restartAdminShard, restartAllAdminShards, reconfigureAdminShards } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
   import Skeleton from '../../lib/components/Skeleton.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
 
   type ShardSnapshot = {
     shardId: number;
@@ -134,20 +134,15 @@
   }
 </script>
 
-<AdminLayout>
+<AdminShell title="Shards" description="Répartition des serveurs sur les shards Discord, latence et redémarrages contrôlés.">
   <div class="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-3 duration-600">
 
-    <!-- Page header -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
-      <div>
-        <h2 class="text-lg font-semibold text-on-surface tracking-tight">Shards</h2>
-        <p class="text-sm text-on-surface-variant/50 font-medium">Monitoring et gestion des shards Discord</p>
-      </div>
+    <div class="flex justify-end">
       <button
         type="button"
         onclick={refreshShards}
         disabled={shardLoading}
-        class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-on-surface/5 hover:bg-on-surface/10 border border-outline-variant/10 text-on-surface-variant hover:text-on-surface transition-all disabled:opacity-40"
+        class="inline-flex items-center gap-2 h-9 px-3.5 rounded-xl text-[13px] font-semibold bg-on-surface/6 hover:bg-on-surface/10 border border-outline-variant/25 text-on-surface-variant hover:text-on-surface transition disabled:opacity-40"
       >
         <Papicon icon="RefreshCw" size={13} />
         Rafraîchir
@@ -330,4 +325,4 @@
       </div>
     {/if}
   </div>
-</AdminLayout>
+</AdminShell>

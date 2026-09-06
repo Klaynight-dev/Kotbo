@@ -190,9 +190,18 @@
   const editingInvite = $derived(invitesWithStats.find((invite) => invite.code === editingSourceCode) ?? null);
 
 
-  onMount(async () => {
-    await loadInvitations();
+  onMount(() => {
+    void loadInvitations();
+  });
+
+  // L'ecouteur etait pose dans un `onMount` asynchrone : Svelte ignore la
+  // fonction de nettoyage rendue par un callback async, il n'etait donc jamais
+  // retire et continuait de tourner - en retenant le composant - apres chaque
+  // sortie de la page. Un `$effect` sans dependance reactive s'installe une
+  // fois et se demonte proprement.
+  $effect(() => {
     document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
   });
 
 

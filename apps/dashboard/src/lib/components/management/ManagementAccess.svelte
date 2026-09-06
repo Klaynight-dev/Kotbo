@@ -1,7 +1,7 @@
 <script module>
   import { m } from '../../i18n';
+  import { moduleName } from '../../moduleLabels';
 
-  // ─── Category mapping ───
   export const categoryMap: Record<string, string> = {
     dashboard: 'dashboard',
     analytics: 'dashboard',
@@ -14,22 +14,43 @@
     double_accounts: 'moderation',
     logs: 'moderation',
     activity: 'moderation',
+    automod: 'moderation',
+    nickname_moderation: 'moderation',
+    auto_thread: 'moderation',
+    raid_protection: 'moderation',
     recruitment: 'staff',
     staff_directory: 'staff',
-    staff_management: 'staff',
     staff_roles: 'staff',
     tutoring: 'staff',
     meetings: 'staff',
     absences: 'staff',
     polls: 'staff',
     discipline: 'staff',
+    events: 'staff',
+    tickets: 'staff',
     regulation: 'management',
+    news: 'management',
+    leveling: 'management',
+    prestige: 'management',
+    economy: 'management',
+    fun: 'management',
+    giveaways: 'management',
+    welcome_goodbye: 'management',
+    reaction_roles: 'management',
+    auto_responses: 'management',
+    suggestions: 'management',
+    embed_builder: 'management',
+    workflows: 'management',
     modules: 'configuration',
-    centralized_config: 'configuration',
     commands: 'configuration',
     settings: 'configuration',
+    channel_health: 'configuration',
     youtube: 'integrations',
+    twitch: 'integrations',
     digest: 'integrations',
+    social_networks: 'integrations',
+    channel_links: 'integrations',
+    staff_server: 'integrations',
   };
 
   export function categoryLabel(id: string): string {
@@ -45,32 +66,11 @@
     integrations: 'Link',
   };
 
-  export const categoryColors: Record<string, { text: string; bg: string; border: string }> = {
-    dashboard: { text: 'text-sky-400', bg: 'bg-sky-500/10', border: 'border-sky-500/20' },
-    moderation: { text: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20' },
-    staff: { text: 'text-purple-400', bg: 'bg-purple-500/10', border: 'border-purple-500/20' },
-    management: { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' },
-    configuration: { text: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/20' },
-    integrations: { text: 'text-cyan-400', bg: 'bg-cyan-500/10', border: 'border-cyan-500/20' },
-  };
-
   export const categoryOrder = ['dashboard', 'moderation', 'staff', 'management', 'configuration', 'integrations'];
-</script>
 
-<script lang="ts">
-  import Papicon from '../Papicon.svelte';
-
-  let {
-    features = $bindable([]),
-    availableRoles = [],
-    onUpdateAccess = (_key: string, _access: any[]) => {},
-    onApplyPreset = (_preset: string) => {}
-  } = $props();
-
-  // Group features by category - Use $derived.by for better performance
-  const groupedFeatures = $derived.by(() => {
-    const groups: Array<{ category: string; items: Array<{ feature: any; idx: number }> }> = [];
-    const catMap = new Map<string, Array<{ feature: any; idx: number }>>();
+  export function groupByCategory<T extends { featureKey: string }>(features: T[]) {
+    const groups: Array<{ category: string; items: Array<{ feature: T; idx: number }> }> = [];
+    const catMap = new Map<string, Array<{ feature: T; idx: number }>>();
 
     features.forEach((feature, idx) => {
       const cat = categoryMap[feature.featureKey] || 'other';
@@ -84,215 +84,391 @@
         catMap.delete(cat);
       }
     }
-    // Any remaining (uncategorized)
     for (const [cat, items] of catMap) {
       groups.push({ category: cat, items });
     }
 
     return groups;
-  });
+  }
 
-  // Generate dynamic role levels from actual staff roles
-  const roleEntries = $derived.by(() => {
-    if (availableRoles.length > 0) {
-      return [...availableRoles]
-        .sort((a, b) => (b.position ?? 0) - (a.position ?? 0))
-        .map((role, idx) => ({
-          roleId: role.id,
-          name: role.name,
-          color: ['text-blue-400', 'text-emerald-400', 'text-purple-400', 'text-amber-400', 'text-rose-400', 'text-cyan-400', 'text-teal-400', 'text-orange-400'][idx % 8],
-          bg: ['bg-blue-500/10', 'bg-emerald-500/10', 'bg-purple-500/10', 'bg-amber-500/10', 'bg-rose-500/10', 'bg-cyan-500/10', 'bg-teal-500/10', 'bg-orange-500/10'][idx % 8],
-          dotColor: ['bg-blue-400', 'bg-emerald-400', 'bg-purple-400', 'bg-amber-400', 'bg-rose-400', 'bg-cyan-400', 'bg-teal-400', 'bg-orange-400'][idx % 8],
-        }));
-    }
-    return [];
-  });
+  /**
+   * Etat reel d'une fonctionnalite, cascade des dependances et offre comprises.
+   * `DashboardFeatureConfig.enabled` ne les connait pas : s'y fier affichait un
+   * module vert alors que la garde de lecture l'eteignait. `null` pour une
+   * fonctionnalite qui n'est pas un module du registre - elle n'a pas d'etat.
+   */
+  export function featureModuleState(modules: Map<string, any>, featureKey: string): boolean | null {
+    const mod = modules.get(featureKey);
+    return mod ? mod.status === 'active' : null;
+  }
+</script>
+
+<script lang="ts">
+  import Papicon from '../Papicon.svelte';
+  import SettingsGroup from './SettingsGroup.svelte';
+  import { roleDotColor } from '../../discordVisuals';
+
+  let {
+    features = $bindable([]),
+    availableRoles = [],
+    modules = new Map<string, any>(),
+    onApplyPreset = (_preset: string) => {},
+  }: {
+    features?: any[];
+    availableRoles?: any[];
+    modules?: Map<string, any>;
+    onApplyPreset?: (preset: string) => void | Promise<void>;
+  } = $props();
+
+  const PRESETS = [
+    { key: 'general', label: () => m.mgmt_preset_general() },
+    { key: 'gaming', label: () => m.mgmt_preset_gaming() },
+    { key: 'dev', label: () => m.mgmt_preset_dev() },
+  ];
+
+  const groupedFeatures = $derived(groupByCategory(features));
+
+  const roleEntries = $derived(
+    [...availableRoles].sort((a, b) => (b.position ?? 0) - (a.position ?? 0))
+  );
 
   const permissions = $derived([
-    { key: 'canView', label: m.ma_perm_view(), icon: 'Eye' },
-    { key: 'canModerate', label: m.ma_perm_moderate(), icon: 'Gavel' },
-    { key: 'canConfigure', label: m.ma_perm_configure(), icon: 'Settings' },
-    { key: 'canDelete', label: m.ma_perm_delete(), icon: 'Trash' },
+    { key: 'canView', label: m.ma_perm_view(), icon: 'Eye', desc: m.ma_perm_view_desc() },
+    { key: 'canModerate', label: m.ma_perm_moderate(), icon: 'Gavel', desc: m.ma_perm_moderate_desc() },
+    { key: 'canConfigure', label: m.ma_perm_configure(), icon: 'Settings', desc: m.ma_perm_configure_desc() },
+    { key: 'canDelete', label: m.ma_perm_delete(), icon: 'Trash', desc: m.ma_perm_delete_desc() },
   ]);
 
-  function getRoleAccess(feature: any, roleId: string): any {
-    if (!feature.roleAccessByRole) return {};
-    return feature.roleAccessByRole.find((ra: any) => ra.roleId === roleId) || {};
-  }
+  const VIEWS = [
+    { id: 'module', label: () => m.ma_view_by_module() },
+    { id: 'role', label: () => m.ma_view_by_role() },
+  ];
+
+  let viewMode = $state('module');
+  let expandedFeature = $state<string | null>(null);
+  let expandedRole = $state<string | null>(null);
+  let query = $state('');
+
+  const matches = (feature: any) =>
+    !query || moduleName(feature.featureKey, feature.featureName).toLowerCase().includes(query.toLowerCase())
+      || feature.featureKey?.toLowerCase().includes(query.toLowerCase());
+
+  const ruleOf = (feature: any, roleId: string) =>
+    feature.roleAccessByRole?.find((rule: any) => rule.roleId === roleId) ?? {};
+
+  const grantedCount = (feature: any, roleId: string) =>
+    permissions.filter((perm) => ruleOf(feature, roleId)[perm.key]).length;
+
+  /** Aucune regle sur la fonctionnalite : tout le staff la voit. */
+  const isOpen = (feature: any) => (feature.roleAccessByRole?.length ?? 0) === 0;
 
   function togglePermission(featureIdx: number, roleId: string, permKey: string) {
     const feature = features[featureIdx];
     if (!feature.roleAccessByRole) feature.roleAccessByRole = [];
 
-    let ra = feature.roleAccessByRole.find((r: any) => r.roleId === roleId);
-    if (!ra) {
-      ra = { roleId, canView: false, canModerate: false, canConfigure: false, canDelete: false };
-      feature.roleAccessByRole.push(ra);
+    let rule = feature.roleAccessByRole.find((entry: any) => entry.roleId === roleId);
+    if (!rule) {
+      rule = { roleId, canView: false, canModerate: false, canConfigure: false, canDelete: false };
+      feature.roleAccessByRole.push(rule);
     }
-    ra[permKey] = !ra[permKey];
+    rule[permKey] = !rule[permKey];
     features = [...features];
   }
 
-  let expandedFeature = $state<string | null>(null);
-  let expandedCategory = $state<string | null>(null);
+  /**
+   * Le retrait est un geste a part, et non la consequence d'avoir tout
+   * decoche : une regle videe de ses droits ferme la section au role sans
+   * rouvrir la fonctionnalite, ce qui est le seul moyen de la reserver aux
+   * administrateurs Discord. C'est en retirant la derniere regle qu'on la rend
+   * a tout le staff.
+   */
+  function removeRule(featureIdx: number, roleId: string) {
+    const feature = features[featureIdx];
+    if (!feature.roleAccessByRole) return;
+    feature.roleAccessByRole = feature.roleAccessByRole.filter((entry: any) => entry.roleId !== roleId);
+    features = [...features];
+  }
+
+  const hasRule = (feature: any, roleId: string) =>
+    !!feature.roleAccessByRole?.some((rule: any) => rule.roleId === roleId);
+
+  const ruledFeatureCount = (roleId: string) =>
+    features.filter((feature: any) => hasRule(feature, roleId)).length;
 </script>
 
-<div class="space-y-6 animate-in fade-in duration-500">
-  <div class="bg-surface-container-low/30 border border-outline-variant/10 p-8 rounded-xl space-y-6">
-    <div class="flex flex-col md:flex-row justify-between gap-6">
-      <div>
-        <h3 class="text-2xl font-semibold">{m.ma_title()}</h3>
-        <p class="text-xs text-on-surface-variant/50 mt-1">
-          {m.ma_desc()}
-          {#if availableRoles.length > 0}
-            <span class="text-primary font-bold">{m.ma_roles_loaded({ count: availableRoles.length })}</span>
-          {/if}
-        </p>
-      </div>
-
-      <div class="flex items-center gap-3">
-        <span class="text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/40">{m.ma_reset_preset_label()}</span>
-        {#each ['general', 'gaming', 'dev'] as p}
+<div class="space-y-6">
+  <SettingsGroup title={m.ma_title()} description={m.ma_desc()}>
+    {#snippet actions()}
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/40 hidden md:inline">
+          {m.ma_reset_preset_label()}
+        </span>
+        {#each PRESETS as preset}
           <button
-            onclick={() => onApplyPreset(p)}
-            class="px-3 py-1.5 rounded-lg border border-outline-variant/10 hover:bg-surface-container-high transition-colors text-[11px] font-semibold uppercase tracking-widest"
+            type="button"
+            onclick={() => onApplyPreset(preset.key)}
+            class="px-3 py-1.5 rounded-lg border border-outline-variant/20 hover:bg-surface-container-high transition-colors text-[11px] font-semibold uppercase tracking-widest"
           >
-            {p}
+            {preset.label()}
           </button>
         {/each}
       </div>
-    </div>
+    {/snippet}
 
-    <!-- Role legend -->
-    <div class="flex flex-wrap gap-3">
-      {#each roleEntries as role}
-        <div class="flex items-center gap-2 px-3 py-1.5 rounded-xl {role.bg}">
-          <span class="w-2 h-2 rounded-full {role.dotColor}"></span>
-          <span class="text-xs font-medium {role.color}">{role.name}</span>
-        </div>
-      {/each}
-      <div class="flex items-center gap-3 ml-auto text-[10px] text-on-surface-variant/40">
-        {#each permissions as perm}
-          <span class="flex items-center gap-1"><Papicon icon={perm.icon} size={12} /> {perm.label}</span>
-        {/each}
-      </div>
-    </div>
+    {#if roleEntries.length === 0}
+      <p class="text-[13px] text-amber-400/90 leading-relaxed">{m.ma_roles_empty()}</p>
+    {:else}
+      <div class="space-y-4">
+        <div class="flex items-center justify-between gap-4 flex-wrap">
+          <p class="text-xs text-on-surface-variant/60">{m.ma_roles_loaded({ count: roleEntries.length })}</p>
 
-    <!-- Grouped feature cards by category -->
-    <div class="space-y-6">
-      {#each groupedFeatures as group}
-        {@const catColor = categoryColors[group.category] || { text: 'text-on-surface-variant', bg: 'bg-surface-container-high/20', border: 'border-outline-variant/10' }}
-        {@const catIcon = categoryIcons[group.category] || 'Grid'}
-        {@const isCatExpanded = expandedCategory === group.category}
-
-        <div class="space-y-2">
-          <!-- Category header -->
-          <button
-            onclick={() => expandedCategory = isCatExpanded ? null : group.category}
-            class="w-full flex items-center gap-3 px-5 py-3 rounded-lg {catColor.bg} border {catColor.border} hover:opacity-90 transition-all cursor-pointer"
-          >
-            <Papicon icon={catIcon} size={18} class={catColor.text} />
-            <span class="text-[11px] font-semibold uppercase tracking-widest {catColor.text}">{categoryLabel(group.category)}</span>
-            <span class="text-[10px] text-on-surface-variant/40 ml-1">{group.items.length} {m.ma_word_module()}{group.items.length > 1 ? 's' : ''}</span>
-            <div class="ml-auto flex items-center gap-2">
-              <!-- Quick summary: nb of features with full permissions -->
-              <span class="text-[11px] text-on-surface-variant/30">{group.items.filter(i => i.feature.enabled).length} {m.ma_word_active()}{group.items.filter(i => i.feature.enabled).length > 1 ? 's' : ''}</span>
-              <div class="transform transition-transform {isCatExpanded ? 'rotate-180' : ''}">
-                <Papicon icon="CaretDown" size={14} class="text-on-surface-variant/40" />
-              </div>
-            </div>
-          </button>
-
-          <!-- Category items -->
-          {#if isCatExpanded}
-            <div class="space-y-2 pl-2 animate-in fade-in slide-in-from-top-1 duration-300">
-              {#each group.items as { feature, idx }}
-                {@const isExpanded = expandedFeature === feature.featureKey}
-                <div class="bg-surface-container-high/20 border border-outline-variant/5 rounded-xl overflow-hidden transition-all">
-                  <!-- Feature header -->
-                  <button
-                    onclick={() => expandedFeature = isExpanded ? null : feature.featureKey}
-                    class="w-full flex items-center justify-between px-5 py-4 hover:bg-surface-container-high/30 transition-colors"
-                  >
-                    <div class="flex items-center gap-3">
-                      <span class="w-2 h-2 rounded-full {feature.enabled ? 'bg-emerald-500' : 'bg-red-400'}"></span>
-                      <span class="text-sm font-bold">{feature.featureName}</span>
-                      {#if feature.description}
-                        <span class="text-[10px] text-on-surface-variant/30 hidden md:inline">{feature.description}</span>
-                      {/if}
-                    </div>
-                    <div class="flex items-center gap-3">
-                      <!-- Quick preview badges -->
-                      <div class="flex gap-1 hidden sm:flex">
-                        {#each roleEntries as role}
-                          {@const ra = getRoleAccess(feature, role.roleId)}
-                          {@const activePerms = permissions.filter(p => ra[p.key]).length}
-                          <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {role.bg} {role.color}">{activePerms}/{permissions.length}</span>
-                        {/each}
-                      </div>
-                      <div class="transform transition-transform {isExpanded ? 'rotate-180' : ''}">
-                        <Papicon icon="CaretDown" size={14} />
-                      </div>
-                    </div>
-                  </button>
-
-                  <!-- Expanded permission matrix -->
-                  {#if isExpanded}
-                    <div class="px-5 pb-5 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                      <div class="overflow-hidden rounded-xl border border-outline-variant/5">
-                        <table class="w-full text-left border-collapse">
-                          <thead class="bg-surface-container-high/40 text-xs font-medium text-on-surface-variant/60">
-                            <tr>
-                              <th class="px-4 py-3">{m.ma_col_role()}</th>
-                              {#each permissions as perm}
-                                <th class="px-4 py-3 text-center">
-                                  <div class="flex items-center justify-center gap-1"><Papicon icon={perm.icon} size={12} /> {perm.label}</div>
-                                </th>
-                              {/each}
-                            </tr>
-                          </thead>
-                          <tbody class="divide-y divide-outline-variant/5">
-                            {#each roleEntries as role}
-                              {@const ra = getRoleAccess(feature, role.roleId)}
-                              <tr class="hover:bg-surface-container-high/10 transition-colors">
-                                <td class="px-4 py-3">
-                                  <span class="flex items-center gap-2 {role.color} font-bold text-sm">
-                                    <span class="w-2 h-2 rounded-full {role.dotColor}"></span>
-                                    {role.name}
-                                  </span>
-                                </td>
-                                {#each permissions as perm}
-                                  <td class="px-4 py-3 text-center">
-                                    <button
-                                      onclick={() => togglePermission(idx, role.roleId, perm.key)}
-                                      class="w-7 h-7 rounded-lg flex items-center justify-center transition-all {ra[perm.key] ? 'bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30' : 'bg-surface-container-high/40 text-on-surface-variant/30 hover:bg-surface-container-high/60'}"
-                                    >
-                                      <Papicon icon={ra[perm.key] ? "Check" : "X"} size={12} />
-                                    </button>
-                                  </td>
-                                {/each}
-                              </tr>
-                            {/each}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div class="flex justify-end">
-                        <button
-                          onclick={() => onUpdateAccess(feature.featureKey, feature.roleAccessByRole || [])}
-                          class="px-5 py-2 bg-on-surface text-surface text-[11px] font-semibold uppercase tracking-widest rounded-xl transition-transform"
-                        >
-                          {m.common_save()}
-                        </button>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
+          <div class="flex items-center gap-2">
+            <div class="flex gap-1 p-1 rounded-lg bg-surface-container-high/40 border border-outline-variant/10">
+              {#each VIEWS as view}
+                <button
+                  type="button"
+                  onclick={() => (viewMode = view.id)}
+                  aria-pressed={viewMode === view.id}
+                  class="px-3 h-7 rounded-md text-[11px] font-semibold transition-colors {viewMode === view.id
+                    ? 'bg-primary text-on-primary'
+                    : 'text-on-surface-variant hover:text-on-surface'}"
+                >
+                  {view.label()}
+                </button>
               {/each}
             </div>
-          {/if}
+
+            <label class="relative">
+              <span class="sr-only">{m.ma_search_placeholder()}</span>
+              <Papicon icon="MagnifyingGlass" size={14} class="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/40" />
+              <input
+                type="text"
+                bind:value={query}
+                placeholder={m.ma_search_placeholder()}
+                class="bg-surface-container-high/40 border border-outline-variant/10 rounded-lg pl-9 pr-4 py-2 text-xs w-56 focus:ring-2 focus:ring-primary/30 transition-all outline-none"
+              />
+            </label>
+          </div>
         </div>
-      {/each}
-    </div>
-  </div>
+
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 p-4 rounded-xl border border-outline-variant/10 bg-surface-container-high/10">
+          {#each permissions as perm}
+            <div class="flex items-start gap-2.5">
+              <span class="mt-0.5 text-on-surface-variant/50 shrink-0"><Papicon icon={perm.icon} size={13} /></span>
+              <div class="min-w-0">
+                <dt class="text-[13px] font-medium text-on-surface">{perm.label}</dt>
+                <dd class="text-[12px] leading-relaxed text-on-surface-variant/75">{perm.desc}</dd>
+              </div>
+            </div>
+          {/each}
+        </dl>
+
+        {#if viewMode === 'module'}
+          {#each groupedFeatures as group}
+            {@const items = group.items.filter(({ feature }) => matches(feature))}
+            {#if items.length > 0}
+              <section class="space-y-1">
+                <p class="flex items-center gap-2 px-1 pt-2 text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/50">
+                  <Papicon icon={categoryIcons[group.category] || 'Grid'} size={12} />
+                  {categoryLabel(group.category)}
+                </p>
+
+                <div class="rounded-xl border border-outline-variant/10 divide-y divide-outline-variant/10 overflow-hidden">
+                  {#each items as { feature, idx } (feature.featureKey)}
+                    {@const expanded = expandedFeature === feature.featureKey}
+                    {@const moduleActive = featureModuleState(modules, feature.featureKey)}
+                    <div class="bg-surface-container-high/10">
+                      <button
+                        type="button"
+                        class="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface-container-high/30 transition-colors text-left"
+                        onclick={() => (expandedFeature = expanded ? null : feature.featureKey)}
+                      >
+                        <span class="flex items-center gap-3 min-w-0">
+                          <span class="w-1.5 h-1.5 rounded-full shrink-0 {moduleActive === false ? 'bg-on-surface-variant/30' : 'bg-emerald-500'}"></span>
+                          <span class="text-sm font-medium truncate">{moduleName(feature.featureKey, feature.featureName)}</span>
+                        </span>
+                        <span class="flex items-center gap-3 shrink-0">
+                          <span class="text-[11px] font-medium {isOpen(feature) ? 'text-on-surface-variant/40' : 'text-primary'}">
+                            {isOpen(feature) ? m.ma_state_open() : m.ma_state_restricted()}
+                          </span>
+                          <span class="transition-transform {expanded ? 'rotate-180' : ''}">
+                            <Papicon icon="CaretDown" size={14} />
+                          </span>
+                        </span>
+                      </button>
+
+                      {#if expanded}
+                        <div class="px-4 pb-4 space-y-3">
+                          <p class="text-[12px] text-on-surface-variant/60 leading-relaxed">
+                            {isOpen(feature) ? m.ma_hint_open() : m.ma_hint_restricted()}
+                          </p>
+                          <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse min-w-[26rem]">
+                              <thead>
+                                <tr class="text-[11px] font-medium text-on-surface-variant/50">
+                                  <th class="py-2 pr-4 font-medium">{m.ma_col_role()}</th>
+                                  {#each permissions as perm}
+                                    <th class="py-2 px-2 text-center font-medium" title={perm.desc}>
+                                      <span class="inline-flex items-center gap-1"><Papicon icon={perm.icon} size={11} /> {perm.label}</span>
+                                    </th>
+                                  {/each}
+                                  <th class="py-2 pl-2 font-medium"><span class="sr-only">{m.ma_remove_rule()}</span></th>
+                                </tr>
+                              </thead>
+                              <tbody class="divide-y divide-outline-variant/5">
+                                {#each roleEntries as role}
+                                  {@const rule = ruleOf(feature, role.id)}
+                                  <tr>
+                                    <td class="py-2 pr-4">
+                                      <span class="inline-flex items-center gap-2">
+                                        <span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background-color:{roleDotColor(role.color)}"></span>
+                                        <span class="text-[13px] font-medium">{role.name}</span>
+                                      </span>
+                                      <span class="ml-2 text-[10px] text-on-surface-variant/40">{grantedCount(feature, role.id)}/{permissions.length}</span>
+                                    </td>
+                                    {#each permissions as perm}
+                                      <td class="py-2 px-2 text-center">
+                                        <button
+                                          type="button"
+                                          aria-label="{role.name} - {perm.label}"
+                                          aria-pressed={!!rule[perm.key]}
+                                          onclick={() => togglePermission(idx, role.id, perm.key)}
+                                          class="w-7 h-7 rounded-lg inline-flex items-center justify-center transition-all {rule[perm.key] ? 'bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30' : 'bg-surface-container-high/40 text-on-surface-variant/30 hover:bg-surface-container-high/70'}"
+                                        >
+                                          <Papicon icon={rule[perm.key] ? 'Check' : 'X'} size={12} />
+                                        </button>
+                                      </td>
+                                    {/each}
+                                    <td class="py-2 pl-2 text-right">
+                                      {#if hasRule(feature, role.id)}
+                                        <button
+                                          type="button"
+                                          onclick={() => removeRule(idx, role.id)}
+                                          class="text-[11px] font-medium text-on-surface-variant/50 hover:text-error transition-colors"
+                                        >
+                                          {m.ma_remove_rule()}
+                                        </button>
+                                      {/if}
+                                    </td>
+                                  </tr>
+                                {/each}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </section>
+            {/if}
+          {/each}
+        {:else}
+          <div class="rounded-xl border border-outline-variant/10 divide-y divide-outline-variant/10 overflow-hidden">
+            {#each roleEntries as role (role.id)}
+              {@const expanded = expandedRole === role.id}
+              {@const ruled = ruledFeatureCount(role.id)}
+              <div class="bg-surface-container-high/10">
+                <button
+                  type="button"
+                  class="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface-container-high/30 transition-colors text-left"
+                  onclick={() => (expandedRole = expanded ? null : role.id)}
+                >
+                  <span class="flex items-center gap-3 min-w-0">
+                    <span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background-color:{roleDotColor(role.color)}"></span>
+                    <span class="text-sm font-medium truncate">{role.name}</span>
+                  </span>
+                  <span class="flex items-center gap-3 shrink-0">
+                    <span class="text-[11px] font-medium {ruled > 0 ? 'text-primary' : 'text-on-surface-variant/40'}">
+                      {ruled > 0 ? m.ma_role_ruled_count({ count: ruled }) : m.ma_role_no_rule()}
+                    </span>
+                    <span class="transition-transform {expanded ? 'rotate-180' : ''}">
+                      <Papicon icon="CaretDown" size={14} />
+                    </span>
+                  </span>
+                </button>
+
+                {#if expanded}
+                  <div class="px-4 pb-4 space-y-3">
+                    <p class="text-[12px] text-on-surface-variant/60 leading-relaxed">{m.ma_role_hint()}</p>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-left border-collapse min-w-[26rem]">
+                        <thead>
+                          <tr class="text-[11px] font-medium text-on-surface-variant/50">
+                            <th class="py-2 pr-4 font-medium">{m.ma_col_module()}</th>
+                            {#each permissions as perm}
+                              <th class="py-2 px-2 text-center font-medium" title={perm.desc}>
+                                <span class="inline-flex items-center gap-1"><Papicon icon={perm.icon} size={11} /> {perm.label}</span>
+                              </th>
+                            {/each}
+                            <th class="py-2 pl-2 font-medium"><span class="sr-only">{m.ma_remove_rule()}</span></th>
+                          </tr>
+                        </thead>
+
+                        {#each groupedFeatures as group}
+                          {@const items = group.items.filter(({ feature }) => matches(feature))}
+                          {#if items.length > 0}
+                            <tbody class="divide-y divide-outline-variant/5">
+                              <tr>
+                                <th colspan={permissions.length + 2} class="pt-4 pb-1 text-left">
+                                  <span class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/50">
+                                    <Papicon icon={categoryIcons[group.category] || 'Grid'} size={12} />
+                                    {categoryLabel(group.category)}
+                                  </span>
+                                </th>
+                              </tr>
+
+                              {#each items as { feature, idx } (feature.featureKey)}
+                                {@const rule = ruleOf(feature, role.id)}
+                                {@const moduleActive = featureModuleState(modules, feature.featureKey)}
+                                <tr>
+                                  <td class="py-2 pr-4">
+                                    <span class="inline-flex items-center gap-2">
+                                      <span class="w-1.5 h-1.5 rounded-full shrink-0 {moduleActive === false ? 'bg-on-surface-variant/30' : 'bg-emerald-500'}"></span>
+                                      <span class="text-[13px] font-medium">{moduleName(feature.featureKey, feature.featureName)}</span>
+                                    </span>
+                                    {#if isOpen(feature)}
+                                      <span class="ml-2 text-[10px] text-on-surface-variant/40">{m.ma_state_open()}</span>
+                                    {/if}
+                                  </td>
+                                  {#each permissions as perm}
+                                    <td class="py-2 px-2 text-center">
+                                      <button
+                                        type="button"
+                                        aria-label="{moduleName(feature.featureKey, feature.featureName)} - {perm.label}"
+                                        aria-pressed={!!rule[perm.key]}
+                                        onclick={() => togglePermission(idx, role.id, perm.key)}
+                                        class="w-7 h-7 rounded-lg inline-flex items-center justify-center transition-all {rule[perm.key] ? 'bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30' : 'bg-surface-container-high/40 text-on-surface-variant/30 hover:bg-surface-container-high/70'}"
+                                      >
+                                        <Papicon icon={rule[perm.key] ? 'Check' : 'X'} size={12} />
+                                      </button>
+                                    </td>
+                                  {/each}
+                                  <td class="py-2 pl-2 text-right">
+                                    {#if hasRule(feature, role.id)}
+                                      <button
+                                        type="button"
+                                        onclick={() => removeRule(idx, role.id)}
+                                        class="text-[11px] font-medium text-on-surface-variant/50 hover:text-error transition-colors"
+                                      >
+                                        {m.ma_remove_rule()}
+                                      </button>
+                                    {/if}
+                                  </td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          {/if}
+                        {/each}
+                      </table>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </SettingsGroup>
 </div>

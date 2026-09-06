@@ -1,6 +1,7 @@
 import { Client, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, type ButtonInteraction, type ColorResolvable, type Message } from 'discord.js';
 import prisma from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
+import { broadcastDashboardStateChange } from '../../api/shared/sharding.js';
 
 import { resolveEmojiShortcodes } from '../../utils/emojis.js';
 
@@ -170,6 +171,8 @@ export async function createSuggestion(guildId: string, userId: string, username
     },
   });
 
+  broadcastDashboardStateChange(guildId, 'suggestions_updated');
+
   // 3. Envoyer l'embed sur Discord
   const member = await discordGuild.members.fetch(userId).catch(() => null);
   const avatarUrl = member?.user.displayAvatarURL({ size: 128 }) || null;
@@ -262,6 +265,8 @@ export async function handleSuggestionVote(interaction: ButtonInteraction, type:
     data: { upvoters, downvoters },
   });
 
+  broadcastDashboardStateChange(suggestion.guildId, 'suggestions_updated');
+
   const message = await findSuggestionMessage(interaction, suggestion);
   if (message) {
     const originalEmbed = message.embeds.find(embed => embed.footer?.text?.includes(suggestion.id));
@@ -341,6 +346,8 @@ export async function resolveSuggestion(
       respondedAt: new Date(),
     },
   });
+
+  broadcastDashboardStateChange(suggestion.guildId, 'suggestions_updated');
 
   // Mettre à jour l'affichage sur Discord
   if (suggestion.channelId && suggestion.messageId) {

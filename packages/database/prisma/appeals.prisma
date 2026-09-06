@@ -10,6 +10,18 @@ enum BanAppealStatus {
   DENIED_PERMANENT
 }
 
+// Verdict rendu par le staff sur UNE sanction contestée. Un appel peut porter
+// sur plusieurs sanctions et chacune reçoit son propre verdict : accepter en
+// bloc n'a pas de sens quand un membre conteste trois warns dont un seul est
+// discutable.
+enum AppealItemOutcome {
+  PENDING // pas encore tranchée
+  UPHELD // maintenue, re-contestable après le cooldown
+  ARCHIVED // annulée mais conservée (sort du casier actif, reste consultable)
+  DELETED // purgée définitivement de la base
+  LOCKED // maintenue ET verrouillée : plus jamais contestable
+}
+
 model BanAppealConfig {
   id      String  @id @default(cuid())
   guildId String  @unique
@@ -26,6 +38,39 @@ model BanAppealConfig {
 
   // Jours à attendre après un refus avant de pouvoir soumettre un nouvel appel
   cooldownDays Int @default(30)
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Contestation des sanctions (au-delà du seul ban définitif)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Types de sanction contestables, activés un par un. `[BAN]` reproduit le
+  // comportement historique du module (seul un banni pouvait faire appel).
+  appealableTypes SanctionType[] @default([BAN])
+
+  // Nombre maximum de sanctions regroupées dans un même appel.
+  maxSanctionsPerAppeal Int @default(3)
+
+  // Une sanction plus vieille que N jours n'est plus contestable (null = sans
+  // limite). Évite qu'un membre déterre un warn de 2023.
+  appealWindowDays Int?
+
+  // Cooldown spécifique par type (`{ "WARN": 7 }`), sinon `cooldownDays`.
+  cooldownByType Json?
+
+  // Formulaire spécifique par type (`{ "WARN": "<formId>" }`), sinon `formId` :
+  // contester un warn ne pose pas les mêmes questions qu'un ban définitif.
+  formIdByType Json?
+
+  // Envoie un DM au membre à chaque sanction contestable, avec le bouton
+  // « Contester ». Sans cela un membre averti ignore que la page existe.
+  notifyOnSanctionDM Boolean @default(false)
+
+  // Le modérateur qui a prononcé la sanction ne peut pas trancher son propre
+  // appel (conflit d'intérêt).
+  excludeIssuingModerator Boolean @default(true)
+
+  // Le modérateur émetteur est prévenu quand sa sanction est contestée.
+  notifyIssuingModerator Boolean @default(true)
 
   appealVerification      Boolean           @default(false)
   appealSaveIp            Boolean           @default(true)
@@ -86,12 +131,59 @@ model BanAppeal {
 
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
+  // Sanctions visées par l'appel. Vide = appel de ban historique, adossé à
+  // l'état de bannissement Discord plutôt qu'à une ligne de casier.
+  sanctions BanAppealSanction[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([guildId, status])
   @@index([guildId, userId])
   @@map("ban_appeals")
+}
+
+// Une sanction contestée dans un appel, avec son verdict propre.
+//
+// Le type, la raison et la date sont recopiés à la soumission : le verdict
+// DELETED efface la ligne `Sanction`, et sans cette photo l'appel deviendrait
+// illisible juste après avoir été tranché.
+model BanAppealSanction {
+  id       String @id @default(cuid())
+  appealId String
+  guildId  String
+
+  // SetNull plutôt que Cascade : la suppression de la sanction est un verdict
+  // possible, elle ne doit pas emporter la trace de l'appel.
+  sanctionId String?
+
+  // Photo de la sanction au moment de la contestation
+  sanctionType      SanctionType
+  sanctionReason    String
+  sanctionCreatedAt DateTime
+  moderatorUserId   String?
+  moderatorTag      String?
+
+  // Argumentaire du membre pour CETTE sanction
+  memberStatement String?
+
+  outcome     AppealItemOutcome @default(PENDING)
+  outcomeNote String?
+  decidedAt   DateTime?
+  decidedByUserId String?
+  decidedByTag    String?
+
+  appeal   BanAppeal @relation(fields: [appealId], references: [id], onDelete: Cascade)
+  sanction Sanction? @relation(fields: [sanctionId], references: [id], onDelete: SetNull)
+  guild    Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([appealId])
+  @@index([guildId, outcome])
+  @@index([sanctionId])
+  @@map("ban_appeal_sanctions")
 }
 
 model BanAppealBlacklist {

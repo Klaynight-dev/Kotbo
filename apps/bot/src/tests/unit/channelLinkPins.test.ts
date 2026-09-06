@@ -5,12 +5,12 @@ import path from 'node:path';
  * Synchronisation des épinglages d'un pont.
  *
  * Discord n'annonce jamais *quel* message vient d'être épinglé : le service
- * compare les deux listes. Ces tests portent donc sur les décisions prises à
- * partir de cette comparaison - notamment celles de ne rien faire, qui sont les
- * seules capables d'abîmer le salon d'en face.
+ * compare les listes des salons. Ces tests portent donc sur les décisions
+ * prises à partir de cette comparaison - notamment celles de ne rien faire, qui
+ * sont les seules capables d'abîmer les salons d'en face.
  */
 
-type LinkRow = Record<string, unknown>;
+type GroupRow = Record<string, unknown>;
 type MappingRow = {
   sourceMessageId: string;
   sourceChannelId: string;
@@ -18,12 +18,12 @@ type MappingRow = {
   relayedChannelId: string;
 };
 
-let linkRows: LinkRow[] = [];
+let groupRows: GroupRow[] = [];
 let mappingRows: MappingRow[] = [];
 
 const mockDb = {
-  channelLink: { findMany: mock(() => Promise.resolve(linkRows)) },
-  channelLinkMessage: { findMany: mock(() => Promise.resolve(mappingRows)) },
+  channelLinkGroup: { findMany: mock(() => Promise.resolve(groupRows)) },
+  channelLinkGroupMessage: { findMany: mock(() => Promise.resolve(mappingRows)) },
 };
 
 const dbPath = path.resolve(import.meta.dir, '../../utils/db.ts');
@@ -33,7 +33,7 @@ mock.module(dbJsPath, () => ({ default: mockDb, prisma: mockDb, prismaRead: mock
 
 const { relayPinsUpdate } = await import('../../services/features/channelLinkService');
 
-// Le cache des liens est mémorisé par salon : chaque test travaille sur ses
+// Le cache des ponts est mémorisé par salon : chaque test travaille sur ses
 // propres identifiants pour ne pas hériter du précédent.
 let salonSeq = 0;
 
@@ -76,49 +76,51 @@ function makeClient(channels: Record<string, Record<string, FakeChannel>>) {
   return { guilds: { cache: { get: (id: string) => guilds[id] } } };
 }
 
-/** Un pont ordinaire, bidirectionnel, avec la synchronisation d'épinglage. */
-function makeLink(overrides: LinkRow = {}) {
+type MemberSpec = { guildId: string; channelId: string; mode?: string; enabled?: boolean };
+
+/** Un pont ordinaire, tous salons émetteurs et récepteurs, épinglages synchronisés. */
+function makeGroup(members: MemberSpec[], overrides: GroupRow = {}) {
   salonSeq += 1;
   return {
-    id: `lien-${salonSeq}`,
+    id: `pont-${salonSeq}`,
     enabled: true,
-    sourceGuildId: 'G-A',
-    sourceChannelId: `salon-a-${salonSeq}`,
-    targetGuildId: 'G-B',
-    targetChannelId: `salon-b-${salonSeq}`,
-    direction: 'BIDIRECTIONAL',
-    sourceRelayMode: 'WEBHOOK',
-    targetRelayMode: 'WEBHOOK',
-    sourceWebhookId: 'wh-a',
-    targetWebhookId: 'wh-b',
     relayPins: true,
+    members: members.map((member, index) => ({
+      id: `membre-${salonSeq}-${index}`,
+      guildId: member.guildId,
+      channelId: member.channelId,
+      mode: member.mode ?? 'BOTH',
+      relayMode: 'WEBHOOK',
+      webhookId: `wh-${index}`,
+      enabled: member.enabled ?? true,
+    })),
     ...overrides,
   };
 }
 
+function salon(name: string) {
+  return `${name}-${salonSeq + 1}`;
+}
+
 beforeEach(() => {
-  linkRows = [];
+  groupRows = [];
   mappingRows = [];
 });
 
 describe('relayPinsUpdate', () => {
   test('épingle en face le message dont le pont connaît la copie', async () => {
-    const link = makeLink();
-    linkRows = [link];
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }])];
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.sourceChannelId,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.targetChannelId,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
     ];
 
-    const local = makeChannel(link.sourceChannelId, ['msg-origine']);
-    const distant = makeChannel(link.targetChannelId, []);
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const local = makeChannel(a, ['msg-origine']);
+    const distant = makeChannel(b, []);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.pin).toHaveBeenCalledTimes(1);
     expect(distant.messages.pin.mock.calls[0][0]).toBe('msg-copie');
@@ -126,126 +128,184 @@ describe('relayPinsUpdate', () => {
   });
 
   test('remonte l\'épinglage d\'une copie relayée vers le message d\'origine', async () => {
-    const link = makeLink();
-    linkRows = [link];
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }])];
     // Le salon où l'on épingle héberge cette fois la copie : l'original vit en face.
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.targetChannelId,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.sourceChannelId,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: b, relayedMessageId: 'msg-copie', relayedChannelId: a },
     ];
 
-    const local = makeChannel(link.sourceChannelId, ['msg-copie']);
-    const distant = makeChannel(link.targetChannelId, []);
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const local = makeChannel(a, ['msg-copie']);
+    const distant = makeChannel(b, []);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.pin.mock.calls[0][0]).toBe('msg-origine');
   });
 
-  test('décroche en face le message qui vient d\'être désépinglé', async () => {
-    const link = makeLink();
-    linkRows = [link];
+  test('propage l\'épinglage à tous les salons du pont', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    const c = salon('salon-c');
+    groupRows = [makeGroup([
+      { guildId: 'G-A', channelId: a },
+      { guildId: 'G-B', channelId: b },
+      { guildId: 'G-C', channelId: c },
+    ])];
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.sourceChannelId,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.targetChannelId,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'copie-b', relayedChannelId: b },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'copie-c', relayedChannelId: c },
     ];
 
-    const local = makeChannel(link.sourceChannelId, []);
-    const distant = makeChannel(link.targetChannelId, ['msg-copie']);
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const local = makeChannel(a, ['msg-origine']);
+    const versB = makeChannel(b, []);
+    const versC = makeChannel(c, []);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: versB }, 'G-C': { [c]: versC } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
+
+    expect(versB.messages.pin.mock.calls[0][0]).toBe('copie-b');
+    expect(versC.messages.pin.mock.calls[0][0]).toBe('copie-c');
+  });
+
+  test('épingler une copie aligne aussi les autres copies du même message', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    const c = salon('salon-c');
+    groupRows = [makeGroup([
+      { guildId: 'G-A', channelId: a },
+      { guildId: 'G-B', channelId: b },
+      { guildId: 'G-C', channelId: c },
+    ])];
+    // L'original vit en A, on épingle sa copie en B : C n'est relié à B par aucune
+    // ligne directe, seul le passage par l'original permet de la retrouver.
+    mappingRows = [
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'copie-b', relayedChannelId: b },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'copie-c', relayedChannelId: c },
+    ];
+
+    const local = makeChannel(b, ['copie-b']);
+    const versA = makeChannel(a, []);
+    const versC = makeChannel(c, []);
+    const client = makeClient({ 'G-A': { [a]: versA }, 'G-B': { [b]: local }, 'G-C': { [c]: versC } });
+
+    await relayPinsUpdate('G-B', b, client as never);
+
+    expect(versA.messages.pin.mock.calls[0][0]).toBe('msg-origine');
+    expect(versC.messages.pin.mock.calls[0][0]).toBe('copie-c');
+  });
+
+  test('décroche en face le message qui vient d\'être désépinglé', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }])];
+    mappingRows = [
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
+    ];
+
+    const local = makeChannel(a, []);
+    const distant = makeChannel(b, ['msg-copie']);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
+
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.unpin).toHaveBeenCalledTimes(1);
     expect(distant.messages.unpin.mock.calls[0][0]).toBe('msg-copie');
   });
 
   test('ne touche pas aux messages épinglés que le pont n\'a jamais relayés', async () => {
-    const link = makeLink();
-    linkRows = [link];
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }])];
     mappingRows = [];
 
-    const local = makeChannel(link.sourceChannelId, []);
+    const local = makeChannel(a, []);
     // Épinglage propre au serveur d'en face : il ne regarde pas le pont.
-    const distant = makeChannel(link.targetChannelId, ['annonce-locale']);
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const distant = makeChannel(b, ['annonce-locale']);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.unpin).not.toHaveBeenCalled();
     expect(distant.messages.pin).not.toHaveBeenCalled();
   });
 
   test('ne désépingle rien quand la liste d\'en face est illisible', async () => {
-    const link = makeLink();
-    linkRows = [link];
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }])];
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.sourceChannelId,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.targetChannelId,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
     ];
 
-    const local = makeChannel(link.sourceChannelId, ['msg-origine']);
+    const local = makeChannel(a, ['msg-origine']);
     // Permission manquante : croire le salon vide reviendrait à tout décrocher.
-    const distant = makeChannel(link.targetChannelId, 'illisible');
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const distant = makeChannel(b, 'illisible');
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.pin).not.toHaveBeenCalled();
     expect(distant.messages.unpin).not.toHaveBeenCalled();
   });
 
-  test('laisse les épinglages tranquilles quand le lien ne les relaie pas', async () => {
-    const link = makeLink({ relayPins: false });
-    linkRows = [link];
+  test('laisse les épinglages tranquilles quand le pont ne les relaie pas', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([{ guildId: 'G-A', channelId: a }, { guildId: 'G-B', channelId: b }], { relayPins: false })];
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.sourceChannelId as string,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.targetChannelId as string,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
     ];
 
-    const local = makeChannel(link.sourceChannelId as string, ['msg-origine']);
-    const distant = makeChannel(link.targetChannelId as string, []);
-    const client = makeClient({ 'G-A': { [local.id]: local }, 'G-B': { [distant.id]: distant } });
+    const local = makeChannel(a, ['msg-origine']);
+    const distant = makeChannel(b, []);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
 
-    await relayPinsUpdate('G-A', link.sourceChannelId as string, client as never);
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.pin).not.toHaveBeenCalled();
   });
 
-  test('un lien unidirectionnel ne remonte pas les épinglages de la destination', async () => {
-    const link = makeLink({ direction: 'UNIDIRECTIONAL' });
-    linkRows = [link];
+  test('un salon qui ne fait que recevoir ne remonte pas ses épinglages', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([
+      { guildId: 'G-A', channelId: a, mode: 'SEND_ONLY' },
+      { guildId: 'G-B', channelId: b, mode: 'RECEIVE_ONLY' },
+    ])];
     mappingRows = [
-      {
-        sourceMessageId: 'msg-origine',
-        sourceChannelId: link.sourceChannelId as string,
-        relayedMessageId: 'msg-copie',
-        relayedChannelId: link.targetChannelId as string,
-      },
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
     ];
 
-    const local = makeChannel(link.targetChannelId as string, ['msg-copie']);
-    const distant = makeChannel(link.sourceChannelId as string, []);
-    const client = makeClient({ 'G-B': { [local.id]: local }, 'G-A': { [distant.id]: distant } });
+    // Épinglage posé du côté qui ne fait que recevoir : il ne remonte pas, comme
+    // le faisait déjà l'ancien lien unidirectionnel.
+    const local = makeChannel(b, ['msg-copie']);
+    const distant = makeChannel(a, []);
+    const client = makeClient({ 'G-A': { [a]: distant }, 'G-B': { [b]: local } });
 
-    await relayPinsUpdate('G-B', link.targetChannelId as string, client as never);
+    await relayPinsUpdate('G-B', b, client as never);
+
+    expect(distant.messages.pin).not.toHaveBeenCalled();
+  });
+
+  test('un salon en pause n\'entraîne plus les épinglages du pont', async () => {
+    const a = salon('salon-a');
+    const b = salon('salon-b');
+    groupRows = [makeGroup([
+      { guildId: 'G-A', channelId: a },
+      { guildId: 'G-B', channelId: b, enabled: false },
+    ])];
+    mappingRows = [
+      { sourceMessageId: 'msg-origine', sourceChannelId: a, relayedMessageId: 'msg-copie', relayedChannelId: b },
+    ];
+
+    const local = makeChannel(a, ['msg-origine']);
+    const distant = makeChannel(b, []);
+    const client = makeClient({ 'G-A': { [a]: local }, 'G-B': { [b]: distant } });
+
+    await relayPinsUpdate('G-A', a, client as never);
 
     expect(distant.messages.pin).not.toHaveBeenCalled();
   });

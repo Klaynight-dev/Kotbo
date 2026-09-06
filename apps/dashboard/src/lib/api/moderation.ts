@@ -69,6 +69,58 @@ export async function fetchChannelsManagementConfig(guildId = authStore.selected
   });
 }
 
+// ── Vue « Par salon » ────────────────────────────────────────────────────────
+// Les salons du serveur avec, pour chacun, les fonctionnalites qui y sont
+// actives. Complete la vue par fonctionnalite, qui obligeait a parcourir cinq
+// onglets pour savoir ce qui touchait un salon donne.
+
+export async function fetchChannelsByChannel(guildId = authStore.selectedGuildId) {
+  return dashboardRequest('/channels-management/by-channel', {
+    method: 'GET',
+    guildId,
+    errorContext: 'API Error (Channels By Channel):',
+    silent: true,
+  });
+}
+
+export async function toggleChannelFeature(
+  channelId: string,
+  feature: string,
+  enabled: boolean,
+  guildId = authStore.selectedGuildId,
+) {
+  return dashboardRequest(`/channels-management/by-channel/${channelId}`, {
+    method: 'PATCH',
+    payload: { feature, enabled },
+    guildId,
+    silent: true,
+    errorContext: 'API Error (Toggle Channel Feature):',
+  });
+}
+
+export async function renameDiscordChannel(
+  channelId: string,
+  name: string,
+  guildId = authStore.selectedGuildId,
+) {
+  return dashboardRequest(`/channels-management/channel/${channelId}`, {
+    method: 'PATCH',
+    payload: { name },
+    guildId,
+    silent: true,
+    errorContext: 'API Error (Rename Channel):',
+  });
+}
+
+export async function deleteDiscordChannel(channelId: string, guildId = authStore.selectedGuildId) {
+  return dashboardRequest(`/channels-management/channel/${channelId}`, {
+    method: 'DELETE',
+    guildId,
+    silent: true,
+    errorContext: 'API Error (Delete Channel):',
+  });
+}
+
 export async function updateChannelsManagementConfig(
   payload: {
     autoThreadEnabled?: boolean;
@@ -105,6 +157,8 @@ export async function updateChannelsManagementConfig(
     verificationWarnReason?: string;
     warnWeightingEnabled?: boolean;
     warnDecayDays?: number | null;
+    countArchivedInWarnScore?: boolean;
+    warnAutoArchiveDays?: number | null;
     wordStatsEnabled?: boolean;
     banHygieneEnabled?: boolean;
   },

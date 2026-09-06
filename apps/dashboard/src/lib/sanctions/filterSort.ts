@@ -28,6 +28,12 @@ export interface Sanction {
   durationSeconds: number | null;
   status: string;
   reason: string;
+  /** Non nul = sanction archivee : desactivee mais conservee. */
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+  /** false = contestation verrouillee par le staff. */
+  appealable?: boolean;
+  appealLockReason?: string | null;
 }
 
 export function filterSanctions(

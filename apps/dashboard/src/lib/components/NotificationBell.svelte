@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { notificationsStore } from '../stores/notifications.svelte';
   import { authStore } from '../stores/auth.svelte';
+  import { subscribeRealtime } from '../stores/realtime.svelte';
   import { slide } from 'svelte/transition';
   import Papicon from './Papicon.svelte';
   import { m } from '../i18n';
@@ -16,9 +17,13 @@
   });
 
   onMount(() => {
-    const interval = setInterval(() => {
-      notificationsStore.fetchNotifications();
-    }, 60000);
+    const unsubscribe = subscribeRealtime({
+      reasons: ['notifications_updated'],
+      fallbackMs: 120_000,
+      onUpdate: () => {
+        void notificationsStore.fetchNotifications(true);
+      },
+    });
 
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -29,7 +34,7 @@
     window.addEventListener('click', handleClick);
 
     return () => {
-      clearInterval(interval);
+      unsubscribe();
       window.removeEventListener('click', handleClick);
     };
   });

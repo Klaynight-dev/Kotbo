@@ -1,69 +1,74 @@
-import { type APIEmbed, type Client, type Message, type MessageReaction, type TextChannel, type NewsChannel, type ThreadChannel, type User, EmbedBuilder, WebhookClient } from 'discord.js';
+import { type APIEmbed, type Client, type Message, type MessageReaction, type TextChannel, type NewsChannel, type ThreadChannel, type User, EmbedBuilder, PermissionFlagsBits, StickerFormatType, WebhookClient } from 'discord.js';
 import prisma from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
 import { COLORS } from '../../utils/embeds.js';
 import { cache } from '../../utils/cache.js';
 import { randomBytes } from 'node:crypto';
-import type { ChannelLink, ChannelLinkInvite } from '@prisma/client';
+import type { ChannelLinkGroup, ChannelLinkGroupMember, ChannelLinkInvite } from '@prisma/client';
 import { isGuildActivated } from '../../utils/activation.js';
 import { refreshLinkGuestGuilds } from './channelLinkGuestService.js';
 import { INVITE_SOURCE, recordBotInvite } from '../analytics/inviteService.js';
 
 const TAG = 'ChannelLink';
 
+export type LinkGroup = ChannelLinkGroup & { members: ChannelLinkGroupMember[] };
+export type LinkMemberMode = 'BOTH' | 'SEND_ONLY' | 'RECEIVE_ONLY';
+export type LinkRelayMode = 'WEBHOOK' | 'EMBED';
+
 export const LINK_NEEDS_ACTIVATED_SIDE =
-  "Au moins un des deux serveurs doit disposer d'une clé d'activation Kotbo. " +
-  "L'autre n'en a pas besoin : il passera en mode liaison seule.";
+  "Au moins un des serveurs du pont doit disposer d'une clé d'activation Kotbo. " +
+  "Les autres n'en ont pas besoin : ils passent en mode liaison seule.";
 
 /**
  * Un pont est toujours l'extension d'une licence existante : le serveur qui
- * possède le code invite, l'autre accepte sans code. Deux serveurs dépourvus de
- * code ne peuvent donc pas se relier entre eux.
+ * possède le code invite, les autres rejoignent sans code. Un pont dont aucun
+ * membre n'est activé ne peut donc pas exister.
  */
-function hasActivatedSide(guildA: string, guildB: string): boolean {
-  return isGuildActivated(guildA) || isGuildActivated(guildB);
+function hasActivatedMember(guildIds: string[]): boolean {
+  return guildIds.some((id) => isGuildActivated(id));
 }
 
 /**
- * Le mapping message source → message relayé n'existe que pour propager les
- * éditions, les suppressions, les réactions et les épinglages. Quand le lien ne
+ * Le mapping message source → messages relayés n'existe que pour propager les
+ * éditions, les suppressions, les réactions et les épinglages. Quand le pont ne
  * relaie rien de tout cela, l'écrire reviendrait à conserver un journal des
  * messages sans qu'aucune fonctionnalité ne s'en serve : on s'en abstient.
  */
-export function needsMessageMapping(link: ChannelLink): boolean {
-  return link.relayEdits || link.relayDeletes || link.relayReactions || link.relayPins;
+export function needsMessageMapping(group: ChannelLinkGroup): boolean {
+  return group.relayEdits || group.relayDeletes || group.relayReactions || group.relayPins;
 }
 
 // ── Cache helpers ───────────────────────────────────────────
 
-function linksCacheKey(guildId: string, channelId: string) {
-  return `channellinks:${guildId}:${channelId}`;
+function groupsCacheKey(guildId: string, channelId: string) {
+  return `channellinkgroups:${guildId}:${channelId}`;
 }
 
-export async function getLinksForChannel(guildId: string, channelId: string): Promise<ChannelLink[]> {
-  const key = linksCacheKey(guildId, channelId);
-  const cached = await cache.get<ChannelLink[]>(key);
+export async function getGroupsForChannel(guildId: string, channelId: string): Promise<LinkGroup[]> {
+  const key = groupsCacheKey(guildId, channelId);
+  const cached = await cache.get<LinkGroup[]>(key);
   if (cached) return cached;
 
-  const links = await prisma.channelLink.findMany({
+  const groups = await prisma.channelLinkGroup.findMany({
     where: {
       enabled: true,
-      OR: [
-        { sourceGuildId: guildId, sourceChannelId: channelId },
-        { targetGuildId: guildId, targetChannelId: channelId },
-      ],
+      members: { some: { guildId, channelId, enabled: true } },
     },
+    include: { members: true },
   });
 
-  // Le cas majoritaire est "aucun lien". Le cacher évite Redis + SQL pour
+  // Le cas majoritaire est "aucun pont". Le cacher évite Redis + SQL pour
   // chaque message publié dans un salon ordinaire.
-  await cache.set(key, links, links.length > 0 ? 120 : 30);
-  return links;
+  await cache.set(key, groups, groups.length > 0 ? 120 : 30);
+  return groups;
 }
 
-export async function invalidateLinkCache(link: ChannelLink) {
-  await cache.delete(linksCacheKey(link.sourceGuildId, link.sourceChannelId));
-  await cache.delete(linksCacheKey(link.targetGuildId, link.targetChannelId));
+export async function invalidateGroupCache(group: LinkGroup) {
+  await Promise.all(group.members.map((m) => cache.delete(groupsCacheKey(m.guildId, m.channelId))));
+}
+
+async function loadGroup(groupId: string): Promise<LinkGroup | null> {
+  return prisma.channelLinkGroup.findUnique({ where: { id: groupId }, include: { members: true } });
 }
 
 // ── Invite code generation ──────────────────────────────────
@@ -72,14 +77,118 @@ export function generateInviteCode(): string {
   return randomBytes(6).toString('hex').toUpperCase();
 }
 
-// ── Invite management ───────────────────────────────────────
+// ── Destinataires ───────────────────────────────────────────
+
+/**
+ * Les membres qui doivent recevoir ce qui vient d'être publié dans un salon.
+ *
+ * Remplace l'ancien `resolveRelay`, qui ne connaissait qu'une destination : un
+ * pont a maintenant N participants, et l'émetteur est exclu de sa propre
+ * diffusion. `mode` filtre les deux sens indépendamment - un membre
+ * `RECEIVE_ONLY` n'émet jamais, un membre `SEND_ONLY` ne reçoit jamais.
+ */
+function resolveTargets(group: LinkGroup, guildId: string, channelId: string) {
+  const sender = group.members.find((m) => m.guildId === guildId && m.channelId === channelId);
+  if (!sender || !sender.enabled || sender.mode === 'RECEIVE_ONLY') return null;
+
+  const targets = group.members.filter(
+    (m) => m.id !== sender.id && m.enabled && m.mode !== 'SEND_ONLY',
+  );
+  if (targets.length === 0) return null;
+
+  return { sender, targets };
+}
+
+function memberFor(group: LinkGroup, guildId: string, channelId: string) {
+  return group.members.find((m) => m.guildId === guildId && m.channelId === channelId) ?? null;
+}
+
+// ── Correspondances de messages ─────────────────────────────
+
+async function saveMessageMapping(
+  group: LinkGroup,
+  sourceMessageId: string,
+  sourceChannelId: string,
+  target: ChannelLinkGroupMember,
+  relayedMessageId: string,
+  webhookId?: string | null,
+) {
+  // Rien à conserver si le pont ne relaie ni édition, ni suppression, ni
+  // réaction : il fonctionne alors sans laisser la moindre trace en base.
+  if (!needsMessageMapping(group)) return;
+
+  await prisma.channelLinkGroupMessage.upsert({
+    where: {
+      groupId_sourceMessageId_relayedChannelId: {
+        groupId: group.id,
+        sourceMessageId,
+        relayedChannelId: target.channelId,
+      },
+    },
+    update: { relayedMessageId, relayedGuildId: target.guildId, webhookId },
+    create: {
+      groupId: group.id,
+      sourceMessageId,
+      sourceChannelId,
+      relayedMessageId,
+      relayedChannelId: target.channelId,
+      relayedGuildId: target.guildId,
+      webhookId,
+    },
+  }).catch((err) => logger.warn(TAG, 'Impossible de sauvegarder le mapping message', err));
+}
+
+/**
+ * Le message d'origine d'un message donné.
+ *
+ * Un identifiant peut désigner l'original ou l'une de ses copies : dans un pont
+ * à plusieurs serveurs, passer d'une copie à une autre suppose de remonter
+ * d'abord à l'original, qui est le seul point commun des deux.
+ */
+async function resolveOrigin(groupId: string, messageId: string, channelId: string) {
+  const asCopy = await prisma.channelLinkGroupMessage.findFirst({
+    where: { groupId, relayedMessageId: messageId, relayedChannelId: channelId },
+  });
+  if (asCopy) {
+    return { messageId: asCopy.sourceMessageId, channelId: asCopy.sourceChannelId, isCopy: true };
+  }
+
+  const isSource = await prisma.channelLinkGroupMessage.findFirst({
+    where: { groupId, sourceMessageId: messageId, sourceChannelId: channelId },
+    select: { id: true },
+  });
+  if (isSource) return { messageId, channelId, isCopy: false };
+
+  return null;
+}
+
+/** Toutes les incarnations d'un message dans le pont, salon par salon. */
+async function messageLocations(groupId: string, originMessageId: string, originChannelId: string) {
+  const copies = await prisma.channelLinkGroupMessage.findMany({
+    where: { groupId, sourceMessageId: originMessageId },
+  });
+
+  const locations = new Map<string, { messageId: string; guildId: string | null; webhookId: string | null }>();
+  locations.set(originChannelId, { messageId: originMessageId, guildId: null, webhookId: null });
+  for (const copy of copies) {
+    locations.set(copy.relayedChannelId, {
+      messageId: copy.relayedMessageId,
+      guildId: copy.relayedGuildId,
+      webhookId: copy.webhookId,
+    });
+  }
+  return locations;
+}
+
+// ── Invitations ─────────────────────────────────────────────
 
 export async function createLinkInvite(opts: {
   guildId: string;
   channelId: string;
   createdByUserId: string;
-  direction?: 'BIDIRECTIONAL' | 'UNIDIRECTIONAL';
-  relayMode?: 'WEBHOOK' | 'EMBED';
+  groupId?: string | null;
+  memberMode?: LinkMemberMode;
+  relayMode?: LinkRelayMode;
   relayText?: boolean;
   relayImages?: boolean;
   relayEmbeds?: boolean;
@@ -89,6 +198,7 @@ export async function createLinkInvite(opts: {
   relayThreads?: boolean;
   relayPolls?: boolean;
   relayPins?: boolean;
+  maxUses?: number;
   expiresInMinutes?: number;
 }): Promise<ChannelLinkInvite> {
   const code = generateInviteCode();
@@ -99,7 +209,8 @@ export async function createLinkInvite(opts: {
       code,
       guildId: opts.guildId,
       channelId: opts.channelId,
-      direction: opts.direction ?? 'BIDIRECTIONAL',
+      groupId: opts.groupId ?? null,
+      memberMode: opts.memberMode ?? 'BOTH',
       relayMode: opts.relayMode ?? 'WEBHOOK',
       relayText: opts.relayText ?? true,
       relayImages: opts.relayImages ?? true,
@@ -110,12 +221,21 @@ export async function createLinkInvite(opts: {
       relayThreads: opts.relayThreads ?? false,
       relayPolls: opts.relayPolls ?? false,
       relayPins: opts.relayPins ?? true,
+      maxUses: opts.maxUses ?? 1,
       expiresAt,
       createdByUserId: opts.createdByUserId,
     },
   });
 }
 
+/**
+ * Accepte une invitation : le salon rejoint le pont du serveur invitant.
+ *
+ * Si l'invitation ne désigne pas encore de pont (premier usage du code), il est
+ * créé à ce moment-là avec le salon invitant comme premier membre. Un même code
+ * peut ainsi rassembler autant de serveurs que `maxUses` l'autorise, tous dans
+ * le même pont.
+ */
 export async function acceptLinkInvite(opts: {
   code: string;
   targetGuildId: string;
@@ -123,18 +243,13 @@ export async function acceptLinkInvite(opts: {
   updateTopic?: boolean;
   includeTopicLink?: boolean;
   client: Client;
-}): Promise<{ link: ChannelLink; invite: ChannelLinkInvite } | { error: string }> {
-  const invite = await prisma.channelLinkInvite.findUnique({
-    where: { code: opts.code },
-  });
+}): Promise<{ group: LinkGroup; invite: ChannelLinkInvite } | { error: string }> {
+  const invite = await prisma.channelLinkInvite.findUnique({ where: { code: opts.code } });
 
   if (!invite) return { error: 'Code d\'invitation invalide.' };
   if (invite.status !== 'PENDING') return { error: 'Cette invitation a déjà été utilisée ou révoquée.' };
   if (invite.expiresAt < new Date()) {
-    await prisma.channelLinkInvite.update({
-      where: { id: invite.id },
-      data: { status: 'EXPIRED' },
-    });
+    await prisma.channelLinkInvite.update({ where: { id: invite.id }, data: { status: 'EXPIRED' } });
     return { error: 'Cette invitation a expiré.' };
   }
   if (invite.uses >= invite.maxUses) return { error: 'Cette invitation a atteint son nombre maximum d\'utilisations.' };
@@ -143,169 +258,261 @@ export async function acceptLinkInvite(opts: {
     return { error: 'Impossible de lier un salon à lui-même.' };
   }
 
-  if (!hasActivatedSide(invite.guildId, opts.targetGuildId)) {
-    return { error: LINK_NEEDS_ACTIVATED_SIDE };
+  let group = invite.groupId ? await loadGroup(invite.groupId) : null;
+
+  if (group) {
+    if (memberFor(group, opts.targetGuildId, opts.targetChannelId)) {
+      return { error: 'Ce salon fait déjà partie de ce pont.' };
+    }
+    if (!hasActivatedMember([...group.members.map((m) => m.guildId), opts.targetGuildId])) {
+      return { error: LINK_NEEDS_ACTIVATED_SIDE };
+    }
+  } else {
+    if (!hasActivatedMember([invite.guildId, opts.targetGuildId])) {
+      return { error: LINK_NEEDS_ACTIVATED_SIDE };
+    }
+
+    // Un code sans pont en ouvre un nouveau : sans cette garde, deux codes
+    // successifs entre les deux mêmes salons créeraient deux ponts parallèles,
+    // et chaque message partirait en double.
+    const alreadyBridged = await prisma.channelLinkGroup.findFirst({
+      where: {
+        AND: [
+          { members: { some: { guildId: invite.guildId, channelId: invite.channelId } } },
+          { members: { some: { guildId: opts.targetGuildId, channelId: opts.targetChannelId } } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (alreadyBridged) return { error: 'Ces deux salons sont déjà reliés.' };
   }
-
-  const existing = await prisma.channelLink.findFirst({
-    where: {
-      OR: [
-        {
-          sourceGuildId: invite.guildId,
-          sourceChannelId: invite.channelId,
-          targetGuildId: opts.targetGuildId,
-          targetChannelId: opts.targetChannelId,
-        },
-        {
-          sourceGuildId: opts.targetGuildId,
-          sourceChannelId: opts.targetChannelId,
-          targetGuildId: invite.guildId,
-          targetChannelId: invite.channelId,
-        },
-      ],
-    },
-  });
-
-  if (existing) return { error: 'Ces deux salons sont déjà liés.' };
-
-  const sourceWebhookId = await createRelayWebhook(opts.client, invite.guildId, invite.channelId);
-  const targetWebhookId = await createRelayWebhook(opts.client, opts.targetGuildId, opts.targetChannelId);
 
   const shouldUpdateTopic = opts.updateTopic ?? true;
   const includeLink = opts.includeTopicLink ?? true;
 
-  const link = await prisma.channelLink.create({
+  if (!group) {
+    const inviterWebhookId = await createRelayWebhook(opts.client, invite.guildId, invite.channelId);
+    const created = await prisma.channelLinkGroup.create({
+      data: {
+        ownerGuildId: invite.guildId,
+        relayText: invite.relayText,
+        relayImages: invite.relayImages,
+        relayEmbeds: invite.relayEmbeds,
+        relayReactions: invite.relayReactions,
+        relayEdits: invite.relayEdits,
+        relayDeletes: invite.relayDeletes,
+        relayThreads: invite.relayThreads,
+        relayPolls: invite.relayPolls,
+        relayPins: invite.relayPins,
+        updateTopic: shouldUpdateTopic,
+        createdByUserId: invite.createdByUserId,
+        members: {
+          create: {
+            guildId: invite.guildId,
+            channelId: invite.channelId,
+            mode: invite.direction === 'UNIDIRECTIONAL' ? 'SEND_ONLY' : 'BOTH',
+            relayMode: invite.relayMode,
+            webhookId: inviterWebhookId,
+            addedByUserId: invite.createdByUserId,
+          },
+        },
+      },
+      include: { members: true },
+    });
+    group = created;
+    await prisma.channelLinkInvite.update({ where: { id: invite.id }, data: { groupId: created.id } });
+  }
+
+  const targetWebhookId = await createRelayWebhook(opts.client, opts.targetGuildId, opts.targetChannelId);
+  await prisma.channelLinkGroupMember.create({
     data: {
-      sourceGuildId: invite.guildId,
-      sourceChannelId: invite.channelId,
-      targetGuildId: opts.targetGuildId,
-      targetChannelId: opts.targetChannelId,
-      direction: invite.direction,
-      sourceRelayMode: invite.relayMode,
-      targetRelayMode: invite.relayMode,
-      sourceWebhookId,
-      targetWebhookId,
-      relayText: invite.relayText,
-      relayImages: invite.relayImages,
-      relayEmbeds: invite.relayEmbeds,
-      relayReactions: invite.relayReactions,
-      relayEdits: invite.relayEdits,
-      relayDeletes: invite.relayDeletes,
-      relayThreads: invite.relayThreads,
-      relayPolls: invite.relayPolls,
-      relayPins: invite.relayPins,
-      updateTopic: shouldUpdateTopic,
-      createdByUserId: invite.createdByUserId,
-      createdByGuildId: invite.guildId,
+      groupId: group.id,
+      guildId: opts.targetGuildId,
+      channelId: opts.targetChannelId,
+      mode: invite.memberMode,
+      relayMode: invite.relayMode,
+      webhookId: targetWebhookId,
+      addedByUserId: invite.createdByUserId,
     },
   });
 
+  const uses = invite.uses + 1;
   await prisma.channelLinkInvite.update({
     where: { id: invite.id },
-    data: { status: 'ACCEPTED', uses: { increment: 1 } },
+    data: { status: uses >= invite.maxUses ? 'ACCEPTED' : 'PENDING', uses },
   });
+
+  const refreshed = (await loadGroup(group.id))!;
+  await invalidateGroupCache(refreshed);
 
   // Le serveur qui vient d'accepter sans code devient un serveur invité : le
   // cache doit s'ouvrir avant le premier message, sinon la garde d'activation
   // continuerait de tout jeter.
   await refreshLinkGuestGuilds();
 
-  if (shouldUpdateTopic) {
-    await Promise.all([
-      updateChannelTopic(opts.client, invite.guildId, invite.channelId, opts.targetChannelId, opts.targetGuildId, invite.createdByUserId, includeLink),
-      updateChannelTopic(opts.client, opts.targetGuildId, opts.targetChannelId, invite.channelId, invite.guildId, invite.createdByUserId, includeLink),
-    ]);
-  }
+  if (refreshed.updateTopic) await refreshGroupTopics(opts.client, refreshed, includeLink);
 
-  return { link, invite };
+  return { group: refreshed, invite };
 }
 
-// ── Direct link creation (admin on both servers) ────────────
+// ── Création directe (admin des serveurs concernés) ─────────
 
-export async function createDirectLink(opts: {
-  sourceGuildId: string;
-  sourceChannelId: string;
-  targetGuildId: string;
-  targetChannelId: string;
+export async function createDirectGroup(opts: {
+  ownerGuildId: string;
+  ownerChannelId: string;
+  targets: { guildId: string; channelId: string; mode?: LinkMemberMode }[];
   createdByUserId: string;
-  direction?: 'BIDIRECTIONAL' | 'UNIDIRECTIONAL';
-  relayMode?: 'WEBHOOK' | 'EMBED';
+  name?: string | null;
+  ownerMode?: LinkMemberMode;
+  relayMode?: LinkRelayMode;
   relayThreads?: boolean;
   relayPolls?: boolean;
   relayPins?: boolean;
   updateTopic?: boolean;
   includeTopicLink?: boolean;
   client: Client;
-}): Promise<ChannelLink | { error: string }> {
-  if (opts.sourceGuildId === opts.targetGuildId && opts.sourceChannelId === opts.targetChannelId) {
-    return { error: 'Impossible de lier un salon à lui-même.' };
+}): Promise<LinkGroup | { error: string }> {
+  const seen = new Set([`${opts.ownerGuildId}:${opts.ownerChannelId}`]);
+  const targets = [];
+  for (const target of opts.targets) {
+    const key = `${target.guildId}:${target.channelId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push(target);
   }
 
-  if (!hasActivatedSide(opts.sourceGuildId, opts.targetGuildId)) {
-    return { error: LINK_NEEDS_ACTIVATED_SIDE };
-  }
+  if (targets.length === 0) return { error: 'Il faut au moins un salon distinct à relier.' };
 
-  const existing = await prisma.channelLink.findFirst({
+  const guildIds = [opts.ownerGuildId, ...targets.map((t) => t.guildId)];
+  if (!hasActivatedMember(guildIds)) return { error: LINK_NEEDS_ACTIVATED_SIDE };
+
+  const alreadyLinked = await prisma.channelLinkGroupMember.findFirst({
     where: {
-      OR: [
-        {
-          sourceGuildId: opts.sourceGuildId,
-          sourceChannelId: opts.sourceChannelId,
-          targetGuildId: opts.targetGuildId,
-          targetChannelId: opts.targetChannelId,
-        },
-        {
-          sourceGuildId: opts.targetGuildId,
-          sourceChannelId: opts.targetChannelId,
-          targetGuildId: opts.sourceGuildId,
-          targetChannelId: opts.sourceChannelId,
-        },
-      ],
+      guildId: opts.ownerGuildId,
+      channelId: opts.ownerChannelId,
+      group: { members: { some: { OR: targets.map((t) => ({ guildId: t.guildId, channelId: t.channelId })) } } },
     },
   });
-
-  if (existing) return { error: 'Ces deux salons sont déjà liés.' };
-
-  const sourceWebhookId = await createRelayWebhook(opts.client, opts.sourceGuildId, opts.sourceChannelId);
-  const targetWebhookId = await createRelayWebhook(opts.client, opts.targetGuildId, opts.targetChannelId);
+  if (alreadyLinked) return { error: 'Un pont relie déjà ce salon à l\'un des salons choisis.' };
 
   const shouldUpdateTopic = opts.updateTopic ?? true;
-  const includeLink = opts.includeTopicLink ?? true;
+  const relayMode = opts.relayMode ?? 'WEBHOOK';
 
-  const link = await prisma.channelLink.create({
+  const members = await Promise.all(
+    [{ guildId: opts.ownerGuildId, channelId: opts.ownerChannelId, mode: opts.ownerMode }, ...targets].map(
+      async (member) => ({
+        guildId: member.guildId,
+        channelId: member.channelId,
+        mode: member.mode ?? 'BOTH',
+        relayMode,
+        webhookId: await createRelayWebhook(opts.client, member.guildId, member.channelId),
+        addedByUserId: opts.createdByUserId,
+      }),
+    ),
+  );
+
+  const group = await prisma.channelLinkGroup.create({
     data: {
-      sourceGuildId: opts.sourceGuildId,
-      sourceChannelId: opts.sourceChannelId,
-      targetGuildId: opts.targetGuildId,
-      targetChannelId: opts.targetChannelId,
-      direction: opts.direction ?? 'BIDIRECTIONAL',
-      sourceRelayMode: opts.relayMode ?? 'WEBHOOK',
-      targetRelayMode: opts.relayMode ?? 'WEBHOOK',
-      sourceWebhookId,
-      targetWebhookId,
+      name: opts.name ?? null,
+      ownerGuildId: opts.ownerGuildId,
       relayReactions: true,
       relayThreads: opts.relayThreads ?? false,
       relayPolls: opts.relayPolls ?? false,
       relayPins: opts.relayPins ?? true,
       updateTopic: shouldUpdateTopic,
       createdByUserId: opts.createdByUserId,
-      createdByGuildId: opts.sourceGuildId,
+      members: { create: members },
+    },
+    include: { members: true },
+  });
+
+  await invalidateGroupCache(group);
+  await refreshLinkGuestGuilds();
+
+  if (shouldUpdateTopic) await refreshGroupTopics(opts.client, group, opts.includeTopicLink ?? true);
+
+  return group;
+}
+
+export async function addGroupMember(opts: {
+  groupId: string;
+  guildId: string;
+  channelId: string;
+  addedByUserId: string;
+  mode?: LinkMemberMode;
+  relayMode?: LinkRelayMode;
+  includeTopicLink?: boolean;
+  client: Client;
+}): Promise<LinkGroup | { error: string }> {
+  const group = await loadGroup(opts.groupId);
+  if (!group) return { error: 'Pont introuvable.' };
+
+  if (memberFor(group, opts.guildId, opts.channelId)) {
+    return { error: 'Ce salon fait déjà partie du pont.' };
+  }
+  if (!hasActivatedMember([...group.members.map((m) => m.guildId), opts.guildId])) {
+    return { error: LINK_NEEDS_ACTIVATED_SIDE };
+  }
+
+  const webhookId = await createRelayWebhook(opts.client, opts.guildId, opts.channelId);
+  await prisma.channelLinkGroupMember.create({
+    data: {
+      groupId: group.id,
+      guildId: opts.guildId,
+      channelId: opts.channelId,
+      mode: opts.mode ?? 'BOTH',
+      relayMode: opts.relayMode ?? 'WEBHOOK',
+      webhookId,
+      addedByUserId: opts.addedByUserId,
     },
   });
 
+  const refreshed = (await loadGroup(group.id))!;
+  await invalidateGroupCache(refreshed);
   await refreshLinkGuestGuilds();
 
-  if (shouldUpdateTopic) {
-    await Promise.all([
-      updateChannelTopic(opts.client, opts.sourceGuildId, opts.sourceChannelId, opts.targetChannelId, opts.targetGuildId, opts.createdByUserId, includeLink),
-      updateChannelTopic(opts.client, opts.targetGuildId, opts.targetChannelId, opts.sourceChannelId, opts.sourceGuildId, opts.createdByUserId, includeLink),
-    ]);
-  }
+  if (refreshed.updateTopic) await refreshGroupTopics(opts.client, refreshed, opts.includeTopicLink ?? true);
 
-  return link;
+  return refreshed;
 }
 
-// ── Webhook management ──────────────────────────────────────
+/**
+ * Retire un salon du pont. Un pont réduit à un seul salon n'a plus d'objet : il
+ * est supprimé plutôt que laissé en place à ne rien relayer.
+ */
+export async function removeGroupMember(groupId: string, memberId: string, client?: Client): Promise<LinkGroup | null> {
+  const group = await loadGroup(groupId);
+  if (!group) return null;
+
+  const member = group.members.find((m) => m.id === memberId);
+  if (!member) return group;
+
+  await prisma.channelLinkGroupMember.delete({ where: { id: memberId } }).catch(() => null);
+  await invalidateGroupCache(group);
+
+  if (client && group.updateTopic) await clearChannelLinkTopic(client, member.guildId, member.channelId);
+
+  // Les correspondances de messages du salon retiré n'ont plus de destinataire.
+  await prisma.channelLinkGroupMessage
+    .deleteMany({ where: { groupId, OR: [{ sourceChannelId: member.channelId }, { relayedChannelId: member.channelId }] } })
+    .catch(() => null);
+  await prisma.channelLinkGroupThread
+    .deleteMany({ where: { groupId, OR: [{ sourceChannelId: member.channelId }, { relayedChannelId: member.channelId }] } })
+    .catch(() => null);
+
+  if (group.members.length - 1 < 2) {
+    await removeGroup(groupId, client);
+    return null;
+  }
+
+  const refreshed = (await loadGroup(groupId))!;
+  await refreshLinkGuestGuilds();
+  if (client && refreshed.updateTopic) await refreshGroupTopics(client, refreshed, true);
+
+  return refreshed;
+}
+
+// ── Webhooks ────────────────────────────────────────────────
 
 async function createRelayWebhook(
   client: Client,
@@ -339,151 +546,56 @@ async function createRelayWebhook(
   }
 }
 
-// ── Topic management ───────────────────────────────────────
+/**
+ * Le webhook par lequel un membre reçoit, en le créant si le pont ne l'a pas
+ * encore obtenu.
+ *
+ * Sans lui, le relais retombe sur l'embed signé par le bot - et un message posté
+ * par le bot n'affiche les emojis d'un autre serveur que s'il a la permission
+ * « Utiliser des emojis externes » dans le salon, sans quoi ils s'affichent en
+ * texte brut `<:nom:123>`. Un webhook, lui, les rend toujours : mieux vaut le
+ * rattraper ici que laisser le pont se dégrader en silence.
+ */
+const WEBHOOK_RETRY_DELAY_MS = 10 * 60 * 1000;
 
-const TOPIC_MARKER_START = '🔗 ──── Kotbo Link ────';
-const TOPIC_MARKER_END = '──── Kotbo Link 🔗';
+// Un salon où le bot n'a pas le droit de créer de webhook échouerait à chaque
+// message : deux appels Discord et un avertissement par message relayé. On note
+// l'échec et on laisse passer un moment avant de réessayer.
+const webhookCreationFailures = new Map<string, number>();
 
-function buildLinkTopicBlock(opts: {
-  linkedChannelId: string;
-  linkedGuildName: string;
-  sameGuild: boolean;
-  createdByUserId: string;
-  includeLink: boolean;
-  inviteUrl?: string;
-}): string {
-  const lines: string[] = [TOPIC_MARKER_START];
-
-  if (opts.sameGuild) {
-    lines.push(`Lié avec <#${opts.linkedChannelId}>`);
-  } else {
-    lines.push(`Lié avec ${opts.linkedGuildName}`);
-  }
-
-  lines.push(`Par <@${opts.createdByUserId}>`);
-
-  if (opts.includeLink) {
-    if (opts.sameGuild) {
-      lines.push(`→ <#${opts.linkedChannelId}>`);
-    } else if (opts.inviteUrl) {
-      lines.push(`→ Rejoindre : ${opts.inviteUrl}`);
-    }
-  }
-
-  lines.push(TOPIC_MARKER_END);
-  return lines.join('\n');
-}
-
-function stripLinkTopic(topic: string): string {
-  const regex = new RegExp(
-    `\\n?${TOPIC_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${TOPIC_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`,
-    'g',
-  );
-  return topic.replace(regex, '').trim();
-}
-
-async function updateChannelTopic(
+async function ensureTargetWebhookId(
   client: Client,
-  guildId: string,
-  channelId: string,
-  linkedChannelId: string,
-  linkedGuildId: string,
-  createdByUserId: string,
-  includeLink: boolean,
-): Promise<void> {
-  try {
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) {
-      logger.warn(TAG, `Guild ${guildId} introuvable dans le cache pour mise à jour du topic`);
-      return;
-    }
-    const channel = guild.channels.cache.get(channelId);
-    if (!channel || !('setTopic' in channel)) {
-      logger.warn(TAG, `Channel ${channelId} introuvable ou sans topic dans ${guildId}`);
-      return;
-    }
+  group: LinkGroup,
+  target: ChannelLinkGroupMember,
+): Promise<string | null> {
+  if (target.relayMode !== 'WEBHOOK') return null;
+  if (target.webhookId) return target.webhookId;
 
-    const textChannel = channel as TextChannel;
-    const currentTopic = textChannel.topic ?? '';
-    const cleanTopic = stripLinkTopic(currentTopic);
-
-    const linkedGuild = client.guilds.cache.get(linkedGuildId);
-    const sameGuild = guildId === linkedGuildId;
-
-    let inviteUrl: string | undefined;
-    if (!sameGuild && includeLink && linkedGuild) {
-      try {
-        const linkedChannel = linkedGuild.channels.cache.get(linkedChannelId);
-        if (linkedChannel && 'createInvite' in linkedChannel && typeof linkedChannel.createInvite === 'function') {
-          const invite = await linkedChannel.createInvite({
-            maxAge: 0,
-            maxUses: 0,
-            reason: `Kotbo Link: invitation pour le topic de #${textChannel.name}`,
-          });
-          inviteUrl = invite.url;
-          // L'invitation vit sur le serveur lié mais s'affiche ici : sa provenance est ce serveur.
-          await recordBotInvite(invite, INVITE_SOURCE.channelLink(guild.name));
-        }
-      } catch (err) {
-        logger.warn(TAG, `Impossible de créer l'invitation Discord pour ${linkedGuildId}/${linkedChannelId}`, err);
-      }
-    }
-
-    const block = buildLinkTopicBlock({
-      linkedChannelId,
-      linkedGuildName: linkedGuild?.name ?? linkedGuildId,
-      sameGuild,
-      createdByUserId,
-      includeLink,
-      inviteUrl,
-    });
-
-    const newTopic = cleanTopic ? `${cleanTopic}\n${block}` : block;
-    await textChannel.setTopic(newTopic).catch((err) =>
-      logger.warn(TAG, `Impossible de mettre à jour le topic de ${channelId}`, err),
-    );
-  } catch (err) {
-    logger.warn(TAG, `Erreur mise à jour topic ${guildId}/${channelId}`, err);
+  const failedAt = webhookCreationFailures.get(target.channelId);
+  if (failedAt !== undefined) {
+    if (Date.now() - failedAt < WEBHOOK_RETRY_DELAY_MS) return null;
+    webhookCreationFailures.delete(target.channelId);
   }
-}
 
-async function clearChannelLinkTopic(
-  client: Client,
-  guildId: string,
-  channelId: string,
-): Promise<void> {
-  try {
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) return;
-    const channel = guild.channels.cache.get(channelId);
-    if (!channel || !('setTopic' in channel)) return;
-
-    const textChannel = channel as TextChannel;
-    const currentTopic = textChannel.topic ?? '';
-    const cleanTopic = stripLinkTopic(currentTopic);
-
-    await textChannel.setTopic(cleanTopic || null).catch((err) =>
-      logger.warn(TAG, `Impossible de nettoyer le topic de ${channelId}`, err),
+  const webhookId = await createRelayWebhook(client, target.guildId, target.channelId);
+  if (!webhookId) {
+    webhookCreationFailures.set(target.channelId, Date.now());
+    logger.warn(
+      TAG,
+      `Aucun webhook pour ${target.guildId}/${target.channelId} (permission Gérer les webhooks ?) : ` +
+        'le relais repasse en embed, et les emojis externes peuvent y sortir en texte brut.',
     );
-  } catch (err) {
-    logger.warn(TAG, `Erreur nettoyage topic ${guildId}/${channelId}`, err);
+    return null;
   }
-}
 
-// ── Helpers ─────────────────────────────────────────────────
+  webhookCreationFailures.delete(target.channelId);
 
-function resolveRelay(link: ChannelLink, guildId: string, channelId: string) {
-  const isSource = link.sourceGuildId === guildId && link.sourceChannelId === channelId;
-  const isTarget = link.targetGuildId === guildId && link.targetChannelId === channelId;
-  if (!isSource && !isTarget) return null;
-  if (link.direction === 'UNIDIRECTIONAL' && isTarget) return null;
-  return {
-    isSource,
-    destGuildId: isSource ? link.targetGuildId : link.sourceGuildId,
-    destChannelId: isSource ? link.targetChannelId : link.sourceChannelId,
-    relayMode: isSource ? link.targetRelayMode : link.sourceRelayMode,
-    webhookId: isSource ? link.targetWebhookId : link.sourceWebhookId,
-  };
+  await prisma.channelLinkGroupMember.update({ where: { id: target.id }, data: { webhookId } })
+    .catch((err) => logger.warn(TAG, `Impossible d'enregistrer le webhook de ${target.channelId}`, err));
+  await invalidateGroupCache(group);
+  target.webhookId = webhookId;
+
+  return webhookId;
 }
 
 async function getWebhookClient(destChannel: TextChannel, webhookId: string): Promise<WebhookClient | null> {
@@ -497,29 +609,467 @@ async function getWebhookClient(destChannel: TextChannel, webhookId: string): Pr
   }
 }
 
-async function saveMessageMapping(link: ChannelLink, sourceMessageId: string, sourceChannelId: string, relayedMessageId: string, relayedChannelId: string, webhookId?: string | null) {
-  // Rien à conserver si le lien ne relaie ni édition, ni suppression, ni
-  // réaction : le pont fonctionne alors sans laisser la moindre trace en base.
-  if (!needsMessageMapping(link)) return;
+// ── Topics ──────────────────────────────────────────────────
 
-  logger.debug(TAG, `Saving mapping: ${sourceMessageId} → ${relayedMessageId} (webhook: ${webhookId ?? 'none'})`);
-  await prisma.channelLinkMessage.upsert({
-    where: { channelLinkId_sourceMessageId: { channelLinkId: link.id, sourceMessageId } },
-    update: { relayedMessageId, relayedChannelId, webhookId },
-    create: { channelLinkId: link.id, sourceMessageId, sourceChannelId, relayedMessageId, relayedChannelId, webhookId },
-  }).catch((err) => logger.warn(TAG, 'Impossible de sauvegarder le mapping message', err));
+const TOPIC_MARKER_START = '🔗 ──── Kotbo Link ────';
+const TOPIC_MARKER_END = '──── Kotbo Link 🔗';
+const TOPIC_MAX_LENGTH = 1024;
+
+function stripLinkTopic(topic: string): string {
+  const regex = new RegExp(
+    `\\n?${TOPIC_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${TOPIC_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`,
+    'g',
+  );
+  // L'ancien pont posait aussi l'invitation seule, hors marqueurs : sans ce
+  // second passage, elle resterait indéfiniment sous le bloc réécrit.
+  return topic.replace(regex, '').replace(/\n?🔗 https:\/\/discord\.gg\/\S+/g, '').trim();
 }
 
-async function findRelayedMessage(linkId: string, sourceMessageId: string) {
-  return prisma.channelLinkMessage.findUnique({
-    where: { channelLinkId_sourceMessageId: { channelLinkId: linkId, sourceMessageId } },
-  });
+/**
+ * Réécrit le bloc de description de chaque salon du pont.
+ *
+ * Le bloc listait l'unique salon d'en face ; il énumère maintenant tous les
+ * autres participants. Comme la description Discord est plafonnée, la liste est
+ * tronquée plutôt que refusée en bloc par l'API.
+ */
+export async function refreshGroupTopics(client: Client, group: LinkGroup, includeLink = true): Promise<void> {
+  await Promise.all(
+    group.members.map(async (member) => {
+      try {
+        const guild = client.guilds.cache.get(member.guildId);
+        const channel = guild?.channels.cache.get(member.channelId);
+        if (!guild || !channel || !('setTopic' in channel)) return;
+
+        const others = group.members.filter((m) => m.id !== member.id);
+        const lines: string[] = [TOPIC_MARKER_START];
+        lines.push(group.name ? `${group.name} - ${others.length} salon(s) liés` : `Lié avec ${others.length} salon(s)`);
+
+        for (const other of others) {
+          if (other.guildId === member.guildId) {
+            lines.push(`• <#${other.channelId}>`);
+            continue;
+          }
+
+          const otherGuild = client.guilds.cache.get(other.guildId);
+          const inviteUrl = includeLink ? await createTopicInvite(client, guild.name, other) : null;
+          lines.push(`• ${otherGuild?.name ?? other.guildId}${inviteUrl ? ` - ${inviteUrl}` : ''}`);
+        }
+
+        lines.push(`Par <@${group.createdByUserId}>`);
+        lines.push(TOPIC_MARKER_END);
+
+        const textChannel = channel as TextChannel;
+        const cleanTopic = stripLinkTopic(textChannel.topic ?? '');
+
+        let block = lines.join('\n');
+        // Seules les lignes de salons sont sacrifiables : en dessous de cinq
+        // lignes il ne reste que les marqueurs, l'en-tête et la signature.
+        while (block.length > TOPIC_MAX_LENGTH && lines.length > 4) {
+          lines.splice(lines.length - 3, 1);
+          block = lines.join('\n');
+        }
+
+        const newTopic = cleanTopic ? `${cleanTopic}\n${block}` : block;
+        await textChannel.setTopic(newTopic.slice(0, TOPIC_MAX_LENGTH)).catch((err) =>
+          logger.warn(TAG, `Impossible de mettre à jour le topic de ${member.channelId}`, err),
+        );
+      } catch (err) {
+        logger.warn(TAG, `Erreur mise à jour topic ${member.guildId}/${member.channelId}`, err);
+      }
+    }),
+  );
 }
 
-async function findSourceMessage(linkId: string, relayedMessageId: string, relayedChannelId: string) {
-  return prisma.channelLinkMessage.findFirst({
-    where: { channelLinkId: linkId, relayedMessageId, relayedChannelId },
+/**
+ * L'invitation permanente affichée dans la description des salons du pont.
+ *
+ * Chaque salon liste maintenant tous les autres : en créer une à chaque
+ * réécriture reviendrait à en produire N x (N-1) par modification du pont, et à
+ * autant de lignes dans les statistiques d'invitation. On réutilise donc celle
+ * que le bot a déjà posée sur le salon, comme le fait `createRelayWebhook`.
+ */
+async function createTopicInvite(client: Client, forGuildName: string, member: ChannelLinkGroupMember): Promise<string | null> {
+  try {
+    const guild = client.guilds.cache.get(member.guildId);
+    const channel = guild?.channels.cache.get(member.channelId);
+    if (!channel || !('createInvite' in channel) || typeof channel.createInvite !== 'function') return null;
+
+    const existing = await (channel as TextChannel).fetchInvites().catch(() => null);
+    const reusable = existing?.find(
+      (inv) => inv.inviterId === client.user!.id && inv.maxAge === 0 && inv.maxUses === 0,
+    );
+    if (reusable) return reusable.url;
+
+    const invite = await channel.createInvite({
+      maxAge: 0,
+      maxUses: 0,
+      reason: 'Kotbo Link: invitation pour la description des salons liés',
+    });
+    // L'invitation vit sur le serveur lié mais s'affiche ailleurs : sa provenance est le salon qui l'affiche.
+    await recordBotInvite(invite, INVITE_SOURCE.channelLink(forGuildName));
+    return invite.url;
+  } catch (err) {
+    logger.warn(TAG, `Impossible de créer l'invitation Discord pour ${member.guildId}/${member.channelId}`, err);
+    return null;
+  }
+}
+
+async function clearChannelLinkTopic(client: Client, guildId: string, channelId: string): Promise<void> {
+  try {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || !('setTopic' in channel)) return;
+
+    const textChannel = channel as TextChannel;
+    const cleanTopic = stripLinkTopic(textChannel.topic ?? '');
+
+    await textChannel.setTopic(cleanTopic || null).catch((err) =>
+      logger.warn(TAG, `Impossible de nettoyer le topic de ${channelId}`, err),
+    );
+  } catch (err) {
+    logger.warn(TAG, `Erreur nettoyage topic ${guildId}/${channelId}`, err);
+  }
+}
+
+// ── Permissions du relais ───────────────────────────────────
+
+type RelayPermission = { flag: bigint; key: string; label: string };
+
+const RELAY_BOT_PERMISSIONS: RelayPermission[] = [
+  { flag: PermissionFlagsBits.ViewChannel, key: 'ViewChannel', label: 'Voir le salon' },
+  { flag: PermissionFlagsBits.SendMessages, key: 'SendMessages', label: 'Envoyer des messages' },
+  { flag: PermissionFlagsBits.EmbedLinks, key: 'EmbedLinks', label: 'Intégrer des liens' },
+  { flag: PermissionFlagsBits.AttachFiles, key: 'AttachFiles', label: 'Joindre des fichiers' },
+];
+
+const RELAY_WEBHOOK_PERMISSION: RelayPermission =
+  { flag: PermissionFlagsBits.ManageWebhooks, key: 'ManageWebhooks', label: 'Gérer les webhooks' };
+
+/**
+ * Emojis et stickers d'un autre serveur, dans un salon qui reçoit par webhook.
+ *
+ * Un webhook n'a pas de rôle : Discord lui applique les permissions d'@everyone
+ * dans le salon où il publie. Sans celles-ci, l'API retire l'emoji du message et
+ * n'en laisse que le raccourci `:nom:` - le pont a bien transmis, c'est Discord
+ * qui a nettoyé. En mode embed c'est le bot qui publie, la même permission est
+ * donc demandée à son propre rôle.
+ */
+const RELAY_EXTERNAL_PERMISSIONS: RelayPermission[] = [
+  { flag: PermissionFlagsBits.UseExternalEmojis, key: 'UseExternalEmojis', label: 'Utiliser des emojis externes' },
+  { flag: PermissionFlagsBits.UseExternalStickers, key: 'UseExternalStickers', label: 'Utiliser des stickers externes' },
+];
+
+const RELAY_THREAD_PERMISSIONS: RelayPermission[] = [
+  { flag: PermissionFlagsBits.CreatePublicThreads, key: 'CreatePublicThreads', label: 'Créer des fils publics' },
+  { flag: PermissionFlagsBits.SendMessagesInThreads, key: 'SendMessagesInThreads', label: 'Envoyer des messages dans les fils' },
+];
+
+const RELAY_PIN_PERMISSION: RelayPermission =
+  { flag: PermissionFlagsBits.ManageMessages, key: 'ManageMessages', label: 'Gérer les messages' };
+
+export type MemberPermissionIssues = {
+  memberId: string;
+  guildId: string;
+  channelId: string;
+  channelMissing: boolean;
+  bot: RelayPermission[];
+  everyone: RelayPermission[];
+};
+
+/**
+ * Ce qui manque à chaque salon du pont pour relayer complètement.
+ *
+ * Le pont ne peut rien y faire lui-même : ces droits appartiennent aux
+ * administrateurs des serveurs reliés. Le rôle de cette fonction est qu'ils
+ * n'aient pas à les deviner devant un emoji qui arrive en `:nom:`.
+ */
+export function inspectRelayPermissions(client: Client, group: LinkGroup): MemberPermissionIssues[] {
+  const issues: MemberPermissionIssues[] = [];
+
+  for (const member of group.members) {
+    // Un serveur absent du cache n'est pas un serveur perdu : il peut vivre sur
+    // un autre shard, où ce processus ne voit ni ses salons ni ses rôles.
+    // Annoncer un salon introuvable serait alors une fausse alerte.
+    const guild = client.guilds.cache.get(member.guildId);
+    if (!guild) continue;
+
+    const channel = guild.channels.cache.get(member.channelId);
+    if (!channel || !channel.isTextBased()) {
+      issues.push({
+        memberId: member.id,
+        guildId: member.guildId,
+        channelId: member.channelId,
+        channelMissing: true,
+        bot: [],
+        everyone: [],
+      });
+      continue;
+    }
+
+    const expectedBot = [...RELAY_BOT_PERMISSIONS];
+    if (member.relayMode === 'WEBHOOK') expectedBot.push(RELAY_WEBHOOK_PERMISSION);
+    else expectedBot.push(...RELAY_EXTERNAL_PERMISSIONS);
+    if (group.relayThreads) expectedBot.push(...RELAY_THREAD_PERMISSIONS);
+    if (group.relayPins) expectedBot.push(RELAY_PIN_PERMISSION);
+
+    const botPermissions = guild.members.me ? channel.permissionsFor(guild.members.me) : null;
+    const bot = botPermissions
+      ? expectedBot.filter((permission) => !botPermissions.has(permission.flag))
+      : [];
+
+    const everyonePermissions = channel.permissionsFor(guild.roles.everyone);
+    const everyone = member.relayMode === 'WEBHOOK' && everyonePermissions
+      ? RELAY_EXTERNAL_PERMISSIONS.filter((permission) => !everyonePermissions.has(permission.flag))
+      : [];
+
+    if (bot.length > 0 || everyone.length > 0) {
+      issues.push({
+        memberId: member.id,
+        guildId: member.guildId,
+        channelId: member.channelId,
+        channelMissing: false,
+        bot,
+        everyone,
+      });
+    }
+  }
+
+  return issues;
+}
+
+// ── Mentions de masse ───────────────────────────────────────
+
+const MASS_MENTION = /@(everyone|here)/g;
+
+/**
+ * Rend inoffensive une mention de masse qui traverse le pont.
+ *
+ * `allowedMentions: { parse: [] }` suffit à empêcher la notification, mais il
+ * faut le repasser à chaque envoi : un seul oubli, aujourd'hui ou dans une
+ * modification future, et un serveur relié notifierait toute une communauté qui
+ * ne lui a rien demandé - un serveur en liaison seule y compris, alors qu'il
+ * n'est là que pour faire circuler des messages. L'espace de largeur nulle
+ * neutralise la mention dans la chaîne elle-même : le texte se lit à
+ * l'identique, et plus rien en aval ne peut la transformer en notification.
+ */
+export function neutralizeMassMentions(text: string): string {
+  return text.replace(MASS_MENTION, '@\u200b$1');
+}
+
+// ── Emoji et stickers ───────────────────────────────────────
+
+const CUSTOM_EMOJI_MARKUP = /<a?:(\w+):(\d+)>/g;
+const EMOJI_STRIP_WARNING_DELAY_MS = 10 * 60 * 1000;
+const EMOJI_STRIP_MEMORY_MS = 24 * 60 * 60 * 1000;
+const EMOJI_IMAGE_FALLBACK_LIMIT = 5;
+
+// Discord refuse un message au-dela de dix pieces jointes, et refuse le message
+// entier : les images d'emoji, qui sont un pis-aller, cedent la place aux
+// fichiers du message plutot que de le faire echouer.
+const DISCORD_MAX_ATTACHMENTS = 10;
+
+/**
+ * Salons où Discord a été vu retirer des emojis, et dernier avertissement émis.
+ *
+ * L'observation prime sur la déduction : si un salon a réellement vu ses emojis
+ * disparaître, le pont le traite comme tel même quand les permissions disent le
+ * contraire.
+ *
+ * La mémoire dure un jour, et se renouvelle d'elle-même tant que le salon
+ * continue de retirer des emojis - un message qui mêle texte et emojis part
+ * toujours tel quel, donc le constat se refait tout seul. Quand le droit est
+ * rétabli, plus rien ne la renouvelle et elle s'efface : le rendu natif revient
+ * sans redémarrage ni intervention.
+ */
+const emojiStripObservations = new Map<string, { lastSeen: number; lastWarned: number }>();
+
+function emojisRecentlyStripped(channelId: string): boolean {
+  const observation = emojiStripObservations.get(channelId);
+  if (!observation) return false;
+
+  if (Date.now() - observation.lastSeen > EMOJI_STRIP_MEMORY_MS) {
+    emojiStripObservations.delete(channelId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Le salon de destination accepte-t-il les emojis d'un autre serveur ?
+ *
+ * En mode webhook la question se pose pour @everyone, dont le webhook emprunte
+ * les droits ; en mode embed, pour le bot lui-même, qui publie en son nom. Dans
+ * le doute - salon hors de ce shard, rôle introuvable - on répond oui : mieux
+ * vaut laisser passer le message tel quel que le transformer sans raison.
+ */
+function externalEmojisAllowed(client: Client, target: ChannelLinkGroupMember): boolean {
+  // Ce que Discord a fait vaut mieux que ce qu'on déduit des permissions : si le
+  // salon a déjà vu ses emojis retirés, la question est tranchée, quelle que
+  // soit la raison - y compris une règle que le pont ne connaîtrait pas.
+  if (emojisRecentlyStripped(target.channelId)) return false;
+
+  const guild = client.guilds.cache.get(target.guildId);
+  const channel = guild?.channels.cache.get(target.channelId);
+  if (!guild || !channel?.isTextBased()) return true;
+
+  const actor = target.relayMode === 'WEBHOOK' ? guild.roles.everyone : guild.members.me;
+  if (!actor) return true;
+
+  return channel.permissionsFor(actor)?.has(PermissionFlagsBits.UseExternalEmojis) ?? true;
+}
+
+/**
+ * Repli en image pour les emojis qu'un salon refuse d'afficher.
+ *
+ * Quand le salon d'arrivée refuse les emojis d'ailleurs, Discord ne refuse pas
+ * le message : il en retire l'emoji et n'en laisse que `:nom:`. Le pont joint
+ * alors l'image de l'emoji, que rien ne bride.
+ *
+ * Le texte n'est retiré que si le message ne contenait rien d'autre que des
+ * emojis : là, l'image le remplace exactement. Au milieu d'une phrase, elle
+ * arrive sous le texte et ne peut pas prendre la place de l'emoji - le message
+ * part donc inchangé, avec les images en complément. Ce choix a un second
+ * effet : ces messages continuent d'être nettoyés par Discord, donc le pont
+ * continue de constater le blocage et n'oublie pas ce salon.
+ */
+function buildEmojiImageFallback(
+  client: Client,
+  target: ChannelLinkGroupMember,
+  content: string,
+): { content: string; files: StickerFile[] } | null {
+  if (!content) return null;
+
+  const matches = [...content.matchAll(CUSTOM_EMOJI_MARKUP)];
+  if (matches.length === 0) return null;
+  if (externalEmojisAllowed(client, target)) return null;
+
+  // Un emoji du serveur d'arrivée n'est pas externe : il s'affiche sans droit
+  // particulier, et le remplacer par son image serait une perte.
+  const guild = client.guilds.cache.get(target.guildId);
+  const external = matches.filter((match) => !guild?.emojis.cache.has(match[2]!));
+  if (external.length === 0) return null;
+
+  // Le même emoji répété ne vaut qu'une image : deux pièces jointes identiques
+  // n'apprendraient rien de plus au lecteur.
+  const unique = [...new Map(external.map((match) => [match[2]!, match])).values()];
+
+  const files = unique.slice(0, EMOJI_IMAGE_FALLBACK_LIMIT).map((match) => {
+    const extension = match[0].startsWith('<a:') ? 'gif' : 'png';
+    return {
+      attachment: `https://cdn.discordapp.com/emojis/${match[2]}.${extension}?size=64`,
+      name: `${match[1]}.${extension}`,
+    };
   });
+
+  // Le texte ne disparaît que si les images le remplacent vraiment : ni emoji du
+  // serveur d'arrivée, qui lui s'affiche, ni emoji laissé de côté par le plafond.
+  const emojisOnly =
+    external.length === matches.length
+    && unique.length === files.length
+    && content.replace(CUSTOM_EMOJI_MARKUP, '').trim().length === 0;
+
+  return { content: emojisOnly ? '' : content, files };
+}
+
+/**
+ * Compare ce que le pont a envoyé à ce que Discord a réellement enregistré.
+ *
+ * Un emoji personnalisé que l'expéditeur n'a pas le droit d'utiliser n'est pas
+ * refusé : l'API le remplace silencieusement par son raccourci `:nom:`. Le pont
+ * croit donc avoir relayé le message, et rien ne distingue ce cas d'un vrai
+ * problème de rendu. On regarde ce qui est revenu, et on le dit une fois par
+ * salon et par tranche de dix minutes.
+ */
+function warnOnStrippedEmojis(
+  client: Client,
+  target: ChannelLinkGroupMember,
+  sentContent: string,
+  storedContent: string | null | undefined,
+): void {
+  if (!sentContent || typeof storedContent !== 'string') return;
+
+  const stripped = [...sentContent.matchAll(CUSTOM_EMOJI_MARKUP)]
+    .filter((match) => !storedContent.includes(match[0]!))
+    .map((match) => match[1]!);
+  if (stripped.length === 0) return;
+
+  const now = Date.now();
+  const observation = emojiStripObservations.get(target.channelId) ?? { lastSeen: 0, lastWarned: 0 };
+  observation.lastSeen = now;
+  emojiStripObservations.set(target.channelId, observation);
+
+  if (now - observation.lastWarned < EMOJI_STRIP_WARNING_DELAY_MS) return;
+  observation.lastWarned = now;
+
+  const guild = client.guilds.cache.get(target.guildId);
+  const channel = guild?.channels.cache.get(target.channelId);
+  const textChannel = channel?.isTextBased() ? channel : null;
+
+  // Les deux états sont journalisés : si les emojis disparaissent alors
+  // qu'@everyone a le droit, c'est que Discord regarde ailleurs, et la ligne le
+  // dira au lieu de laisser conclure à tort.
+  const describe = (permissions: { has: (flag: bigint) => boolean } | null) =>
+    permissions ? (permissions.has(PermissionFlagsBits.UseExternalEmojis) ? 'accordée' : 'refusée') : 'inconnue';
+
+  const everyoneState = describe(guild && textChannel ? textChannel.permissionsFor(guild.roles.everyone) : null);
+  const botState = describe(guild?.members.me && textChannel ? textChannel.permissionsFor(guild.members.me) : null);
+
+  logger.warn(
+    TAG,
+    `Discord a retiré ${stripped.length} emoji(s) externe(s) du message relayé vers ` +
+      `${guild?.name ?? target.guildId}/#${textChannel?.name ?? target.channelId} : ${stripped.join(', ')}. ` +
+      `« Utiliser des emojis externes » sur ce salon - @everyone : ${everyoneState}, bot : ${botState}. ` +
+      "Un webhook publie avec les droits d'@everyone.",
+  );
+}
+
+/**
+ * Un emoji personnalisé, écrit pour un autre serveur.
+ *
+ * Le préfixe `a:` n'est pas décoratif : sans lui, un emoji animé s'affiche comme
+ * une image cassée chez le destinataire. Discord ne donne pas toujours ce drapeau
+ * dans les données d'un sondage, d'où le repli sur le cache du bot.
+ */
+function formatCustomEmoji(
+  emoji: { id?: string | null; name?: string | null; animated?: boolean | null } | null | undefined,
+  client: Client,
+): string {
+  if (!emoji?.name) return '';
+  if (!emoji.id) return emoji.name;
+
+  const animated = emoji.animated ?? client.emojis.cache.get(emoji.id)?.animated ?? false;
+  return `<${animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
+}
+
+type StickerFile = { attachment: string; name: string };
+
+/**
+ * Les stickers d'un message, prêts à être relayés.
+ *
+ * L'API n'autorise pas un webhook à envoyer un sticker : le pont relaie donc son
+ * image. Les stickers Lottie n'en ont pas - ce sont des animations vectorielles -
+ * et seul leur nom peut passer. Ils suivent le relais des images : un sticker est
+ * une image, et un message qui n'en contenait qu'un était jusqu'ici abandonné
+ * faute de contenu à envoyer.
+ */
+function readStickers(message: Message, group: ChannelLinkGroup): { files: StickerFile[]; note: string } {
+  if (!group.relayImages) return { files: [], note: '' };
+
+  const files: StickerFile[] = [];
+  const names: string[] = [];
+
+  for (const sticker of message.stickers.values()) {
+    if (sticker.format === StickerFormatType.Lottie) {
+      names.push(sticker.name);
+      continue;
+    }
+    const extension = sticker.format === StickerFormatType.GIF ? 'gif' : 'png';
+    const safeName = sticker.name.replace(/[^\w.-]+/g, '_') || 'sticker';
+    files.push({ attachment: sticker.url, name: `${safeName}.${extension}` });
+  }
+
+  return { files, note: names.map((name) => `*[sticker : ${name}]*`).join('\n') };
 }
 
 // ── Messages transférés ─────────────────────────────────────
@@ -533,15 +1083,15 @@ type ForwardedAttachment = { url: string; name: string; isImage: boolean };
  * donc rien à envoyer, et l'API rejetait le message vide : côté utilisateur, le
  * transfert disparaissait sans un mot.
  */
-function readForwardedContent(message: Message, link: ChannelLink) {
+function readForwardedContent(message: Message, group: ChannelLinkGroup) {
   const texts: string[] = [];
   const attachments: ForwardedAttachment[] = [];
   const embeds: APIEmbed[] = [];
 
   for (const snapshot of message.messageSnapshots.values()) {
-    if (link.relayText && snapshot.content) texts.push(snapshot.content);
+    if (group.relayText && snapshot.content) texts.push(snapshot.content);
 
-    if (link.relayImages) {
+    if (group.relayImages) {
       for (const file of snapshot.attachments.values()) {
         attachments.push({
           url: file.url,
@@ -551,7 +1101,7 @@ function readForwardedContent(message: Message, link: ChannelLink) {
       }
     }
 
-    if (link.relayEmbeds) {
+    if (group.relayEmbeds) {
       for (const embed of snapshot.embeds) embeds.push({ ...embed.data });
     }
   }
@@ -561,195 +1111,240 @@ function readForwardedContent(message: Message, link: ChannelLink) {
 
 const FORWARD_HEADER = '↪ *Message transféré*';
 
-// ── Message relay ───────────────────────────────────────────
+// ── Relais des messages ─────────────────────────────────────
 
 export async function relayMessage(message: Message, client: Client): Promise<void> {
   if (message.author.bot || !message.guild) return;
 
-  const links = await getLinksForChannel(message.guild.id, message.channel.id);
-  if (links.length === 0) return;
+  const groups = await getGroupsForChannel(message.guild.id, message.channel.id);
+  if (groups.length === 0) return;
 
-  logger.debug(TAG, `Relay message ${message.id} dans ${message.channel.id} - ${links.length} lien(s) trouvé(s)`);
-
-  for (const link of links) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, message.guild.id, message.channel.id);
-      if (!relay) continue;
+      const resolved = resolveTargets(group, message.guild.id, message.channel.id);
+      if (!resolved) continue;
 
-      const forwarded = readForwardedContent(message, link);
-      const ownText = link.relayText ? message.content : '';
-      const ownFiles = link.relayImages
+      const forwarded = readForwardedContent(message, group);
+      const stickers = readStickers(message, group);
+      const ownText = group.relayText ? message.content : '';
+      const ownFiles = group.relayImages
         ? message.attachments.map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
         : [];
 
-      // Un message dont les filtres du lien ne retiennent rien ne doit pas
+      // Un message dont les filtres du pont ne retiennent rien ne doit pas
       // partir : l'API refuse un envoi vide, et l'erreur passait pour une panne
       // du pont alors que le lien faisait exactement ce qu'on lui demandait.
       const hasContent =
-        !!ownText || !!forwarded.text || ownFiles.length > 0 || forwarded.attachments.length > 0 || forwarded.embeds.length > 0;
+        !!ownText || !!forwarded.text || ownFiles.length > 0 || forwarded.attachments.length > 0
+        || forwarded.embeds.length > 0 || stickers.files.length > 0 || !!stickers.note;
       if (!hasContent) continue;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
-
-      // Resolve reply context (check both directions: original→relayed and relayed→original)
       // Un transfert porte lui aussi une `reference`, mais elle désigne le
       // message d'origine, pas une réponse : l'annoncer comme telle mentirait.
-      let replyContent = '';
-      if (message.reference?.messageId && message.messageSnapshots.size === 0) {
-        const mapping = await findRelayedMessage(link.id, message.reference.messageId);
-        if (mapping) {
-          replyContent = `https://discord.com/channels/${relay.destGuildId}/${mapping.relayedChannelId}/${mapping.relayedMessageId}`;
-        } else {
-          const reverseMapping = await findSourceMessage(link.id, message.reference.messageId, message.channel.id);
-          if (reverseMapping) {
-            replyContent = `https://discord.com/channels/${relay.destGuildId}/${reverseMapping.sourceChannelId}/${reverseMapping.sourceMessageId}`;
+      const repliedTo = message.reference?.messageId && message.messageSnapshots.size === 0
+        ? await resolveOrigin(group.id, message.reference.messageId, message.channel.id)
+        : null;
+      const replyLocations = repliedTo
+        ? await messageLocations(group.id, repliedTo.messageId, repliedTo.channelId)
+        : null;
+      const refMsg = repliedTo ? await message.fetchReference().catch(() => null) : null;
+
+      for (const target of resolved.targets) {
+        try {
+          const destGuild = client.guilds.cache.get(target.guildId);
+          if (!destGuild) continue;
+          const destChannel = destGuild.channels.cache.get(target.channelId);
+          if (!destChannel || !destChannel.isTextBased()) continue;
+
+          const counterpart = replyLocations?.get(target.channelId);
+          const replyUrl = counterpart
+            ? `https://discord.com/channels/${target.guildId}/${target.channelId}/${counterpart.messageId}`
+            : null;
+
+          const targetWebhookId = await ensureTargetWebhookId(client, group, target);
+
+          if (targetWebhookId) {
+            let activeWebhookId = targetWebhookId;
+            let webhookClient = await getWebhookClient(destChannel as TextChannel, activeWebhookId);
+            if (!webhookClient) {
+              // Le webhook a été supprimé du salon. On le recrée et on repart
+              // avec : abandonner ici coûtait le message en cours.
+              logger.warn(TAG, `Webhook ${activeWebhookId} introuvable pour ${target.guildId}/${target.channelId} - recréation...`);
+              const newWebhookId = await createRelayWebhook(client, target.guildId, target.channelId);
+              if (newWebhookId) {
+                await prisma.channelLinkGroupMember.update({ where: { id: target.id }, data: { webhookId: newWebhookId } })
+                  .catch((err) => logger.warn(TAG, `Impossible d'enregistrer le webhook de ${target.channelId}`, err));
+                await invalidateGroupCache(group);
+                target.webhookId = newWebhookId;
+                activeWebhookId = newWebhookId;
+                webhookClient = await getWebhookClient(destChannel as TextChannel, newWebhookId);
+              }
+              if (!webhookClient) continue;
+            }
+
+            const files = [
+              ...ownFiles,
+              ...forwarded.attachments.map((a) => ({ attachment: a.url, name: a.name })),
+              ...stickers.files,
+            ];
+
+            let fullContent = '';
+            if (replyUrl) {
+              const refAuthor = refMsg?.author?.displayName || refMsg?.author?.username || '?';
+              const refPreview = refMsg?.content?.slice(0, 50) || '';
+              fullContent += `> **↩ ${refAuthor}:** ${refPreview}${(refMsg?.content?.length ?? 0) > 50 ? '…' : ''}\n> [Aller au message](${replyUrl})\n`;
+            }
+            if (forwarded.text) fullContent += `${FORWARD_HEADER}\n${forwarded.text}\n`;
+            if (ownText) fullContent += ownText;
+            if (stickers.note) fullContent += `${fullContent ? '\n' : ''}${stickers.note}`;
+
+            const emojiFallback = buildEmojiImageFallback(client, target, fullContent);
+            if (emojiFallback) {
+              fullContent = emojiFallback.content;
+              files.push(...emojiFallback.files);
+            }
+
+            const sent = await webhookClient.send({
+              content: neutralizeMassMentions(fullContent) || undefined,
+              username: message.author.displayName || message.author.username,
+              avatarURL: message.author.displayAvatarURL(),
+              files: files.slice(0, DISCORD_MAX_ATTACHMENTS),
+              embeds: forwarded.embeds.length > 0 ? forwarded.embeds : undefined,
+              allowedMentions: { parse: [] },
+            });
+
+            warnOnStrippedEmojis(client, target, fullContent, sent.content);
+            await saveMessageMapping(group, message.id, message.channel.id, target, sent.id, activeWebhookId);
+            webhookClient.destroy();
+          } else {
+            const sourceGuild = message.guild!;
+            const embed = new EmbedBuilder()
+              .setColor(COLORS.info)
+              .setAuthor({
+                name: `${message.author.displayName || message.author.username} • ${sourceGuild.name}`,
+                iconURL: message.author.displayAvatarURL(),
+              })
+              .setTimestamp(message.createdAt)
+              .setFooter({ text: `🔗 ${sourceGuild.name}`, iconURL: sourceGuild.iconURL() ?? undefined });
+
+            let desc = '';
+            if (replyUrl) desc += `> ↩ [Message cité](${replyUrl})\n\n`;
+            if (forwarded.text) desc += `${FORWARD_HEADER}\n${forwarded.text}\n`;
+            if (ownText) desc += ownText;
+            if (stickers.note) desc += `${desc ? '\n' : ''}${stickers.note}`;
+            if (desc) embed.setDescription(desc);
+
+            const ownImage = group.relayImages
+              ? message.attachments.find((a) => a.contentType?.startsWith('image/'))
+              : undefined;
+            // L'image d'un transfert ne prend la vignette de l'embed que si le
+            // message lui-même n'en fournit pas ; sinon elle repart en pièce jointe.
+            const forwardedImage = ownImage ? undefined : forwarded.attachments.find((a) => a.isImage);
+            // Un sticker seul mérite la vignette de l'embed plutôt qu'une pièce
+            // jointe : c'est ainsi qu'il s'affiche du côté d'où il vient.
+            const stickerImage = ownImage || forwardedImage ? undefined : stickers.files[0];
+            if (ownImage) embed.setImage(ownImage.url);
+            else if (forwardedImage) embed.setImage(forwardedImage.url);
+            else if (stickerImage) embed.setImage(stickerImage.attachment);
+
+            const files = [
+              ...(group.relayImages
+                ? message.attachments.filter((a) => !a.contentType?.startsWith('image/')).map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
+                : []),
+              ...forwarded.attachments
+                .filter((a) => a !== forwardedImage)
+                .map((a) => ({ attachment: a.url, name: a.name })),
+              ...stickers.files.filter((f) => f !== stickerImage),
+            ];
+
+            const emojiFallback = buildEmojiImageFallback(client, target, desc);
+            if (emojiFallback) {
+              // L'emoji ne prend la vignette que s'il était tout le message et
+              // que rien d'autre ne l'occupe ; sinon il rejoint les pièces
+              // jointes, sans toucher au texte.
+              const takesThumbnail = !emojiFallback.content && !ownImage && !forwardedImage && !stickerImage;
+              if (takesThumbnail) {
+                embed.setDescription(null);
+                embed.setImage(emojiFallback.files[0]!.attachment);
+                files.push(...emojiFallback.files.slice(1));
+              } else {
+                files.push(...emojiFallback.files);
+              }
+            }
+
+            const sent = await (destChannel as TextChannel).send({
+              embeds: [embed.toJSON(), ...forwarded.embeds],
+              files: files.slice(0, DISCORD_MAX_ATTACHMENTS),
+              allowedMentions: { parse: [] },
+            });
+            await saveMessageMapping(group, message.id, message.channel.id, target, sent.id);
           }
+        } catch (err) {
+          logger.error(TAG, `Erreur relay message ${message.id} vers ${target.guildId}/${target.channelId}`, err);
         }
-      }
-
-      if (relay.relayMode === 'WEBHOOK' && relay.webhookId) {
-        const webhookClient = await getWebhookClient(destChannel as TextChannel, relay.webhookId);
-        if (!webhookClient) {
-          logger.warn(TAG, `Webhook ${relay.webhookId} introuvable pour relay vers ${relay.destGuildId}/${relay.destChannelId} - recréation...`);
-          const newWebhookId = await createRelayWebhook(client, relay.destGuildId, relay.destChannelId);
-          if (newWebhookId) {
-            const updateField = relay.isSource ? 'targetWebhookId' : 'sourceWebhookId';
-            await prisma.channelLink.update({ where: { id: link.id }, data: { [updateField]: newWebhookId } });
-            await invalidateLinkCache(link);
-          }
-          continue;
-        }
-
-        const files = [
-          ...ownFiles,
-          ...forwarded.attachments.map((a) => ({ attachment: a.url, name: a.name })),
-        ];
-
-        let fullContent = '';
-        if (replyContent) {
-          const refMsg = await message.fetchReference().catch(() => null);
-          const refAuthor = refMsg?.author?.displayName || refMsg?.author?.username || '?';
-          const refPreview = refMsg?.content?.slice(0, 50) || '';
-          fullContent += `> **↩ ${refAuthor}:** ${refPreview}${(refMsg?.content?.length ?? 0) > 50 ? '…' : ''}\n> [Aller au message](${replyContent})\n`;
-        }
-        if (forwarded.text) fullContent += `${FORWARD_HEADER}\n${forwarded.text}\n`;
-        if (ownText) fullContent += ownText;
-
-        const sent = await webhookClient.send({
-          content: fullContent || undefined,
-          username: message.author.displayName || message.author.username,
-          avatarURL: message.author.displayAvatarURL(),
-          files,
-          embeds: forwarded.embeds.length > 0 ? forwarded.embeds : undefined,
-          allowedMentions: { parse: [] },
-        });
-
-        await saveMessageMapping(link, message.id, message.channel.id, sent.id, relay.destChannelId, relay.webhookId);
-        webhookClient.destroy();
-      } else {
-        const sourceGuild = message.guild!;
-        const embed = new EmbedBuilder()
-          .setColor(COLORS.info)
-          .setAuthor({
-            name: `${message.author.displayName || message.author.username} • ${sourceGuild.name}`,
-            iconURL: message.author.displayAvatarURL(),
-          })
-          .setTimestamp(message.createdAt)
-          .setFooter({ text: `🔗 ${sourceGuild.name}`, iconURL: sourceGuild.iconURL() ?? undefined });
-
-        let desc = '';
-        if (replyContent) desc += `> ↩ [Message cité](${replyContent})\n\n`;
-        if (forwarded.text) desc += `${FORWARD_HEADER}\n${forwarded.text}\n`;
-        if (ownText) desc += ownText;
-        if (desc) embed.setDescription(desc);
-
-        const ownImage = link.relayImages
-          ? message.attachments.find((a) => a.contentType?.startsWith('image/'))
-          : undefined;
-        // L'image d'un transfert ne prend la vignette de l'embed que si le
-        // message lui-même n'en fournit pas ; sinon elle repart en pièce jointe.
-        const forwardedImage = ownImage ? undefined : forwarded.attachments.find((a) => a.isImage);
-        if (ownImage) embed.setImage(ownImage.url);
-        else if (forwardedImage) embed.setImage(forwardedImage.url);
-
-        const files = [
-          ...(link.relayImages
-            ? message.attachments.filter((a) => !a.contentType?.startsWith('image/')).map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
-            : []),
-          ...forwarded.attachments
-            .filter((a) => a !== forwardedImage)
-            .map((a) => ({ attachment: a.url, name: a.name })),
-        ];
-
-        const sent = await (destChannel as TextChannel).send({
-          embeds: [embed.toJSON(), ...forwarded.embeds],
-          files,
-          allowedMentions: { parse: [] },
-        });
-        await saveMessageMapping(link, message.id, message.channel.id, sent.id, relay.destChannelId);
       }
     } catch (err) {
-      logger.error(TAG, `Erreur relay message ${message.id} vers link ${link.id}`, err);
+      logger.error(TAG, `Erreur relay message ${message.id} sur le pont ${group.id}`, err);
     }
   }
 }
 
-// ── Edit relay ──────────────────────────────────────────────
+// ── Édition ─────────────────────────────────────────────────
 
 export async function relayMessageEdit(message: Message, client: Client): Promise<void> {
   if (message.author.bot || !message.guild) return;
 
-  const links = await getLinksForChannel(message.guild.id, message.channel.id);
-  const editLinks = links.filter((l) => l.relayEdits);
-  if (editLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(message.guild.id, message.channel.id)).filter((g) => g.relayEdits);
+  if (groups.length === 0) return;
 
-  for (const link of editLinks) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, message.guild.id, message.channel.id);
-      if (!relay) continue;
+      const copies = await prisma.channelLinkGroupMessage.findMany({
+        where: { groupId: group.id, sourceMessageId: message.id, sourceChannelId: message.channel.id },
+      });
+      if (copies.length === 0) continue;
 
-      const mapping = await findRelayedMessage(link.id, message.id);
-      logger.debug(TAG, `Edit relay ${message.id}: mapping=${mapping ? mapping.relayedMessageId : 'none'}`);
-      if (!mapping) continue;
+      for (const copy of copies) {
+        try {
+          const destGuild = client.guilds.cache.get(copy.relayedGuildId);
+          if (!destGuild) continue;
+          const destChannel = destGuild.channels.cache.get(copy.relayedChannelId);
+          if (!destChannel || !destChannel.isTextBased()) continue;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
+          if (copy.webhookId) {
+            const webhookClient = await getWebhookClient(destChannel as TextChannel, copy.webhookId);
+            if (!webhookClient) {
+              logger.warn(TAG, `Webhook introuvable pour edit ${copy.webhookId}`);
+              continue;
+            }
 
-      if (mapping.webhookId) {
-        const webhookClient = await getWebhookClient(destChannel as TextChannel, mapping.webhookId);
-        if (!webhookClient) {
-          logger.warn(TAG, `Webhook introuvable pour edit ${mapping.webhookId}`);
-          continue;
-        }
+            await webhookClient.editMessage(copy.relayedMessageId, {
+              content: neutralizeMassMentions(message.content) || undefined,
+              allowedMentions: { parse: [] },
+            }).catch((err) => logger.warn(TAG, `Impossible d'éditer le message webhook ${copy.relayedMessageId}`, err));
 
-        await webhookClient.editMessage(mapping.relayedMessageId, {
-          content: message.content || undefined,
-          allowedMentions: { parse: [] },
-        }).catch((err) => logger.warn(TAG, `Impossible d'éditer le message webhook ${mapping.relayedMessageId}`, err));
-
-        webhookClient.destroy();
-      } else {
-        const relayedMsg = await (destChannel as TextChannel).messages.fetch(mapping.relayedMessageId).catch(() => null);
-        if (relayedMsg?.editable) {
-          // Le message relayé est en Components V2 (voir utils/patchV2.ts) :
-          // `relayedMsg.embeds` est vide, on reconstruit donc l'embed à partir
-          // du message source édité (mêmes en-tête/pied qu'à la création).
-          const sourceGuild = message.guild!;
-          const newEmbed = new EmbedBuilder()
-            .setColor(COLORS.info)
-            .setAuthor({
-              name: `${message.author.displayName || message.author.username} • ${sourceGuild.name}`,
-              iconURL: message.author.displayAvatarURL(),
-            })
-            .setTimestamp(message.createdAt)
-            .setFooter({ text: `🔗 ${sourceGuild.name}`, iconURL: sourceGuild.iconURL() ?? undefined })
-            .setDescription(message.content || '*[vide]*');
-          await relayedMsg.edit({ embeds: [newEmbed] }).catch(() => null);
+            webhookClient.destroy();
+          } else {
+            const relayedMsg = await (destChannel as TextChannel).messages.fetch(copy.relayedMessageId).catch(() => null);
+            if (relayedMsg?.editable) {
+              // Le message relayé est en Components V2 (voir utils/patchV2.ts) :
+              // `relayedMsg.embeds` est vide, on reconstruit donc l'embed à partir
+              // du message source édité (mêmes en-tête/pied qu'à la création).
+              const sourceGuild = message.guild!;
+              const newEmbed = new EmbedBuilder()
+                .setColor(COLORS.info)
+                .setAuthor({
+                  name: `${message.author.displayName || message.author.username} • ${sourceGuild.name}`,
+                  iconURL: message.author.displayAvatarURL(),
+                })
+                .setTimestamp(message.createdAt)
+                .setFooter({ text: `🔗 ${sourceGuild.name}`, iconURL: sourceGuild.iconURL() ?? undefined })
+                .setDescription(message.content || '*[vide]*');
+              await relayedMsg.edit({ embeds: [newEmbed] }).catch(() => null);
+            }
+          }
+        } catch (err) {
+          logger.error(TAG, `Erreur relay edit ${message.id} vers ${copy.relayedChannelId}`, err);
         }
       }
     } catch (err) {
@@ -758,48 +1353,58 @@ export async function relayMessageEdit(message: Message, client: Client): Promis
   }
 }
 
-// ── Delete relay ────────────────────────────────────────────
+// ── Suppression ─────────────────────────────────────────────
 
 export async function relayMessageDelete(message: Message, client: Client): Promise<void> {
   if (message.author?.bot || !message.guild) return;
 
-  const links = await getLinksForChannel(message.guild.id, message.channel.id);
-  const deleteLinks = links.filter((l) => l.relayDeletes);
-  if (deleteLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(message.guild.id, message.channel.id)).filter((g) => g.relayDeletes);
+  if (groups.length === 0) return;
 
-  for (const link of deleteLinks) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, message.guild.id, message.channel.id);
-      if (!relay) continue;
+      const copies = await prisma.channelLinkGroupMessage.findMany({
+        where: { groupId: group.id, sourceMessageId: message.id, sourceChannelId: message.channel.id },
+      });
+      if (copies.length === 0) continue;
 
-      const mapping = await findRelayedMessage(link.id, message.id);
-      if (!mapping) continue;
+      for (const copy of copies) {
+        try {
+          const destGuild = client.guilds.cache.get(copy.relayedGuildId);
+          if (!destGuild) continue;
+          const destChannel = destGuild.channels.cache.get(copy.relayedChannelId);
+          if (!destChannel || !destChannel.isTextBased()) continue;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
-
-      if (relay.relayMode === 'WEBHOOK' && mapping.webhookId) {
-        const webhookClient = await getWebhookClient(destChannel as TextChannel, mapping.webhookId);
-        if (webhookClient) {
-          await webhookClient.deleteMessage(mapping.relayedMessageId).catch(() => null);
-          webhookClient.destroy();
+          if (copy.webhookId) {
+            const webhookClient = await getWebhookClient(destChannel as TextChannel, copy.webhookId);
+            if (webhookClient) {
+              await webhookClient.deleteMessage(copy.relayedMessageId).catch(() => null);
+              webhookClient.destroy();
+            }
+          } else {
+            const relayedMsg = await (destChannel as TextChannel).messages.fetch(copy.relayedMessageId).catch(() => null);
+            if (relayedMsg?.deletable) await relayedMsg.delete().catch(() => null);
+          }
+        } catch (err) {
+          logger.error(TAG, `Erreur relay delete ${message.id} vers ${copy.relayedChannelId}`, err);
         }
-      } else {
-        const relayedMsg = await (destChannel as TextChannel).messages.fetch(mapping.relayedMessageId).catch(() => null);
-        if (relayedMsg?.deletable) await relayedMsg.delete().catch(() => null);
       }
 
-      await prisma.channelLinkMessage.deleteMany({ where: { id: mapping.id } });
+      await prisma.channelLinkGroupMessage.deleteMany({
+        where: { groupId: group.id, sourceMessageId: message.id },
+      });
     } catch (err) {
       logger.error(TAG, `Erreur relay delete ${message.id}`, err);
     }
   }
 }
 
-// ── Reaction relay ──────────────────────────────────────────
+// ── Réactions ───────────────────────────────────────────────
 
+/**
+ * Une réaction se propage à toutes les autres incarnations du message, quel que
+ * soit le salon où elle a été posée : l'original comme les copies.
+ */
 export async function relayReactionAdd(reaction: MessageReaction, user: User, client: Client): Promise<void> {
   if (user.bot || !reaction.message.guild) return;
 
@@ -807,57 +1412,54 @@ export async function relayReactionAdd(reaction: MessageReaction, user: User, cl
   const channelId = reaction.message.channel.id;
   const messageId = reaction.message.id;
 
-  const links = await getLinksForChannel(guildId, channelId);
-  const reactionLinks = links.filter((l) => l.relayReactions);
-  if (reactionLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(guildId, channelId)).filter((g) => g.relayReactions);
+  if (groups.length === 0) return;
 
-  for (const link of reactionLinks) {
+  const emoji = reaction.emoji.id ? `${reaction.emoji.name}:${reaction.emoji.id}` : reaction.emoji.name;
+  if (!emoji) return;
+
+  for (const group of groups) {
     try {
-      const mapping = await findRelayedMessage(link.id, messageId);
-      const reverseMapping = !mapping ? await findSourceMessage(link.id, messageId, channelId) : null;
+      // Une réaction suit le même chemin qu'un message : un salon qui ne fait que
+      // recevoir n'en envoie pas, un salon qui ne fait qu'émettre n'en reçoit pas.
+      const resolved = resolveTargets(group, guildId, channelId);
+      if (!resolved) continue;
+      const reachable = new Map(resolved.targets.map((m) => [m.channelId, m] as const));
 
-      if (!mapping && !reverseMapping) continue;
+      const origin = await resolveOrigin(group.id, messageId, channelId);
+      if (!origin) continue;
 
-      let targetGuildId: string;
-      let targetChannelId: string;
-      let targetMessageId: string;
+      const locations = await messageLocations(group.id, origin.messageId, origin.channelId);
 
-      if (mapping) {
-        const relay = resolveRelay(link, guildId, channelId);
-        if (!relay) continue;
-        targetGuildId = relay.destGuildId;
-        targetChannelId = mapping.relayedChannelId;
-        targetMessageId = mapping.relayedMessageId;
-      } else {
-        // Reaction on a relayed (webhook) message → relay to the original message's guild
-        const sourceIsOnSourceSide = reverseMapping!.sourceChannelId === link.sourceChannelId;
-        targetGuildId = sourceIsOnSourceSide ? link.sourceGuildId : link.targetGuildId;
-        targetChannelId = reverseMapping!.sourceChannelId;
-        targetMessageId = reverseMapping!.sourceMessageId;
+      for (const [locChannelId, location] of locations) {
+        if (locChannelId === channelId) continue;
+
+        const member = reachable.get(locChannelId);
+        if (!member) continue;
+        const destGuildId = location.guildId ?? member.guildId;
+
+        const destGuild = client.guilds.cache.get(destGuildId);
+        if (!destGuild) continue;
+        const destChannel = destGuild.channels.cache.get(locChannelId);
+        if (!destChannel || !destChannel.isTextBased()) continue;
+
+        const targetMsg = await (destChannel as TextChannel).messages.fetch(location.messageId).catch(() => null);
+        if (!targetMsg) continue;
+
+        await targetMsg.react(emoji).catch(() => null);
       }
-
-      const destGuild = client.guilds.cache.get(targetGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(targetChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
-
-      const targetMsg = await (destChannel as TextChannel).messages.fetch(targetMessageId).catch(() => null);
-      if (!targetMsg) continue;
-
-      const emoji = reaction.emoji.id ? `${reaction.emoji.name}:${reaction.emoji.id}` : reaction.emoji.name;
-      if (emoji) await targetMsg.react(emoji).catch(() => null);
     } catch (err) {
       logger.error(TAG, `Erreur relay reaction ${reaction.emoji.name}`, err);
     }
   }
 }
 
-// ── Pin relay ───────────────────────────────────────────────
+// ── Épinglages ──────────────────────────────────────────────
 
 /**
  * Identifiants des messages épinglés d'un salon, ou `null` si Discord refuse la
  * lecture. La distinction compte : un salon illisible retourné comme « aucun
- * épinglé » ferait désépingler l'intégralité du salon d'en face.
+ * épinglé » ferait désépingler l'intégralité des salons d'en face.
  */
 async function fetchPinnedMessageIds(channel: TextChannel): Promise<Set<string> | null> {
   try {
@@ -870,20 +1472,19 @@ async function fetchPinnedMessageIds(channel: TextChannel): Promise<Set<string> 
 }
 
 /**
- * Aligne les épinglages des deux salons d'un pont.
+ * Aligne les épinglages de tous les salons d'un pont.
  *
  * Discord n'annonce pas *quel* message vient d'être épinglé : `channelPinsUpdate`
- * dit seulement que la liste du salon a changé. On compare donc les deux listes
- * et on ne touche qu'aux messages dont le pont connaît la copie - un message
- * épinglé nativement dans le salon d'en face n'est jamais décroché.
+ * dit seulement que la liste du salon a changé. On compare donc les listes et on
+ * ne touche qu'aux messages dont le pont connaît les copies - un message épinglé
+ * nativement en face n'est jamais décroché.
  *
- * La synchronisation converge d'elle-même : l'épinglage posé en face déclenche
- * à son tour un `channelPinsUpdate` qui trouve les deux côtés déjà d'accord.
+ * La synchronisation converge d'elle-même : l'épinglage posé en face déclenche à
+ * son tour un `channelPinsUpdate` qui trouve les salons déjà d'accord.
  */
 export async function relayPinsUpdate(guildId: string, channelId: string, client: Client): Promise<void> {
-  const links = await getLinksForChannel(guildId, channelId);
-  const pinLinks = links.filter((l) => l.relayPins);
-  if (pinLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(guildId, channelId)).filter((g) => g.relayPins);
+  if (groups.length === 0) return;
 
   const guild = client.guilds.cache.get(guildId);
   const channel = guild?.channels.cache.get(channelId);
@@ -892,166 +1493,248 @@ export async function relayPinsUpdate(guildId: string, channelId: string, client
   const localPinned = await fetchPinnedMessageIds(channel as TextChannel);
   if (!localPinned) return;
 
-  for (const link of pinLinks) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, guildId, channelId);
-      if (!relay) continue;
+      // Un salon qui ne fait que recevoir n'impose pas ses épinglages aux
+      // autres, pas plus qu'il ne leur impose ses messages.
+      const resolved = resolveTargets(group, guildId, channelId);
+      if (!resolved) continue;
+      const others = resolved.targets;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
+      const pinnedSets = new Map<string, Set<string>>();
+      for (const other of others) {
+        const otherGuild = client.guilds.cache.get(other.guildId);
+        const otherChannel = otherGuild?.channels.cache.get(other.channelId);
+        if (!otherChannel || !otherChannel.isTextBased()) continue;
+        const pinned = await fetchPinnedMessageIds(otherChannel as TextChannel);
+        if (pinned) pinnedSets.set(other.channelId, pinned);
+      }
+      if (pinnedSets.size === 0) continue;
 
-      const destPinned = await fetchPinnedMessageIds(destChannel as TextChannel);
-      if (!destPinned) continue;
+      // Seul un message épinglé quelque part peut demander un changement :
+      // inutile de relire toute la correspondance du pont.
+      const candidateIds = [...localPinned, ...[...pinnedSets.values()].flatMap((s) => [...s])];
+      if (candidateIds.length === 0) continue;
 
-      // Seul un message épinglé d'un côté ou de l'autre peut demander un
-      // changement : inutile de relire toute la correspondance du lien.
-      const pinnedIds = [...localPinned, ...destPinned];
-      if (pinnedIds.length === 0) continue;
-
-      const mappings = await prisma.channelLinkMessage.findMany({
+      const rows = await prisma.channelLinkGroupMessage.findMany({
         where: {
-          channelLinkId: link.id,
-          OR: [{ sourceMessageId: { in: pinnedIds } }, { relayedMessageId: { in: pinnedIds } }],
+          groupId: group.id,
+          OR: [{ sourceMessageId: { in: candidateIds } }, { relayedMessageId: { in: candidateIds } }],
         },
       });
+      if (rows.length === 0) continue;
 
-      for (const mapping of mappings) {
-        // Le salon où l'on vient d'épingler héberge tantôt l'original, tantôt
-        // la copie relayée : les deux sens doivent être reconnus.
-        const localIsSource = mapping.sourceChannelId === channelId && mapping.relayedChannelId === relay.destChannelId;
-        const localIsRelayed = mapping.relayedChannelId === channelId && mapping.sourceChannelId === relay.destChannelId;
-        if (!localIsSource && !localIsRelayed) continue;
+      // Un message et ses copies forment un seul objet dont chaque salon détient
+      // une incarnation : c'est cet objet, et non la paire de salons, qui porte
+      // l'état « épinglé ».
+      const byOrigin = new Map<string, Map<string, string>>();
+      for (const row of rows) {
+        const key = `${row.sourceChannelId}:${row.sourceMessageId}`;
+        let locations = byOrigin.get(key);
+        if (!locations) {
+          locations = new Map([[row.sourceChannelId, row.sourceMessageId]]);
+          byOrigin.set(key, locations);
+        }
+        locations.set(row.relayedChannelId, row.relayedMessageId);
+      }
 
-        const localMessageId = localIsSource ? mapping.sourceMessageId : mapping.relayedMessageId;
-        const remoteMessageId = localIsSource ? mapping.relayedMessageId : mapping.sourceMessageId;
+      for (const locations of byOrigin.values()) {
+        const localMessageId = locations.get(channelId);
+        if (!localMessageId) continue;
 
         const pinnedHere = localPinned.has(localMessageId);
-        if (pinnedHere === destPinned.has(remoteMessageId)) continue;
 
-        const reason = `Kotbo Link: épinglage synchronisé depuis ${guild.name}`;
-        const messages = (destChannel as TextChannel).messages;
+        for (const other of others) {
+          const remoteMessageId = locations.get(other.channelId);
+          const remotePinned = pinnedSets.get(other.channelId);
+          if (!remoteMessageId || !remotePinned) continue;
+          if (pinnedHere === remotePinned.has(remoteMessageId)) continue;
 
-        if (pinnedHere) {
-          await messages.pin(remoteMessageId, reason).catch((err) =>
-            logger.warn(TAG, `Impossible d'épingler ${remoteMessageId} dans ${relay.destChannelId}`, err),
-          );
-        } else {
-          await messages.unpin(remoteMessageId, reason).catch((err) =>
-            logger.warn(TAG, `Impossible de désépingler ${remoteMessageId} dans ${relay.destChannelId}`, err),
-          );
+          const otherGuild = client.guilds.cache.get(other.guildId);
+          const otherChannel = otherGuild?.channels.cache.get(other.channelId);
+          if (!otherChannel || !otherChannel.isTextBased()) continue;
+
+          const reason = `Kotbo Link: épinglage synchronisé depuis ${guild.name}`;
+          const messages = (otherChannel as TextChannel).messages;
+
+          if (pinnedHere) {
+            await messages.pin(remoteMessageId, reason).catch((err) =>
+              logger.warn(TAG, `Impossible d'épingler ${remoteMessageId} dans ${other.channelId}`, err),
+            );
+          } else {
+            await messages.unpin(remoteMessageId, reason).catch((err) =>
+              logger.warn(TAG, `Impossible de désépingler ${remoteMessageId} dans ${other.channelId}`, err),
+            );
+          }
         }
       }
     } catch (err) {
-      logger.error(TAG, `Erreur relay pins ${guildId}/${channelId} vers link ${link.id}`, err);
+      logger.error(TAG, `Erreur relay pins ${guildId}/${channelId} sur le pont ${group.id}`, err);
     }
   }
 }
 
-// ── Typing relay ────────────────────────────────────────────
+// ── Frappe ──────────────────────────────────────────────────
 
 export async function relayTyping(channelId: string, guildId: string, userId: string, client: Client): Promise<void> {
-  const links = await getLinksForChannel(guildId, channelId);
-  if (links.length === 0) return;
+  const groups = await getGroupsForChannel(guildId, channelId);
+  if (groups.length === 0) return;
 
-  for (const link of links) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, guildId, channelId);
-      if (!relay) continue;
+      const resolved = resolveTargets(group, guildId, channelId);
+      if (!resolved) continue;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
-
-      await (destChannel as TextChannel).sendTyping().catch(() => null);
+      for (const target of resolved.targets) {
+        const destGuild = client.guilds.cache.get(target.guildId);
+        const destChannel = destGuild?.channels.cache.get(target.channelId);
+        if (!destChannel || !destChannel.isTextBased()) continue;
+        await (destChannel as TextChannel).sendTyping().catch(() => null);
+      }
     } catch {
       // Silent
     }
   }
 }
 
-// ── Thread relay ───────────────────────────────────────────
+// ── Threads ─────────────────────────────────────────────────
 
-async function findLinkedThread(linkId: string, sourceThreadId: string) {
-  return prisma.channelLinkThread.findUnique({
-    where: { channelLinkId_sourceThreadId: { channelLinkId: linkId, sourceThreadId } },
+/**
+ * Toutes les incarnations d'un fil dans le pont, salon parent par salon parent.
+ * Le fil interrogé peut aussi bien être l'original que l'une de ses copies.
+ */
+async function threadLocations(groupId: string, threadId: string) {
+  const rows = await prisma.channelLinkGroupThread.findMany({
+    where: { groupId, OR: [{ sourceThreadId: threadId }, { relayedThreadId: threadId }] },
   });
+  if (rows.length === 0) return null;
+
+  const asSource = rows.find((r) => r.sourceThreadId === threadId);
+  const origin = asSource
+    ? { threadId: asSource.sourceThreadId, guildId: asSource.sourceGuildId, channelId: asSource.sourceChannelId }
+    : { threadId: rows[0]!.sourceThreadId, guildId: rows[0]!.sourceGuildId, channelId: rows[0]!.sourceChannelId };
+
+  const copies = asSource
+    ? rows.filter((r) => r.sourceThreadId === threadId)
+    : await prisma.channelLinkGroupThread.findMany({ where: { groupId, sourceThreadId: origin.threadId } });
+
+  const locations = new Map<string, { threadId: string; guildId: string }>();
+  locations.set(origin.channelId, { threadId: origin.threadId, guildId: origin.guildId });
+  for (const copy of copies) {
+    locations.set(copy.relayedChannelId, { threadId: copy.relayedThreadId, guildId: copy.relayedGuildId });
+  }
+
+  return { origin, locations };
 }
 
-async function findLinkedThreadReverse(linkId: string, relayedThreadId: string) {
-  return prisma.channelLinkThread.findFirst({
-    where: { channelLinkId: linkId, relayedThreadId },
-  });
+/**
+ * Fils que le relais vient de créer.
+ *
+ * Discord annonce la création d'un fil au bot qui l'a créé comme aux autres :
+ * sans mémoire, la copie posée dans le salon d'en face repartirait aussitôt en
+ * copie chez tout le monde. La ligne en base arrive juste après la création, et
+ * ce jeu couvre l'instant qui les sépare.
+ */
+const relayCreatedThreadIds = new Set<string>();
+
+function rememberRelayedThread(threadId: string) {
+  relayCreatedThreadIds.add(threadId);
+  setTimeout(() => relayCreatedThreadIds.delete(threadId), 5 * 60 * 1000).unref?.();
 }
 
 export async function relayThreadCreate(thread: ThreadChannel, client: Client): Promise<void> {
   if (!thread.parent || !thread.guild) return;
+  if (relayCreatedThreadIds.has(thread.id)) return;
 
-  const links = await getLinksForChannel(thread.guild.id, thread.parent.id);
-  const threadLinks = links.filter((l) => l.relayThreads);
-  if (threadLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(thread.guild.id, thread.parent.id)).filter((g) => g.relayThreads);
+  if (groups.length === 0) return;
 
-  for (const link of threadLinks) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, thread.guild.id, thread.parent.id);
-      if (!relay) continue;
+      const resolved = resolveTargets(group, thread.guild.id, thread.parent.id);
+      if (!resolved) continue;
 
-      const existing = await findLinkedThread(link.id, thread.id);
-      if (existing) continue;
+      // Le fil est déjà la copie d'un autre : le remirroiter multiplierait les
+      // fils à chaque tour de pont.
+      const isCopy = await prisma.channelLinkGroupThread.findFirst({
+        where: { groupId: group.id, relayedThreadId: thread.id },
+        select: { id: true },
+      });
+      if (isCopy) continue;
 
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
-
-      const textChannel = destChannel as TextChannel;
       const starterMessage = await thread.fetchStarterMessage().catch(() => null);
 
-      const newThread = await textChannel.threads.create({
-        name: thread.name,
-        autoArchiveDuration: thread.autoArchiveDuration ?? 1440,
-        reason: `Kotbo Link: thread synchronisé depuis ${thread.guild.name}`,
-      });
+      for (const target of resolved.targets) {
+        try {
+          const existing = await prisma.channelLinkGroupThread.findUnique({
+            where: {
+              groupId_sourceThreadId_relayedChannelId: {
+                groupId: group.id,
+                sourceThreadId: thread.id,
+                relayedChannelId: target.channelId,
+              },
+            },
+          });
+          if (existing) continue;
 
-      if (starterMessage?.content) {
-        const webhookClient = relay.webhookId ? await getWebhookClient(textChannel, relay.webhookId) : null;
-        if (webhookClient) {
-          await webhookClient.send({
-            content: starterMessage.content,
-            username: starterMessage.author.displayName || starterMessage.author.username,
-            avatarURL: starterMessage.author.displayAvatarURL(),
-            threadId: newThread.id,
-            allowedMentions: { parse: [] },
-          }).catch(() => null);
-          webhookClient.destroy();
-        } else {
-          await newThread.send({
-            embeds: [new EmbedBuilder()
-              .setColor(COLORS.info)
-              .setAuthor({
-                name: `${starterMessage.author.displayName || starterMessage.author.username} • ${thread.guild.name}`,
-                iconURL: starterMessage.author.displayAvatarURL(),
-              })
-              .setDescription(starterMessage.content)
-              .setTimestamp(starterMessage.createdAt)],
-          }).catch(() => null);
+          const destGuild = client.guilds.cache.get(target.guildId);
+          if (!destGuild) continue;
+          const destChannel = destGuild.channels.cache.get(target.channelId);
+          if (!destChannel || !destChannel.isTextBased()) continue;
+
+          const textChannel = destChannel as TextChannel;
+          const newThread = await textChannel.threads.create({
+            name: thread.name,
+            autoArchiveDuration: thread.autoArchiveDuration ?? 1440,
+            reason: `Kotbo Link: thread synchronisé depuis ${thread.guild.name}`,
+          });
+          rememberRelayedThread(newThread.id);
+
+          if (starterMessage?.content) {
+            const starterWebhookId = await ensureTargetWebhookId(client, group, target);
+            const webhookClient = starterWebhookId ? await getWebhookClient(textChannel, starterWebhookId) : null;
+            if (webhookClient) {
+              await webhookClient.send({
+                content: neutralizeMassMentions(starterMessage.content),
+                username: starterMessage.author.displayName || starterMessage.author.username,
+                avatarURL: starterMessage.author.displayAvatarURL(),
+                threadId: newThread.id,
+                allowedMentions: { parse: [] },
+              }).catch(() => null);
+              webhookClient.destroy();
+            } else {
+              await newThread.send({
+                allowedMentions: { parse: [] },
+                embeds: [new EmbedBuilder()
+                  .setColor(COLORS.info)
+                  .setAuthor({
+                    name: `${starterMessage.author.displayName || starterMessage.author.username} • ${thread.guild.name}`,
+                    iconURL: starterMessage.author.displayAvatarURL(),
+                  })
+                  .setDescription(starterMessage.content)
+                  .setTimestamp(starterMessage.createdAt)],
+              }).catch(() => null);
+            }
+          }
+
+          await prisma.channelLinkGroupThread.create({
+            data: {
+              groupId: group.id,
+              sourceThreadId: thread.id,
+              sourceGuildId: thread.guild.id,
+              sourceChannelId: thread.parent.id,
+              relayedThreadId: newThread.id,
+              relayedGuildId: target.guildId,
+              relayedChannelId: target.channelId,
+              webhookId: target.webhookId,
+            },
+          });
+
+          logger.info(TAG, `Thread ${thread.name} synchronisé: ${thread.id} → ${newThread.id}`);
+        } catch (err) {
+          logger.error(TAG, `Erreur relay thread create ${thread.id} vers ${target.guildId}/${target.channelId}`, err);
         }
       }
-
-      await prisma.channelLinkThread.create({
-        data: {
-          channelLinkId: link.id,
-          sourceThreadId: thread.id,
-          sourceGuildId: thread.guild.id,
-          relayedThreadId: newThread.id,
-          relayedGuildId: relay.destGuildId,
-          webhookId: relay.webhookId,
-        },
-      });
-
-      logger.info(TAG, `Thread ${thread.name} synchronisé: ${thread.id} → ${newThread.id}`);
     } catch (err) {
       logger.error(TAG, `Erreur relay thread create ${thread.id}`, err);
     }
@@ -1064,75 +1747,91 @@ export async function relayThreadMessage(message: Message, client: Client): Prom
   const thread = message.channel as ThreadChannel;
   if (!thread.parent) return;
 
-  const links = await getLinksForChannel(message.guild.id, thread.parent.id);
-  const threadLinks = links.filter((l) => l.relayThreads);
-  if (threadLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(message.guild.id, thread.parent.id)).filter((g) => g.relayThreads);
+  if (groups.length === 0) return;
 
-  for (const link of threadLinks) {
+  for (const group of groups) {
     try {
-      const linkedThread = await findLinkedThread(link.id, thread.id);
-      const reverseLinkedThread = !linkedThread ? await findLinkedThreadReverse(link.id, thread.id) : null;
+      const resolved = resolveTargets(group, message.guild.id, thread.parent.id);
+      if (!resolved) continue;
 
-      if (!linkedThread && !reverseLinkedThread) continue;
+      const threads = await threadLocations(group.id, thread.id);
+      if (!threads) continue;
 
-      let destGuildId: string;
-      let destThreadId: string;
-      let webhookId: string | null;
+      const stickers = readStickers(message, group);
 
-      if (linkedThread) {
-        destGuildId = linkedThread.relayedGuildId;
-        destThreadId = linkedThread.relayedThreadId;
-        webhookId = linkedThread.webhookId;
-      } else {
-        destGuildId = reverseLinkedThread!.sourceGuildId;
-        destThreadId = reverseLinkedThread!.sourceThreadId;
-        webhookId = reverseLinkedThread!.webhookId;
-      }
+      for (const [parentChannelId, location] of threads.locations) {
+        if (location.threadId === thread.id) continue;
 
-      const destGuild = client.guilds.cache.get(destGuildId);
-      if (!destGuild) continue;
+        const target = group.members.find((m) => m.channelId === parentChannelId && m.enabled);
+        if (!target || target.mode === 'SEND_ONLY') continue;
 
-      const destThread = destGuild.channels.cache.get(destThreadId) as ThreadChannel | undefined;
-      if (!destThread?.isThread()) continue;
+        try {
+          const destGuild = client.guilds.cache.get(location.guildId);
+          if (!destGuild) continue;
 
-      const parentChannel = destThread.parent as TextChannel | null;
+          const destThread = destGuild.channels.cache.get(location.threadId) as ThreadChannel | undefined;
+          if (!destThread?.isThread()) continue;
 
-      if (webhookId && parentChannel) {
-        const webhookClient = await getWebhookClient(parentChannel, webhookId);
-        if (webhookClient) {
-          const files = link.relayImages
-            ? message.attachments.map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
-            : [];
+          const parentChannel = destThread.parent as TextChannel | null;
 
-          await webhookClient.send({
-            content: message.content || undefined,
-            username: message.author.displayName || message.author.username,
-            avatarURL: message.author.displayAvatarURL(),
-            threadId: destThread.id,
-            files,
-            allowedMentions: { parse: [] },
-          });
+          const threadWebhookId = parentChannel ? await ensureTargetWebhookId(client, group, target) : null;
+          if (threadWebhookId && parentChannel) {
+            const webhookClient = await getWebhookClient(parentChannel, threadWebhookId);
+            if (webhookClient) {
+              const files = [
+                ...(group.relayImages
+                  ? message.attachments.map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
+                  : []),
+                ...stickers.files,
+              ];
 
-          webhookClient.destroy();
+              let threadContent = [message.content, stickers.note].filter(Boolean).join('\n');
+              const emojiFallback = buildEmojiImageFallback(client, target, threadContent);
+              if (emojiFallback) {
+                threadContent = emojiFallback.content;
+                files.push(...emojiFallback.files);
+              }
+
+              await webhookClient.send({
+                content: neutralizeMassMentions(threadContent) || undefined,
+                username: message.author.displayName || message.author.username,
+                avatarURL: message.author.displayAvatarURL(),
+                threadId: destThread.id,
+                files: files.slice(0, DISCORD_MAX_ATTACHMENTS),
+                allowedMentions: { parse: [] },
+              });
+
+              webhookClient.destroy();
+              continue;
+            }
+          }
+
+          const embed = new EmbedBuilder()
+            .setColor(COLORS.info)
+            .setAuthor({
+              name: `${message.author.displayName || message.author.username} • ${message.guild.name}`,
+              iconURL: message.author.displayAvatarURL(),
+            })
+            .setDescription([message.content, stickers.note].filter(Boolean).join('\n') || '*[vide]*')
+            .setTimestamp(message.createdAt);
+
+          const img = group.relayImages ? message.attachments.find((a) => a.contentType?.startsWith('image/')) : undefined;
+          const stickerImage = img ? undefined : stickers.files[0];
+          if (img) embed.setImage(img.url);
+          else if (stickerImage) embed.setImage(stickerImage.attachment);
+
+          const files = [
+            ...(group.relayImages
+              ? message.attachments.filter((a) => !a.contentType?.startsWith('image/')).map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
+              : []),
+            ...stickers.files.filter((f) => f !== stickerImage),
+          ];
+
+          await destThread.send({ embeds: [embed], files: files.slice(0, DISCORD_MAX_ATTACHMENTS), allowedMentions: { parse: [] } });
+        } catch (err) {
+          logger.error(TAG, `Erreur relay thread message ${message.id} vers ${parentChannelId}`, err);
         }
-      } else {
-        const embed = new EmbedBuilder()
-          .setColor(COLORS.info)
-          .setAuthor({
-            name: `${message.author.displayName || message.author.username} • ${message.guild.name}`,
-            iconURL: message.author.displayAvatarURL(),
-          })
-          .setDescription(message.content || '*[vide]*')
-          .setTimestamp(message.createdAt);
-
-        const files = link.relayImages
-          ? message.attachments.filter((a) => !a.contentType?.startsWith('image/')).map((a) => ({ attachment: a.url, name: a.name ?? 'file' }))
-          : [];
-
-        const img = link.relayImages ? message.attachments.find((a) => a.contentType?.startsWith('image/')) : undefined;
-        if (img) embed.setImage(img.url);
-
-        await destThread.send({ embeds: [embed], files, allowedMentions: { parse: [] } });
       }
     } catch (err) {
       logger.error(TAG, `Erreur relay thread message ${message.id}`, err);
@@ -1143,54 +1842,45 @@ export async function relayThreadMessage(message: Message, client: Client): Prom
 export async function relayThreadDelete(thread: ThreadChannel, client: Client): Promise<void> {
   if (!thread.parent || !thread.guild) return;
 
-  const links = await getLinksForChannel(thread.guild.id, thread.parent.id);
-  const threadLinks = links.filter((l) => l.relayThreads);
-  if (threadLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(thread.guild.id, thread.parent.id)).filter((g) => g.relayThreads);
+  if (groups.length === 0) return;
 
-  for (const link of threadLinks) {
+  for (const group of groups) {
     try {
-      const linkedThread = await findLinkedThread(link.id, thread.id);
-      if (!linkedThread) continue;
+      const copies = await prisma.channelLinkGroupThread.findMany({
+        where: { groupId: group.id, sourceThreadId: thread.id },
+      });
+      if (copies.length === 0) continue;
 
-      const destGuild = client.guilds.cache.get(linkedThread.relayedGuildId);
-      if (!destGuild) continue;
-      const destThread = destGuild.channels.cache.get(linkedThread.relayedThreadId) as ThreadChannel | undefined;
-      if (destThread?.isThread()) {
-        await destThread.setArchived(true).catch(() => null);
+      for (const copy of copies) {
+        const destGuild = client.guilds.cache.get(copy.relayedGuildId);
+        const destThread = destGuild?.channels.cache.get(copy.relayedThreadId) as ThreadChannel | undefined;
+        if (destThread?.isThread()) await destThread.setArchived(true).catch(() => null);
       }
 
-      await prisma.channelLinkThread.delete({ where: { id: linkedThread.id } }).catch(() => null);
-      logger.info(TAG, `Thread supprimé/archivé: ${thread.id} → ${linkedThread.relayedThreadId}`);
+      await prisma.channelLinkGroupThread.deleteMany({ where: { groupId: group.id, sourceThreadId: thread.id } }).catch(() => null);
+      logger.info(TAG, `Thread supprimé/archivé sur ${copies.length} salon(s) liés: ${thread.id}`);
     } catch (err) {
       logger.error(TAG, `Erreur relay thread delete ${thread.id}`, err);
     }
   }
 }
 
-// ── Poll relay ─────────────────────────────────────────────
+// ── Sondages ────────────────────────────────────────────────
 
 export async function relayPollMessage(message: Message, client: Client): Promise<void> {
   if (message.author.bot || !message.guild || !message.poll) return;
 
-  const links = await getLinksForChannel(message.guild.id, message.channel.id);
-  const pollLinks = links.filter((l) => l.relayPolls);
-  if (pollLinks.length === 0) return;
+  const groups = (await getGroupsForChannel(message.guild.id, message.channel.id)).filter((g) => g.relayPolls);
+  if (groups.length === 0) return;
 
-  for (const link of pollLinks) {
+  for (const group of groups) {
     try {
-      const relay = resolveRelay(link, message.guild.id, message.channel.id);
-      if (!relay) continue;
-
-      const destGuild = client.guilds.cache.get(relay.destGuildId);
-      if (!destGuild) continue;
-      const destChannel = destGuild.channels.cache.get(relay.destChannelId);
-      if (!destChannel || !destChannel.isTextBased()) continue;
+      const resolved = resolveTargets(group, message.guild.id, message.channel.id);
+      if (!resolved) continue;
 
       const poll = message.poll;
-      const answers = poll.answers.map((a) => {
-        const emoji = a.emoji?.name ? (a.emoji.id ? `<:${a.emoji.name}:${a.emoji.id}>` : a.emoji.name) : '';
-        return `${emoji} ${a.text}`.trim();
-      });
+      const answers = poll.answers.map((a) => `${formatCustomEmoji(a.emoji, client)} ${a.text}`.trim());
 
       const embed = new EmbedBuilder()
         .setColor(COLORS.info)
@@ -1207,93 +1897,112 @@ export async function relayPollMessage(message: Message, client: Client): Promis
         embed.addFields({ name: 'Expire', value: `<t:${Math.floor(poll.expiresAt.getTime() / 1000)}:R>`, inline: true });
       }
 
-      const sent = await (destChannel as TextChannel).send({ embeds: [embed], allowedMentions: { parse: [] } });
-      await saveMessageMapping(link, message.id, message.channel.id, sent.id, relay.destChannelId);
+      for (const target of resolved.targets) {
+        const destGuild = client.guilds.cache.get(target.guildId);
+        const destChannel = destGuild?.channels.cache.get(target.channelId);
+        if (!destChannel || !destChannel.isTextBased()) continue;
+
+        const sent = await (destChannel as TextChannel).send({ embeds: [embed], allowedMentions: { parse: [] } });
+        await saveMessageMapping(group, message.id, message.channel.id, target, sent.id);
+      }
     } catch (err) {
       logger.error(TAG, `Erreur relay poll ${message.id}`, err);
     }
   }
 }
 
-// ── Link management ─────────────────────────────────────────
+// ── Gestion des ponts ───────────────────────────────────────
 
-export async function listLinksForGuild(guildId: string): Promise<ChannelLink[]> {
-  return prisma.channelLink.findMany({
-    where: {
-      OR: [{ sourceGuildId: guildId }, { targetGuildId: guildId }],
-    },
+export async function listGroupsForGuild(guildId: string): Promise<LinkGroup[]> {
+  return prisma.channelLinkGroup.findMany({
+    where: { members: { some: { guildId } } },
+    include: { members: true },
     orderBy: { createdAt: 'desc' },
   });
 }
 
-export async function removeLink(linkId: string, client?: Client): Promise<ChannelLink | null> {
-  const link = await prisma.channelLink.findUnique({ where: { id: linkId } });
-  if (!link) return null;
+export async function getGroup(groupId: string): Promise<LinkGroup | null> {
+  return loadGroup(groupId);
+}
 
-  await invalidateLinkCache(link);
-  const deleted = await prisma.channelLink.delete({ where: { id: linkId } });
+export async function removeGroup(groupId: string, client?: Client): Promise<LinkGroup | null> {
+  const group = await loadGroup(groupId);
+  if (!group) return null;
 
-  // `ChannelLinkMessage` et `ChannelLinkThread` ne portent pas de relation vers
-  // `ChannelLink` : rien ne les supprime en cascade. Sans ce nettoyage, rompre
-  // un pont laissait indéfiniment en base les identifiants des messages qui y
-  // avaient transité - exactement la trace qu'un serveur croit effacer en
-  // retirant le lien.
-  await purgeLinkMessageMappings(linkId);
-  await prisma.channelLinkThread
-    .deleteMany({ where: { channelLinkId: linkId } })
-    .catch((err) => logger.warn(TAG, `Impossible de purger les threads du lien ${linkId}`, err));
+  await invalidateGroupCache(group);
+
+  // Les correspondances et les fils tombent en cascade avec le pont : rompre un
+  // pont ne doit pas laisser en base les identifiants des messages qui y ont
+  // transité - exactement la trace qu'un serveur croit effacer en le retirant.
+  await prisma.channelLinkGroup.delete({ where: { id: groupId } });
 
   // Le pont rompu, un serveur invité perd son unique raison d'être vu par le
   // bot : il redevient totalement muet pour Kotbo.
   await refreshLinkGuestGuilds();
 
-  if (client && deleted.updateTopic) {
-    await Promise.all([
-      clearChannelLinkTopic(client, deleted.sourceGuildId, deleted.sourceChannelId),
-      clearChannelLinkTopic(client, deleted.targetGuildId, deleted.targetChannelId),
-    ]);
+  if (client && group.updateTopic) {
+    await Promise.all(group.members.map((m) => clearChannelLinkTopic(client, m.guildId, m.channelId)));
   }
 
-  return deleted;
+  return group;
 }
 
-export async function updateLinkConfig(
-  linkId: string,
-  data: Partial<Pick<ChannelLink, 'relayText' | 'relayImages' | 'relayEmbeds' | 'relayReactions' | 'relayEdits' | 'relayDeletes' | 'relayThreads' | 'relayPolls' | 'relayPins' | 'sourceRelayMode' | 'targetRelayMode' | 'direction' | 'enabled' | 'updateTopic'>>,
-): Promise<ChannelLink | null> {
-  const link = await prisma.channelLink.findUnique({ where: { id: linkId } });
-  if (!link) return null;
+export async function updateGroupConfig(
+  groupId: string,
+  data: Partial<Pick<ChannelLinkGroup, 'name' | 'relayText' | 'relayImages' | 'relayEmbeds' | 'relayReactions' | 'relayEdits' | 'relayDeletes' | 'relayThreads' | 'relayPolls' | 'relayPins' | 'enabled' | 'updateTopic'>>,
+): Promise<LinkGroup | null> {
+  const group = await loadGroup(groupId);
+  if (!group) return null;
 
-  const updated = await prisma.channelLink.update({
-    where: { id: linkId },
+  const updated = await prisma.channelLinkGroup.update({
+    where: { id: groupId },
     data,
+    include: { members: true },
   });
 
-  await invalidateLinkCache(updated);
+  await invalidateGroupCache(updated);
 
-  // Désactiver le dernier lien d'un serveur invité doit refermer la garde
+  // Désactiver le dernier pont d'un serveur invité doit refermer la garde
   // aussitôt, comme le ferait une suppression.
-  if (data.enabled !== undefined && data.enabled !== link.enabled) {
+  if (data.enabled !== undefined && data.enabled !== group.enabled) {
     await refreshLinkGuestGuilds();
   }
 
-  // Couper la relaie des éditions/suppressions/réactions rend le journal des
+  // Couper le relais des éditions/suppressions/réactions rend le journal des
   // correspondances inutile : on le purge au lieu de le laisser vieillir.
   if (!needsMessageMapping(updated)) {
-    await purgeLinkMessageMappings(linkId);
+    await purgeGroupMessageMappings(groupId);
   }
 
   return updated;
 }
 
+export async function updateGroupMemberConfig(
+  groupId: string,
+  memberId: string,
+  data: Partial<Pick<ChannelLinkGroupMember, 'mode' | 'relayMode' | 'enabled'>>,
+): Promise<LinkGroup | null> {
+  const group = await loadGroup(groupId);
+  if (!group || !group.members.some((m) => m.id === memberId)) return null;
+
+  await prisma.channelLinkGroupMember.update({ where: { id: memberId }, data });
+
+  const refreshed = (await loadGroup(groupId))!;
+  await invalidateGroupCache(refreshed);
+
+  if (data.enabled !== undefined) await refreshLinkGuestGuilds();
+
+  return refreshed;
+}
+
 /**
- * Efface les correspondances de messages d'un lien : soit parce que le lien
- * cesse d'en avoir besoin, soit parce qu'il disparaît.
+ * Efface les correspondances de messages d'un pont : soit parce qu'il cesse d'en
+ * avoir besoin, soit parce qu'il disparaît.
  */
-export async function purgeLinkMessageMappings(linkId: string): Promise<number> {
-  const { count } = await prisma.channelLinkMessage.deleteMany({ where: { channelLinkId: linkId } });
+export async function purgeGroupMessageMappings(groupId: string): Promise<number> {
+  const { count } = await prisma.channelLinkGroupMessage.deleteMany({ where: { groupId } });
   if (count > 0) {
-    logger.info(TAG, `${count} correspondance(s) de messages purgée(s) pour le lien ${linkId}.`);
+    logger.info(TAG, `${count} correspondance(s) de messages purgée(s) pour le pont ${groupId}.`);
   }
   return count;
 }

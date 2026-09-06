@@ -12,9 +12,11 @@ import {
 } from 'discord.js';
 import prisma from '../../utils/db.js';
 import { logger } from '../../utils/logger.js';
+import { broadcastDashboardStateChange } from '../../api/shared/sharding.js';
 
 
 import { getClient } from '../../utils/client.js';
+import { formatGuildDateTime, formatInTimezone } from '../../utils/timezone.js';
 
 type AbsenceMutableStatus = 'PENDING' | 'ACKNOWLEDGED' | 'APPROVED' | 'REJECTED' | 'CANCELED' | 'ENDED';
 
@@ -455,6 +457,22 @@ export const getMeetings = async (guildId: string) => {
 /**
  * Crée une réunion staff avec synchronisation Discord (Événement + Annonce).
  */
+/**
+ * Refus previsible d'une creation de reunion : configuration incomplete, salon
+ * introuvable, date deja passee. Distinct d'une panne, pour que les appelants
+ * repondent 400 et montrent le message.
+ *
+ * Ils triaient jusqu'ici sur `message.includes('Configurez')` : les autres
+ * refus finissaient en erreur serveur, et la commande /meeting jetait meme
+ * leur message pour repondre « Erreur lors de la creation de la reunion ».
+ */
+export class MeetingValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MeetingValidationError';
+  }
+}
+
 export const createMeeting = async (
   client: Client,
   guildId: string,
@@ -462,9 +480,27 @@ export const createMeeting = async (
   title: string,
   description: string,
   scheduledAt: Date,
-  endedAt?: Date
+  endedAt?: Date,
+  /**
+   * Fuseau dans lequel l'organisateur a saisi l'heure. Stocke tel quel, pour
+   * re-afficher l'edition et rediger les libelles envoyes aux participants
+   * dans le meme fuseau que la creation, meme si le defaut de la guilde a
+   * change entre-temps. `undefined` = repli sur le fuseau du serveur.
+   */
+  timezone?: string | null,
 ) => {
   try {
+    // Discord refuse un événement planifié dans le passé, et une fin qui
+    // précède son début. Le contrôle vit ici parce que les trois portes
+    // d'entrée - dashboard, /meeting, MCP - passent toutes par cette fonction :
+    // ailleurs, il aurait fallu l'écrire trois fois et il en manquait deux.
+    if (scheduledAt.getTime() <= Date.now()) {
+      throw new MeetingValidationError('La réunion doit être planifiée dans le futur : Discord refuse un événement déjà passé.');
+    }
+    if (endedAt && endedAt.getTime() <= scheduledAt.getTime()) {
+      throw new MeetingValidationError('La fin de la réunion doit être postérieure à son début.');
+    }
+
     // 1. Récupération de la configuration Discord pour la guilde
     const guildConfig = await prisma.guild.findUnique({
       where: { id: guildId },
@@ -478,23 +514,23 @@ export const createMeeting = async (
     const voiceChannelId = guildConfig?.meetingVoiceChannelId;
 
     if (!announcementChannelId || !voiceChannelId) {
-      throw new Error('Configurez les salons de réunion (annonce + vocal/conférence) dans la configuration staff avant de créer une réunion.');
+      throw new MeetingValidationError('Configurez les salons de réunion (annonce + vocal/conférence) dans la configuration staff avant de créer une réunion.');
     }
 
     // 2. Récupération de la guilde et des salons Discord
     const discordGuild = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
     if (!discordGuild) {
-      throw new Error("Impossible d'accéder au serveur Discord pour créer la réunion.");
+      throw new MeetingValidationError("Impossible d'accéder au serveur Discord pour créer la réunion.");
     }
 
     const announcementChannel = await client.channels.fetch(announcementChannelId).catch(() => null);
     if (!announcementChannel || (announcementChannel.type !== ChannelType.GuildText && announcementChannel.type !== ChannelType.GuildAnnouncement)) {
-      throw new Error("Le salon d'annonce configuré est introuvable ou n'est pas un salon texte/annonces.");
+      throw new MeetingValidationError("Le salon d'annonce configuré est introuvable ou n'est pas un salon texte/annonces.");
     }
 
     const voiceChannel = await client.channels.fetch(voiceChannelId).catch(() => null);
     if (!voiceChannel || (voiceChannel.type !== ChannelType.GuildVoice && voiceChannel.type !== ChannelType.GuildStageVoice)) {
-      throw new Error('Le salon vocal/conférence configuré est introuvable ou invalide.');
+      throw new MeetingValidationError('Le salon vocal/conférence configuré est introuvable ou invalide.');
     }
 
     // 3. Création de l'événement programmé Discord
@@ -520,6 +556,7 @@ export const createMeeting = async (
         endedAt: endedAt || new Date(scheduledAt.getTime() + 60 * 60 * 1000),
         discordEventId: scheduledEvent.id,
         voiceChannelId: voiceChannel.id,
+        timezone: timezone ?? null,
         status: 'SCHEDULED'
       }
     });
@@ -557,13 +594,20 @@ export const createMeeting = async (
     const staff = await prisma.staffMember.findMany({
       where: { guildId }
     });
+
+    // Le libelle part aussi dans l'inbox du dashboard, ou un `<t:…>` resterait
+    // affiche tel quel : on formate dans le fuseau ou l'organisateur a saisi,
+    // repli sur celui du serveur. `Intl` retomberait sinon sur UTC.
+    const meetingTimeLabel = timezone
+      ? formatInTimezone(scheduledAt, timezone)
+      : await formatGuildDateTime(guildId, scheduledAt);
     
     if (staff.length > 0) {
       await Promise.all(staff.map(m => createNotification(
         guildId,
         m.userId,
         'Nouvelle réunion planifiée',
-        `La réunion "${title}" a été planifiée pour le ${scheduledAt.toLocaleString('fr-FR')}.`,
+        `La réunion "${title}" a été planifiée pour le ${meetingTimeLabel}.`,
         'INFO',
         '/planning'
       ).catch(() => null)));
@@ -572,6 +616,7 @@ export const createMeeting = async (
     // On met à jour l'annonce immédiatement pour afficher les stats initiales (ex: ceux déjà en congé)
     await updateMeetingAnnouncement(client, meeting.id);
 
+    broadcastDashboardStateChange(guildId, 'meetings_updated');
     return { ...meeting, discordMessageId: announcementMessage.id };
 
   } catch (error) {
@@ -585,10 +630,12 @@ export const createMeeting = async (
 };
 
 export const updateMeetingStatus = async (id: string, status: 'SCHEDULED' | 'COMPLETED' | 'CANCELED') => {
-  return prisma.staffMeeting.update({
+  const updated = await prisma.staffMeeting.update({
     where: { id },
     data: { status }
   });
+  broadcastDashboardStateChange(updated.guildId, 'meetings_updated');
+  return updated;
 };
 
 /**
@@ -606,6 +653,9 @@ export const updateMeeting = async (
     status?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELED';
     discordMessageId?: string;
     discordEventId?: string;
+    // `null` : revient au fuseau du serveur. Distinct de `undefined` qui laisse
+    // la valeur inchangee.
+    timezone?: string | null;
   }
 ) => {
   const meeting = await prisma.staffMeeting.update({
@@ -648,6 +698,7 @@ export const updateMeeting = async (
     }
   }
 
+  broadcastDashboardStateChange(guildId, 'meetings_updated');
   return meeting;
 };
 
@@ -719,9 +770,11 @@ export const deleteMeeting = async (
     }
   }
 
-  return prisma.staffMeeting.delete({
+  const deleted = await prisma.staffMeeting.delete({
     where: { id }
   });
+  broadcastDashboardStateChange(guildId, 'meetings_updated');
+  return deleted;
 };
 
 export const checkInMeeting = async (
@@ -780,6 +833,7 @@ export const checkInMeeting = async (
     logger.error('Meeting', `Failed to update announcement for ${meetingId}:`, err)
   );
 
+  broadcastDashboardStateChange(result.meeting.guildId, 'meetings_updated');
   return result;
 };
 
@@ -1092,6 +1146,7 @@ export const upsertProcedure = async (
 
     if (notifsData.length > 0) {
       await prisma.notification.createMany({ data: notifsData });
+      broadcastDashboardStateChange(guildId, 'notifications_updated');
     }
 
     return procedure;
@@ -1181,10 +1236,12 @@ export const markNotificationRead = async (id: string, userId: string) => {
 };
 
 export const markAllNotificationsRead = async (guildId: string, userId: string) => {
-  return prisma.notification.updateMany({
+  const result = await prisma.notification.updateMany({
     where: { guildId, userId, isRead: false },
     data: { isRead: true }
   });
+  broadcastDashboardStateChange(guildId, 'notifications_updated');
+  return result;
 };
 
 export const createNotification = async (
@@ -1214,6 +1271,7 @@ export const createNotification = async (
         isRead: false
       }
     });
+    broadcastDashboardStateChange(guildId, 'notifications_updated');
   }
 
   // 2. Envoi d'un MP automatique (pour tout le monde, staff ou non)
@@ -1769,7 +1827,7 @@ export const createCall = async (
       where: { id: { in: finalInviteeCUIDs } }
     });
 
-    const timeLabel = scheduledAt.toLocaleString('fr-FR');
+    const timeLabel = await formatGuildDateTime(guildId, scheduledAt);
     await Promise.all(inviteeStaff.map(m => 
       createNotification(
         guildId,

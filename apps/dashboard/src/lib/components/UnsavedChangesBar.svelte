@@ -119,8 +119,8 @@
     width: 2rem;
     height: 2rem;
     border-radius: 0.625rem;
-    background: color-mix(in srgb, var(--primary) 12%, transparent);
-    color: var(--primary);
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+    color: var(--primary-color);
     flex-shrink: 0;
   }
 
@@ -178,8 +178,8 @@
   }
 
   .unsaved-bar__btn--save {
-    background: var(--primary);
-    color: var(--on-primary);
+    background: var(--primary-color);
+    color: var(--on-primary-color);
   }
 
   .unsaved-bar__btn--save:not(:disabled):hover {

@@ -11,7 +11,9 @@
  * Toutes les lectures passent par prismaRead (réplica si configuré).
  */
 
+import { normalizeTimezone } from '@kotbo/contracts';
 import { prismaRead } from '../../utils/db.js';
+import { BucketZoner } from './zonedBuckets.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -163,16 +165,19 @@ function status2Known(status: string): boolean {
 }
 
 /**
- * Répartitions temporelles des arrivées. Les heures sont lues en UTC, comme le
- * reste des agrégats analytics (GuildHourlyStat), pour rester comparables.
+ * Répartitions temporelles des arrivées, à l'heure murale du fuseau demandé.
+ *
+ * Les instants sont stockés en UTC ; les lire tels quels annonçait « pic
+ * d'arrivées à 20h » pour un pic réellement observé à 22h à Paris.
  */
-function buildTiming(joins: InviteJoinRow[], labels: string[], counts: number[]) {
+function buildTiming(joins: InviteJoinRow[], labels: string[], counts: number[], zoner: BucketZoner) {
   const hourly = new Array(24).fill(0);
   const weekday = new Array(7).fill(0);
 
   for (const join of joins) {
-    hourly[join.joinedAt.getUTCHours()]++;
-    weekday[(join.joinedAt.getUTCDay() + 6) % 7]++; // lundi = 0
+    const bucket = zoner.fromDate(join.joinedAt);
+    hourly[bucket.hour]++;
+    weekday[(bucket.weekday + 6) % 7]++; // lundi = 0
   }
 
   let running = 0;
@@ -225,7 +230,9 @@ export async function getInviteInsights(
   joins: InviteJoinRow[],
   labels: string[],
   counts: number[],
+  timezone?: string,
 ) {
+  const zoner = new BucketZoner(normalizeTimezone(timezone));
   const analyzed = joins.length > MAX_ANALYZED_JOINS
     ? [...joins].sort((a, b) => b.joinedAt.getTime() - a.joinedAt.getTime()).slice(0, MAX_ANALYZED_JOINS)
     : joins;
@@ -238,7 +245,7 @@ export async function getInviteInsights(
   return {
     retention: buildRetention(joins),
     quality: { ...quality, sampled: analyzed.length < joins.length },
-    timing: buildTiming(joins, labels, counts),
+    timing: buildTiming(joins, labels, counts, zoner),
     ranking,
   };
 }

@@ -29,8 +29,16 @@ import {
   
 } from '../../utils/commandAccess.js';
 import { commands } from '../../commands.js';
-import { MODULE_REGISTRY, canonicalModuleKey, getModuleDependents } from '@kotbo/contracts';
+import {
+  MODULE_REGISTRY,
+  canonicalModuleKey,
+  getModuleDependents,
+  normalizePlanKey,
+  planForMemberCount,
+  planIncludesModule,
+} from '@kotbo/contracts';
 import { getModuleStates } from '../../services/core/moduleGate.js';
+import { canFinishOnboardingWithoutPayment, isOnboardingFeatureEnabled } from '../../services/core/onboardingGate.js';
 import { getGuildName, getOrCreateRuntime, isRecruitmentAutoRejectEnabled, resolveAdminAccess } from './core.js';
 import type { AuditEntry, CommandCatalogEntry, DashboardAccess, DashboardChannel, DashboardState, FeatureAccess, FeatureAccessMap, ModuleItem, ModuleStatus, RegulationRuleItem } from './core.js';
 import { interpretMentions } from './markdown.js';
@@ -126,6 +134,31 @@ export async function resolveFeatureAccessMap(
   }
 
   return featureAccess;
+}
+
+/**
+ * Droits par fonctionnalite du membre courant, roles Discord resolus au passage.
+ *
+ * Les routes n ont que l identifiant de l utilisateur : sans les roles, tous les
+ * acces configures par role seraient ignores et la fonction rendrait un refus.
+ * Un membre introuvable (parti du serveur) repart avec zero role, donc refuse
+ * partout ou une regle existe.
+ */
+export async function resolveMemberFeatureAccess(
+  client: Client,
+  guildId: string,
+  access: DashboardAccess,
+  userId: string,
+): Promise<FeatureAccessMap> {
+  const discordGuild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+  const member = discordGuild ? await discordGuild.members.fetch(userId).catch(() => null) : null;
+  const roleIds = member
+    ? member.roles.cache
+        .map((role) => role?.id)
+        .filter((roleId): roleId is string => !!roleId)
+    : [];
+
+  return resolveFeatureAccessMap(client, guildId, access, userId, roleIds);
 }
 
 const COMMAND_CATEGORIES: Record<string, string> = {
@@ -345,6 +378,7 @@ export const getGuildState = async (
     regulationRules,
     dailyStatsTrend,
     sanctionTables,
+    declaredStaffRoles,
   ] = await Promise.all([
     countDailyAlgoSubmissions(guildId),
     getOrCreateRuntime(guildId),
@@ -394,6 +428,12 @@ export const getGuildState = async (
             }
           }
         }),
+    overview
+      ? Promise.resolve([] as Array<{ discordRoleId: string | null }>)
+      : prisma.staffRole.findMany({
+          where: { guildId, enabled: true, discordRoleId: { not: null } },
+          select: { discordRoleId: true },
+        }),
   ]);
 
   const persistedAudit = [...persistedDashboardAudit, ...persistedDiscordAudit].sort(
@@ -427,6 +467,10 @@ export const getGuildState = async (
     createdAt: entry.createdAt.toISOString(),
     resolvedAt: entry.resolvedAt?.toISOString() ?? null,
     resolutionNote: entry.resolutionNote ?? null,
+    archivedAt: entry.archivedAt?.toISOString() ?? null,
+    archiveReason: entry.archiveReason ?? null,
+    appealable: entry.appealable,
+    appealLockReason: entry.appealLockReason ?? null,
   }));
 
   const mappedSanctionReports: SanctionReportItem[] = sanctionReports.map((entry) => ({
@@ -471,8 +515,53 @@ export const getGuildState = async (
     activity: auditTrailFromDb.length,
   };
 
+  // L'offre du serveur : `moduleStates` a deja eteint ce qu'elle ne comprend
+  // pas, mais la page a besoin de distinguer « eteint par choix » de
+  // « verrouille faute d abonnement » - ce ne sont pas les memes boutons.
+  const guildPlan = normalizePlanKey(guild.plan);
+  // Offre a proposer devant un cadenas. Les offres payantes portant le meme
+  // catalogue, ce n est plus « la premiere qui contient ce module » mais celle
+  // qui correspond a la taille du serveur : c est la seule souscriptible.
+  const purchasablePlan = planForMemberCount(client.guilds.cache.get(guildId)?.memberCount ?? null);
+
+  /**
+   * Ce serveur a-t-il un tableau de bord, ou seulement un tunnel ?
+   *
+   * Ce n'est pas `activated` qui repond : un serveur s'active tout seul en
+   * arrivant (`activateGuildSelfServe`), en offre FREE. S'y fier revenait a
+   * traiter comme installe quelqu'un qui vient a peine d'inviter le bot, et a
+   * lui servir la coquille complete - barre laterale, en-tete, cinquante pages
+   * verrouillees - au lieu de la configuration guidee qu'il attendait.
+   *
+   * Ce n'est plus l'offre non plus. La deduire de « FREE, sans abonnement, sans
+   * acces accorde, sans code » faisait disparaitre le tunnel de tout serveur
+   * qu'un geste commercial avait servi sans qu'il l'ait jamais traverse - et
+   * comme ces gestes appartiennent aux administrateurs du bot, leurs serveurs y
+   * echappaient toujours. Une seule chose repond desormais : le parcours a-t-il
+   * ete mene a son terme (`onboardingCompletedAt`). Qui regarde la page n'entre
+   * pas dans la reponse.
+   *
+   * Sans facturation sur l'instance en production, jamais : une installation
+   * auto-hebergee n'a pas d'offre a vendre, et le tunnel s'ouvrirait sur un
+   * ecran de mise en service qui n'a rien a proposer, sauf si ENABLE_ONBOARDING
+   * est actif. En developpement, on presente le tunnel pour initialiser le
+   * serveur.
+   */
+  const onboardingRequired = isOnboardingFeatureEnabled() && !guild.onboardingCompletedAt;
+
+  /**
+   * Le dernier ecran du tunnel a-t-il autre chose a proposer que Stripe ?
+   *
+   * Un serveur deja servi - offre posee a la main, abonnement en cours, code de
+   * partenariat - traverse le tunnel comme les autres, mais on ne peut pas lui
+   * reclamer un paiement qu'on lui avait justement epargne : il le termine par
+   * un simple « Acceder au tableau de bord ».
+   */
+  const onboardingCanFinishWithoutPayment = canFinishOnboardingWithoutPayment(guild);
+
   const modules: ModuleItem[] = MODULE_REGISTRY.map((definition) => {
     const requires = (definition.requires ?? []).map(canonicalModuleKey);
+    const lockedByPlan = !definition.core && !planIncludesModule(guildPlan, definition.key);
     // Un module peut etre allume dans sa propre ligne et neanmoins inerte
     // parce qu il depend d un module eteint : la page doit le dire, sinon
     // l administrateur bascule un interrupteur qui ne change rien.
@@ -494,6 +583,8 @@ export const getGuildState = async (
       dependents: getModuleDependents(definition.key),
       blockedBy,
       settingsPath: definition.paths?.[0],
+      lockedByPlan,
+      requiredPlan: lockedByPlan ? purchasablePlan : null,
     };
   });
 
@@ -581,10 +672,24 @@ export const getGuildState = async (
           name: role.name,
           mention: `<@&${role.id}>`,
           permissions: role.permissions.toArray(),
-          position: role.position
+          position: role.position,
+          // `hexColor` vaut #000000 quand le role n'a pas de couleur : on le
+          // laisse tel quel, le dashboard sait afficher la pastille neutre.
+          color: role.hexColor
     }))
     .sort((a, b) => b.position - a.position || a.name.localeCompare(a.name, 'fr'))
-    .map(({ id, name, mention, permissions, position }) => ({ id, name, mention, permissions, position }));
+    .map(({ id, name, mention, permissions, position, color }) => ({ id, name, mention, permissions, position, color }));
+
+  // Roles Discord qui donnent effectivement acces au dashboard : ceux rattaches
+  // a un grade de la hierarchie staff, plus le role moderateur, qui ouvre
+  // l'acces sans passer par elle. Poser une regle sur un autre role n'aurait
+  // aucun effet, l'interface n'a donc pas a les proposer.
+  const staffRoleIds = overview ? [] : [...new Set(
+    [
+      ...declaredStaffRoles.map((role) => role.discordRoleId),
+      guild.moderatorRoleId,
+    ].filter((roleId): roleId is string => !!roleId),
+  )];
 
   const trendMap = new Map(dailyStatsTrend.map(s => [s.dateKey, s]));
   const messagesTrend = last7Days.map(dateKey => trendMap.get(dateKey)?.messagesCount ?? 0);
@@ -596,8 +701,12 @@ export const getGuildState = async (
 
   return {
     guildName: getGuildName(client, guildId),
+    plan: guildPlan,
+    onboardingRequired,
+    onboardingCanFinishWithoutPayment,
     configChannelId: guild.configChannelId ?? '',
     logChannelId: guild.logChannelId ?? '',
+    logIgnoredChannelIds: guild.logIgnoredChannelIds ?? [],
     regulationChannelId: guild.regulationChannelId ?? '',
     regulationMessageId: guild.regulationMessageId ?? null,
     regulationVerificationEnabled: guild.regulationVerificationEnabled,
@@ -607,12 +716,14 @@ export const getGuildState = async (
     meetingVoiceChannelId: guild.meetingVoiceChannelId ?? '',
     publicChannelId: guild.publicChannelId ?? '',
     newsChannelId: guild.newsChannelId ?? '',
+    digestChannelId: guild.digestChannelId ?? '',
     dailyAlgoChannelId: guild.dailyAlgoChannelId ?? '',
     baseStaffRoleId: guild.baseStaffRoleId ?? '',
     testStaffRoleId: guild.testStaffRoleId ?? '',
     propagateSanctions: guild.propagateSanctions,
     crossServerSanctionsEnabled: guild.crossServerSanctionsEnabled,
     sanctionReportEnabled: guild.sanctionReportEnabled,
+    sanctionReportSkipBots: guild.sanctionReportSkipBots,
     translationEnabled: guild.translationEnabled,
     codePoliceEnabled: guild.codePoliceEnabled,
     dailyAlgoEnabled: guild.dailyAlgoEnabled,
@@ -651,6 +762,11 @@ export const getGuildState = async (
     funCountingChannelId: guild.funCountingChannelId ?? '',
     funOneWordStoryChannelId: guild.funOneWordStoryChannelId ?? '',
     funGuessNumberChannelId: guild.funGuessNumberChannelId ?? '',
+    funWordChainChannelId: guild.funWordChainChannelId ?? '',
+    funEmojiRiddleChannelId: guild.funEmojiRiddleChannelId ?? '',
+    funNeverSayChannelId: guild.funNeverSayChannelId ?? '',
+    funEmojiOnlyChannelId: guild.funEmojiOnlyChannelId ?? '',
+    funPunitiveMode: guild.funPunitiveMode,
     youtubeEnabled: moduleStates.youtube !== false,
     twitchEnabled: moduleStates.twitch !== false,
     socialNetworksEnabled: moduleStates.social_networks !== false,
@@ -663,6 +779,7 @@ export const getGuildState = async (
     discordVoiceChannels,
     discordCategories,
     discordRoles,
+    staffRoleIds,
     moderatorRoleId: guild.moderatorRoleId ?? '',
     commandRestrictions: runtime.commandRestrictions,
     sidebarFavorites: runtime.sidebarFavorites,
@@ -671,7 +788,14 @@ export const getGuildState = async (
       level: access.level === 'admin' ? 'admin' : 'moderator',
       canModerateContent: access.canModerateContent,
       canModerateDailyAlgo: access.canModerateDailyAlgo,
-      canManageSettings: access.canManageSettings || Object.values(featureAccess).some(f => f.canConfigure),
+      // Ce drapeau vaut "administrateur", pas "configure quelque chose quelque
+      // part". Le relever des qu'une fonctionnalite est configurable annulait
+      // tout le systeme de droits par role : les pages le lisent en `||` apres
+      // leur propre `featureAccess.<cle>.canConfigure`, donc un role autorise a
+      // configurer un seul module deverrouillait les boutons d'edition de
+      // toutes les autres pages. Le serveur, lui, a toujours refuse - il lit le
+      // vrai droit, jamais cette copie envoyee au navigateur.
+      canManageSettings: access.canManageSettings,
     },
     featureAccess,
     notifications: {

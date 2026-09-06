@@ -18,6 +18,12 @@ const mockDb = {
   clanMemberContribution: {
     findMany: mock((): Promise<unknown[]> => Promise.resolve([])),
     findUnique: mock((): Promise<unknown> => Promise.resolve(null)),
+    upsert: mock((): Promise<unknown> => Promise.resolve({ xp: 0 })),
+    update: mock((): Promise<unknown> => Promise.resolve({})),
+    delete: mock((): Promise<unknown> => Promise.resolve({})),
+  },
+  clanPointDebt: {
+    findUnique: mock((): Promise<unknown> => Promise.resolve(null)),
     update: mock((): Promise<unknown> => Promise.resolve({})),
     delete: mock((): Promise<unknown> => Promise.resolve({})),
   },
@@ -101,7 +107,8 @@ mock.module(clientJsPath, () => ({
 }));
 
 // Now import the service we want to test
-import { syncMemberClanFromDcLink, buildCategoryName, stripTrophyTag } from '../../services/community/clanService.js';
+import { syncMemberClanFromDcLink, buildCategoryName, stripTrophyTag, creditClanContribution } from '../../services/community/clanService.js';
+import { MAX_CLAN_SEASON_POINTS } from '@kotbo/shared';
 
 describe('balise de champion sur les QG', () => {
   test('retire la balise où qu\'elle se trouve dans le nom', () => {
@@ -123,6 +130,102 @@ describe('balise de champion sur les QG', () => {
     // Deux clôtures d'affilée ne doivent pas empiler les balises.
     const once = buildCategoryName('QG Alpha', true);
     expect(buildCategoryName(once, true)).toBe(once);
+  });
+});
+
+describe('ajustement manuel des points de clan', () => {
+  const params = { guildId: 'guild-123', clanId: 'clan-1', userId: 'user-1', season: 1 };
+
+  beforeEach(() => {
+    mockDb.clanMemberContribution.findUnique.mockClear();
+    mockDb.clanMemberContribution.upsert.mockClear();
+    mockDb.clanMemberContribution.update.mockClear();
+    mockDb.clanMemberContribution.findUnique.mockResolvedValue({ xp: 500 });
+    mockDb.clanPointDebt.findUnique.mockClear();
+    mockDb.clanPointDebt.update.mockClear();
+    mockDb.clanPointDebt.delete.mockClear();
+    mockDb.clanPointDebt.findUnique.mockResolvedValue(null);
+  });
+
+  test('un retrait qui laisse un total positif est inscrit tel quel', async () => {
+    mockDb.clanMemberContribution.upsert.mockResolvedValue({ xp: 400 });
+
+    const { granted } = await creditClanContribution({ ...params, amount: -100 });
+
+    expect(granted).toBe(-100);
+    expect(mockDb.clanMemberContribution.update).not.toHaveBeenCalled();
+  });
+
+  test('un retrait plus grand que le total ramène à zéro sans passer négatif', async () => {
+    mockDb.clanMemberContribution.findUnique.mockResolvedValue({ xp: 70 });
+    mockDb.clanMemberContribution.upsert.mockResolvedValue({ xp: -30 });
+    mockDb.clanMemberContribution.update.mockResolvedValue({ xp: 0 });
+
+    const { granted, contribution } = await creditClanContribution({ ...params, amount: -100 });
+
+    expect(granted).toBe(-70);
+    expect(contribution?.xp).toBe(0);
+    expect(mockDb.clanMemberContribution.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { xp: 0 } }),
+    );
+  });
+
+  test('un retrait sur une ligne inexistante ne crée rien', async () => {
+    mockDb.clanMemberContribution.findUnique.mockResolvedValue(null);
+
+    const { granted } = await creditClanContribution({ ...params, amount: -100 });
+
+    expect(granted).toBe(0);
+    expect(mockDb.clanMemberContribution.upsert).not.toHaveBeenCalled();
+  });
+
+  test('le pseudo-membre des points de clan peut porter un solde négatif', async () => {
+    mockDb.clanMemberContribution.findUnique.mockResolvedValue(null);
+    mockDb.clanMemberContribution.upsert.mockResolvedValue({ xp: -500 });
+
+    const { granted } = await creditClanContribution({
+      ...params,
+      userId: 'system_manual_points',
+      amount: -500,
+      allowNegativeBalance: true,
+    });
+
+    expect(granted).toBe(-500);
+    expect(mockDb.clanMemberContribution.update).not.toHaveBeenCalled();
+  });
+
+  test('un solde négatif reste borné à l\'opposé du plafond de saison', async () => {
+    mockDb.clanMemberContribution.findUnique.mockResolvedValue({ xp: -MAX_CLAN_SEASON_POINTS });
+    mockDb.clanMemberContribution.upsert.mockResolvedValue({ xp: -MAX_CLAN_SEASON_POINTS - 40 });
+    mockDb.clanMemberContribution.update.mockResolvedValue({ xp: -MAX_CLAN_SEASON_POINTS });
+
+    const { granted } = await creditClanContribution({
+      ...params,
+      userId: 'system_manual_points',
+      amount: -100,
+      allowNegativeBalance: true,
+    });
+
+    expect(granted).toBe(-60);
+    expect(mockDb.clanMemberContribution.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { xp: -MAX_CLAN_SEASON_POINTS } }),
+    );
+  });
+
+  test('un ajout au-delà du plafond de saison est rogné', async () => {
+    mockDb.clanMemberContribution.upsert.mockResolvedValue({ xp: MAX_CLAN_SEASON_POINTS + 40 });
+    mockDb.clanMemberContribution.update.mockResolvedValue({ xp: MAX_CLAN_SEASON_POINTS });
+
+    const { granted } = await creditClanContribution({ ...params, amount: 100 });
+
+    expect(granted).toBe(60);
+  });
+
+  test('un montant nul ne touche pas la base', async () => {
+    const { granted } = await creditClanContribution({ ...params, amount: 0 });
+
+    expect(granted).toBe(0);
+    expect(mockDb.clanMemberContribution.upsert).not.toHaveBeenCalled();
   });
 });
 

@@ -760,6 +760,13 @@ export function registerWriteMembersNewTools(ctx: McpToolContext) {
             }
           });
 
+          // Les butins des monstres désignent leur objet par son nom : un renommage doit
+          // les suivre, sinon la créature annonce un butin que plus rien ne peut verser.
+          if (existing && existing.name !== item.name) {
+            const { syncDropReferences } = await import('../../../services/features/rpg/rpgBestiaryService.js');
+            await syncDropReferences(guildId, existing.name, item.name);
+          }
+
           await audit(key_name, 'Configuration économie MCP', `Nouvel objet boutique RPG : ${name}`, `Type: ${type} | Prix: ${price}`);
           return ok({ ok: true, itemId: item.id, name });
         } catch (e) {

@@ -11,7 +11,8 @@
     showCloseButton = true,
     closeOnBackdropClick = true,
     closeOnEscape = true,
-    children
+    children,
+    footer
   } = $props<{
     open?: boolean;
     onClose?: (e?: any) => void;
@@ -22,6 +23,8 @@
     closeOnBackdropClick?: boolean;
     closeOnEscape?: boolean;
     children?: any;
+    /** Barre d'actions fixe sous le contenu défilant (ex : Annuler / Enregistrer). */
+    footer?: any;
   }>();
 
   const sizeClasses: Record<string, string> = {
@@ -118,6 +121,13 @@
       <div class="app-modal__body flex-1 min-h-0 overflow-y-auto">
         {@render children?.()}
       </div>
+
+      <!-- Footer - stays put while the body scrolls, so actions on long forms are always reachable. -->
+      {#if footer}
+        <footer class="app-modal__footer px-5 py-3.5 border-t border-outline-variant bg-surface-container-lowest shrink-0">
+          {@render footer()}
+        </footer>
+      {/if}
     </div>
   </div>
 {/if}

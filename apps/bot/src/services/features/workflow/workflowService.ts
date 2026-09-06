@@ -1,8 +1,12 @@
-import { hasBlockingIssue, validateGraph, getNodeDef, type WorkflowGraph } from '@kotbo/shared';
+import { cronMatches, hasBlockingIssue, validateGraph, getNodeDef, wallClockMinuteKey, type WorkflowGraph } from '@kotbo/shared';
+import { currentCascadeDepth, runWithCascadeDepth } from '@kotbo/core';
 import type { Client, Guild } from 'discord.js';
 import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
+import { cache } from '../../../utils/cache.js';
+import { resolveGuildTimezone } from '../../../utils/timezone.js';
 import { isGuildActivated } from '../../../utils/activation.js';
+import { isModuleEnabled } from '../../core/moduleGate.js';
 import { createWorkflowEffects, toChannelValue, toMemberValue, toMessageValue, toRoleValue } from './effects.js';
 import { runWorkflow, type ExecutionOutcome, type ExecutionState, type StepRecord } from './engine.js';
 
@@ -13,6 +17,64 @@ import { runWorkflow, type ExecutionOutcome, type ExecutionState, type StepRecor
 
 /** Au-delà, on cesse de conserver le détail pas-à-pas d'une exécution. */
 const MAX_STEPS_PERSISTED = 200;
+
+/**
+ * Nombre d'automatisations qu'une seule action de départ peut enchaîner.
+ *
+ * Une action à effet de bord publie ses propres événements - exclure un membre
+ * publie `sanction:applied`, ouvrir un ticket publie `ticket:created` - et rien
+ * n'empêche le workflow déclenché de reproduire l'action qui l'a réveillé. Sans
+ * borne, « quand une sanction est appliquée, exclure le membre » se relance
+ * indéfiniment.
+ *
+ * Le chaînage reste permis parce qu'il est légitime : un workflow qui en
+ * déclenche un autre est une composition, pas une erreur. C'est sa répétition
+ * sans fin qu'on coupe.
+ */
+const MAX_CASCADE_DEPTH = 3;
+
+/**
+ * Court volontairement : l'invalidation explicite ne touche que le cache
+ * mémoire du processus qui écrit. En mode distribué (`EVENTBUS_DISTRIBUTED`),
+ * le processus qui traite les événements garde sa copie jusqu'à expiration, et
+ * cette borne fixe le délai maximal avant qu'un workflow fraîchement activé
+ * ne parte.
+ */
+const TRIGGER_EVENTS_TTL_SECONDS = 60;
+
+/** Préfixe `guild:` : `cache.invalidateGuild` balaie la clé avec le reste. */
+function triggerEventsKey(guildId: string): string {
+  return `guild:${guildId}:workflow-trigger-events`;
+}
+
+async function invalidateTriggerEvents(guildId: string): Promise<void> {
+  await cache.delete(triggerEventsKey(guildId)).catch(() => null);
+}
+
+/**
+ * Événements pour lesquels le serveur a au moins un workflow actif.
+ *
+ * `dispatchEvent` est appelée à chaque message, chaque réaction et chaque
+ * arrivée : sans cette liste, un serveur sans le moindre workflow paierait une
+ * requête SQL par message. La liste tient dans le cache mémoire de premier
+ * niveau, et toute écriture sur un workflow la périme.
+ */
+async function activeTriggerEvents(guildId: string): Promise<string[]> {
+  const key = triggerEventsKey(guildId);
+
+  const cached = await cache.get<string[]>(key);
+  if (cached) return cached;
+
+  const rows = await prisma.workflow.findMany({
+    where: { guildId, enabled: true },
+    select: { triggerEvent: true },
+    distinct: ['triggerEvent'],
+  });
+
+  const events = rows.map((row) => row.triggerEvent);
+  await cache.set(key, events, TRIGGER_EVENTS_TTL_SECONDS);
+  return events;
+}
 
 // ============================================================================
 // ENREGISTREMENT
@@ -57,7 +119,7 @@ export async function createWorkflow(guildId: string, input: SaveWorkflowInput, 
   assertValid(input.graph);
   const { triggerType, triggerEvent } = extractTrigger(input.graph);
 
-  return prisma.workflow.create({
+  const workflow = await prisma.workflow.create({
     data: {
       guildId,
       name: input.name.trim().slice(0, 100) || 'Workflow',
@@ -69,6 +131,9 @@ export async function createWorkflow(guildId: string, input: SaveWorkflowInput, 
       createdById,
     },
   });
+
+  await invalidateTriggerEvents(guildId);
+  return workflow;
 }
 
 export async function updateWorkflow(guildId: string, id: string, input: SaveWorkflowInput) {
@@ -88,11 +153,25 @@ export async function updateWorkflow(guildId: string, id: string, input: SaveWor
   });
 
   if (count === 0) return null;
+
+  await invalidateTriggerEvents(guildId);
   return prisma.workflow.findUnique({ where: { id } });
 }
 
 export async function deleteWorkflow(guildId: string, id: string): Promise<boolean> {
   const { count } = await prisma.workflow.deleteMany({ where: { id, guildId } });
+  if (count > 0) await invalidateTriggerEvents(guildId);
+  return count > 0;
+}
+
+/**
+ * Bascule l'état d'un workflow. Passe par le service plutôt que par une écriture
+ * directe depuis la route : c'est ce qui garantit que la liste des événements
+ * actifs est périmée en même temps.
+ */
+export async function setWorkflowEnabled(guildId: string, id: string, enabled: boolean): Promise<boolean> {
+  const { count } = await prisma.workflow.updateMany({ where: { id, guildId }, data: { enabled } });
+  if (count > 0) await invalidateTriggerEvents(guildId);
   return count > 0;
 }
 
@@ -222,13 +301,100 @@ export async function buildTriggerOutputs(
       return member ? { member, channel, subject: String(payload.subject ?? '') } : null;
     }
 
+    // Le déclencheur planifié n'expose aucune entité : seules les propriétés
+    // du serveur, toujours disponibles, alimentent les étapes.
+    case 'OnSchedule':
+      return {};
+
     case 'OnLevelUp': {
       const member = await memberOf(payload.userId);
       return member ? { member, level: Number(payload.level ?? 0) } : null;
     }
 
+    case 'OnBetResolved': {
+      const winners = Array.isArray(payload.winners) ? payload.winners : [];
+      const first = winners[0] as { userId?: unknown; netGain?: unknown } | undefined;
+      // Un pari se joue à plusieurs mais les actions s'adressent à un membre :
+      // le premier vainqueur alimente le port, les autres sont résumés par leur
+      // nombre. Sans vainqueur résoluble, le workflow ne part pas - il n'aurait
+      // personne à qui s'adresser.
+      const member = await memberOf(first?.userId);
+      if (!member) return null;
+      return {
+        member,
+        subject: String(payload.subject ?? ''),
+        side: String(payload.winningSideLabel ?? ''),
+        netGain: Number(first?.netGain ?? 0),
+        pot: Number(payload.pot ?? 0),
+        winnerCount: winners.length,
+      };
+    }
+
+    case 'OnBetRefunded': {
+      const refunded = Array.isArray(payload.refunded) ? payload.refunded : [];
+      const total = refunded.reduce(
+        (sum: number, entry) => sum + Number((entry as { amount?: unknown }).amount ?? 0),
+        0,
+      );
+      // Aucun membre à exposer : un pari annulé rend leur mise à plusieurs
+      // personnes à la fois, aucune n'est le sujet de l'événement.
+      return { subject: String(payload.subject ?? ''), reason: String(payload.reason ?? ''), refunded: total };
+    }
+
+    case 'OnClanDebtOpened': {
+      const member = await memberOf(payload.userId);
+      return member
+        ? { member, amount: Number(payload.amount ?? 0), total: Number(payload.total ?? 0) }
+        : null;
+    }
+
+    case 'OnClanDebtCleared': {
+      const member = await memberOf(payload.userId);
+      return member ? { member, repaid: Number(payload.repaid ?? 0) } : null;
+    }
+
     default:
       return null;
+  }
+}
+
+/**
+ * Exécute un workflow sur un payload et consigne le résultat.
+ *
+ * Partagé entre le déclenchement par événement et le balayage des
+ * planifications, qui ne diffèrent que par la façon de choisir les workflows
+ * à lancer.
+ */
+async function runAndPersist(
+  guild: Guild,
+  workflow: { id: string; triggerType: string; graph: unknown },
+  payload: Record<string, unknown>,
+  source: string,
+): Promise<void> {
+  try {
+    const triggerOutputs = await buildTriggerOutputs(guild, workflow.triggerType, payload);
+    // Payload inexploitable pour ce déclencheur : rien à faire, ce n'est pas
+    // une erreur du workflow.
+    if (!triggerOutputs) return;
+
+    // Les actions publient leurs propres événements : elles s'exécutent donc un
+    // cran plus loin dans la cascade, ce que `dispatchEvent` relit pour refuser
+    // de repartir au-delà de `MAX_CASCADE_DEPTH`.
+    const depth = currentCascadeDepth() + 1;
+    const outcome = await runWithCascadeDepth(depth, () => runWorkflow({
+      graph: workflow.graph as WorkflowGraph,
+      effects: createWorkflowEffects(guild),
+      triggerOutputs,
+    }));
+
+    // Une exécution suspendue par un « Attendre » reprend dans un tout autre
+    // contexte : la profondeur voyage donc avec son état, sinon la reprise
+    // relancerait la cascade depuis zéro.
+    outcome.state.cascadeDepth = depth;
+
+    await persistOutcome(workflow.id, guild.id, outcome, payload);
+  } catch (error) {
+    logger.error('Workflow', `Échec du workflow ${workflow.id} sur ${source}:`, error);
   }
 }
 
@@ -246,6 +412,21 @@ export async function dispatchEvent(
 ): Promise<void> {
   if (!isGuildActivated(guildId)) return;
 
+  // Sortie immédiate et sans requête pour l'immense majorité des événements,
+  // qui n'intéressent aucun workflow du serveur.
+  if (!(await activeTriggerEvents(guildId)).includes(busEvent)) return;
+
+  // Testé ici plutôt qu'à l'entrée : au-dessus, l'avertissement partirait aussi
+  // pour les événements que personne n'écoute, donc à chaque message.
+  const depth = currentCascadeDepth();
+  if (depth >= MAX_CASCADE_DEPTH) {
+    logger.warn(
+      'Workflow',
+      `Cascade interrompue sur ${busEvent} pour ${guildId} : ${depth} automatisations déjà enchaînées.`,
+    );
+    return;
+  }
+
   const workflows = await prisma.workflow.findMany({
     where: { guildId, enabled: true, triggerEvent: busEvent },
   });
@@ -255,24 +436,98 @@ export async function dispatchEvent(
   if (!guild) return;
 
   await Promise.all(workflows.map(async (workflow) => {
-    try {
-      const graph = workflow.graph as unknown as WorkflowGraph;
-      const triggerOutputs = await buildTriggerOutputs(guild, workflow.triggerType, payload);
-      // Payload inexploitable pour ce déclencheur : rien à faire, ce n'est pas
-      // une erreur du workflow.
-      if (!triggerOutputs) return;
-
-      const outcome = await runWorkflow({
-        graph,
-        effects: createWorkflowEffects(guild),
-        triggerOutputs,
-      });
-
-      await persistOutcome(workflow.id, guildId, outcome, payload);
-    } catch (error) {
-      logger.error('Workflow', `Échec du workflow ${workflow.id} sur ${busEvent}:`, error);
-    }
+    await runAndPersist(guild, workflow, payload, busEvent);
   }));
+}
+
+// ============================================================================
+// PLANIFICATIONS
+// ============================================================================
+
+/** Motif du nœud « Planification » d'un graphe, s'il en porte un. */
+function readSchedule(graph: WorkflowGraph): string | null {
+  const node = graph.nodes.find((candidate) => candidate.type === 'OnSchedule');
+  const expression = typeof node?.config?.cron === 'string' ? node.config.cron : '';
+  return expression.trim() || null;
+}
+
+/**
+ * Lance les workflows planifiés dont le motif tombe sur cette minute.
+ *
+ * Contrairement aux autres déclencheurs, celui-ci ne s'abonne à rien : c'est
+ * un balayage, appelé chaque minute par le cron. Passer par le bus lancerait
+ * tous les workflows planifiés du serveur à chaque tick, puisque le dispatch
+ * sélectionne par événement et non par workflow.
+ *
+ * Le motif est lu dans le fuseau du serveur, pas dans celui du process : le bot
+ * tourne en UTC, et « tous les jours à 9h00 » serait sinon parti à 11h à Paris.
+ *
+ * `lastRunAt` sert de garde-fou : deux passages dans la même minute - tick qui
+ * se chevauche, second processus en mode distribué - ne relancent pas le même
+ * workflow. La minute est réservée par une écriture conditionnelle, la seule
+ * façon de trancher quand les deux passages lisent avant que l'un écrive.
+ */
+export async function dispatchScheduledWorkflows(client: Client, now = new Date()): Promise<void> {
+  const workflows = await prisma.workflow.findMany({
+    where: { enabled: true, triggerEvent: 'schedule:fired' },
+  });
+  if (workflows.length === 0) return;
+
+  const minuteStart = new Date(now);
+  minuteStart.setSeconds(0, 0);
+
+  /** Un fuseau par serveur : plusieurs planifications s'y partagent la lecture. */
+  const timezones = new Map<string, string>();
+
+  for (const workflow of workflows) {
+    try {
+      if (!isGuildActivated(workflow.guildId)) continue;
+      if (!(await isModuleEnabled(workflow.guildId, 'workflows'))) continue;
+      // Déjà parti cette minute d'après la copie qu'on vient de lire : inutile
+      // d'aller jusqu'à la réservation, qui coûte une écriture.
+      if (workflow.lastRunAt && workflow.lastRunAt >= minuteStart) continue;
+
+      const graph = workflow.graph as unknown as WorkflowGraph;
+      const expression = readSchedule(graph);
+      if (!expression) continue;
+
+      let timezone = timezones.get(workflow.guildId);
+      if (timezone === undefined) {
+        timezone = await resolveGuildTimezone(workflow.guildId);
+        timezones.set(workflow.guildId, timezone);
+      }
+      if (!cronMatches(expression, now, timezone)) continue;
+
+      const guild = client.guilds.cache.get(workflow.guildId);
+      if (!guild) continue;
+
+      // La nuit du retour à l'heure d'hiver, l'horloge repasse par la même
+      // heure : « tous les jours à 02h30 » y tombe deux fois, à une heure
+      // d'intervalle. Les deux instants sont distincts, donc la réservation
+      // ci-dessous les accepte tous les deux - seule la minute murale les
+      // confond, et c'est bien elle que l'admin a réglée.
+      if (workflow.lastRunAt
+        && wallClockMinuteKey(workflow.lastRunAt, timezone) === wallClockMinuteKey(now, timezone)) {
+        continue;
+      }
+
+      // Réservation de la minute avant d'exécuter. Le test ci-dessus porte sur
+      // une lecture déjà ancienne : deux balayages concurrents la passent tous
+      // les deux. Ici c'est la base qui départage, et le perdant s'abstient.
+      const { count } = await prisma.workflow.updateMany({
+        where: {
+          id: workflow.id,
+          OR: [{ lastRunAt: null }, { lastRunAt: { lt: minuteStart } }],
+        },
+        data: { lastRunAt: new Date() },
+      });
+      if (count === 0) continue;
+
+      await runAndPersist(guild, workflow, { firedAt: minuteStart.toISOString(), cron: expression }, 'schedule');
+    } catch (error) {
+      logger.error('Workflow', `Échec du balayage planifié pour ${workflow.id}:`, error);
+    }
+  }
 }
 
 // ============================================================================
@@ -381,11 +636,21 @@ export async function resumePendingExecutions(client: Client): Promise<void> {
         data: { status: 'RUNNING', resumeAt: null },
       });
 
-      const outcome = await runWorkflow({
+      const state = execution.context as unknown as ExecutionState;
+      // Une exécution enregistrée avant l'introduction du compteur n'en porte
+      // pas : on la place à l'intérieur d'une automatisation plutôt qu'à la
+      // racine, ce qui lui laisse de quoi enchaîner sans repartir de zéro.
+      const depth = typeof state?.cascadeDepth === 'number' ? state.cascadeDepth : 1;
+
+      const outcome = await runWithCascadeDepth(depth, () => runWorkflow({
         graph: execution.workflow.graph as unknown as WorkflowGraph,
         effects: createWorkflowEffects(guild),
-        state: execution.context as unknown as ExecutionState,
-      });
+        state,
+      }));
+
+      // Un second « Attendre » repasse par ici : la profondeur doit survivre à
+      // chaque reprise, pas seulement à la première.
+      outcome.state.cascadeDepth = depth;
 
       await persistOutcome(
         execution.workflowId,

@@ -5,11 +5,12 @@ import {
   MessageFlags,
   type ChatInputCommandInteraction,
 } from 'discord.js';
-import { successContainer, kotboContainer } from '../../utils/embeds.js';
+import { successContainer, errorContainer, kotboContainer } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
 import {
   analyzeGuildChannelHealth,
   upsertChannelHealthConfig,
+  archiveChannel,
 } from '../../services/analytics/channelHealthService.js';
 import { separator, v2Message } from '@arcscord/components';
 import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
@@ -20,6 +21,7 @@ const analyseMeta = getCommandMetadata('b4_ch_analyse');
 const activerMeta = getCommandMetadata('b4_ch_activer');
 const desactiverMeta = getCommandMetadata('b4_ch_desactiver');
 const configMeta = getCommandMetadata('b4_ch_config');
+const archiverMeta = getCommandMetadata('b4_ch_archiver');
 
 const MODE_CHOICES = [
   {
@@ -67,6 +69,21 @@ const data = new SlashCommandBuilder()
       .setNameLocalizations(desactiverMeta.nameLocalizations)
       .setDescription(desactiverMeta.description)
       .setDescriptionLocalizations(desactiverMeta.descriptionLocalizations),
+  )
+  .addSubcommand(sub =>
+    sub
+      .setName(archiverMeta.name)
+      .setNameLocalizations(archiverMeta.nameLocalizations)
+      .setDescription(archiverMeta.description)
+      .setDescriptionLocalizations(archiverMeta.descriptionLocalizations)
+      .addChannelOption(opt =>
+        opt
+          .setName('salon')
+          .setDescription(m.b4_ch_archiver_opt_salon({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.b4_ch_archiver_opt_salon({}, { locale: 'fr' }) })
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
+      ),
   )
   .addSubcommand(sub =>
     sub
@@ -228,6 +245,21 @@ async function execute(interaction: ChatInputCommandInteraction) {
     await interaction.editReply(v2Message(
       successContainer('Moniteur activé', desc),
     ));
+  } else if (subcommand === 'archiver') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const channel = interaction.options.getChannel('salon', true);
+
+    const success = await archiveChannel(interaction.client, guildId, channel.id);
+
+    if (success) {
+      await interaction.editReply(v2Message(
+        successContainer('Salon archivé', `<#${channel.id}> a été déplacé dans la catégorie d'archives et est passé en lecture seule.`),
+      ));
+    } else {
+      await interaction.editReply(v2Message(
+        errorContainer('Archivage impossible', `Le moniteur de santé des salons doit être activé (\`/channelhealth activer\`) avant de pouvoir archiver <#${channel.id}>.`),
+      ));
+    }
   } else if (subcommand === 'desactiver') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await upsertChannelHealthConfig(guildId, { enabled: false });

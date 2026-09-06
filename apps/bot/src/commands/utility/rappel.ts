@@ -12,6 +12,7 @@ import { successEmbed, errorEmbed, COLORS } from '../../utils/embeds.js';
 import { parseDateTimeOrDuration } from '../moderation/transcript.js';
 import { createReminder, deleteReminder } from '../../services/staff/reminderService.js';
 import { getEffectiveLocale, getCommandMetadata } from '../../utils/i18n.js';
+import { formatInTimezone, resolveGuildTimezone } from '../../utils/timezone.js';
 import * as m from '../../lib/paraglide/messages.js';
 
 const meta = getCommandMetadata('c6_rappel');
@@ -114,7 +115,10 @@ async function execute(interaction: ChatInputCommandInteraction) {
     const channel = interaction.options.getChannel(createSalonMeta.name, false);
     const planningItem = interaction.options.getString(createPlanningMeta.name, false);
 
-    const targetTimeMs = parseDateTimeOrDuration(tempsStr);
+    const timezone = await resolveGuildTimezone(guildId);
+    // `direction: 'future'` : une duree relative (« 2h ») designe ici une
+    // echeance, alors que `/transcript` s'en sert pour remonter le temps.
+    const targetTimeMs = parseDateTimeOrDuration(tempsStr, { timezone, direction: 'future' });
     if (targetTimeMs === null) {
       await interaction.reply({
         content: m.c6_rappel_invalid_time({}, { locale }),
@@ -316,8 +320,9 @@ async function autocomplete(interaction: AutocompleteInteraction) {
         take: 25
       });
 
+      const timezone = await resolveGuildTimezone(guildId);
       const choices = reminders.map(r => {
-        const dateStr = r.targetTime.toLocaleDateString(locale === 'fr' ? 'fr-FR' : 'en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const dateStr = formatInTimezone(r.targetTime, timezone, locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
         return {
           name: `⏰ [${dateStr}] ${r.message.slice(0, 70)}`,
           value: r.id

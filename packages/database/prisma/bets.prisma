@@ -1,0 +1,201 @@
+// ============================================================================
+// PARIS ENTRE MEMBRES (points de clan)
+// ============================================================================
+
+/// Pari en points de clan, du duel nominatif au pari libre à plusieurs camps.
+///
+/// Un pari est toujours un ensemble de camps qui se disputent un pot. Le duel
+/// n'est qu'un cas particulier - deux camps d'une place - et c'est ce qui permet
+/// à un seul moteur de résolution de couvrir le duel, le pool et les équipes :
+/// le camp désigné gagnant se partage le pot, point.
+///
+/// Les mises sont prélevées à l'entrée, quand chacun rejoint. Un prélèvement
+/// différé obligerait à réserver les points promis, à revérifier la solvabilité
+/// de tout le monde à la clôture des inscriptions, et à gérer un prélèvement
+/// groupé qui peut échouer à moitié. Ici, on paie ce qu'on voit à l'écran au
+/// moment où on clique, et un pari qui n'aboutit pas rembourse.
+model ClanBet {
+  id        String  @id @default(cuid())
+  guildId   String
+  channelId String
+  messageId String?
+  /// Fil de discussion ouvert sous l'annonce, pour les échanges entre parieurs.
+  threadId  String?
+
+  /// Auteur du pari. Il est aussi participant : sa mise part dès la création.
+  authorId String
+
+  /// DUEL | POOL | TEAMS
+  ///
+  /// Contraint la saisie, pas la résolution : DUEL impose deux camps d'une
+  /// place, POOL un camp par participant, TEAMS des camps librement peuplés.
+  shape String @default("DUEL")
+
+  /// TARGETED | OPEN
+  ///
+  /// `TARGETED` n'ouvre le pari qu'aux membres invités, matérialisés par des
+  /// participants `INVITED` ; `OPEN` laisse n'importe qui rejoindre.
+  access String @default("TARGETED")
+
+  /// PER_MEMBER | PER_SIDE
+  ///
+  /// `PER_MEMBER` : chacun mise `stake`, et un camp en sous-nombre gagne
+  /// mécaniquement une meilleure cote. `PER_SIDE` : chaque camp engage `stake`
+  /// au total, divisé entre ses places - ce qui n'a de sens qu'avec des camps à
+  /// effectif fixe, sans quoi la mise de chacun changerait à chaque arrivée,
+  /// après son propre prélèvement.
+  stakeMode String @default("PER_MEMBER")
+
+  subject String
+  /// Mise de référence : par personne en `PER_MEMBER`, par camp en `PER_SIDE`.
+  /// Ce que chaque participant doit réellement engager est figé sur sa ligne.
+  stake  Int
+  season Int @default(1)
+
+  /// PENDING | LOCKED | ACTIVE | RESOLVED | REFUNDED | DECLINED | CANCELLED | EXPIRED
+  ///
+  /// `PENDING` couvre les inscriptions, qui portent déjà de l'argent puisque
+  /// chacun paie en entrant : toute fin sans verdict rembourse, y compris une
+  /// expiration ou un refus.
+  ///
+  /// `LOCKED` est un état de passage : il est posé par une écriture
+  /// conditionnelle avant de toucher aux points, ce qui empêche deux clics
+  /// simultanés de prélever ou de verser deux fois.
+  status String @default("PENDING")
+
+  /// Clôture des inscriptions. Au-delà, le pari démarre s'il a de quoi opposer
+  /// au moins deux camps, et rembourse tout le monde sinon.
+  expiresAt DateTime
+
+  /// Camp désigné vainqueur. Ses membres se partagent le pot au prorata de ce
+  /// qu'ils ont réellement engagé.
+  winningSideId String?
+  resolvedById  String?
+  resolvedAt    DateTime?
+
+  guild        Guild                @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  sides        ClanBetSide[]
+  participants ClanBetParticipant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Balayage des inscriptions échues.
+  @@index([guildId, status, expiresAt])
+  @@index([guildId, season, status])
+  @@map("clan_bets")
+}
+
+/// Camp d'un pari : une issue sur laquelle on mise, ou une équipe.
+model ClanBetSide {
+  id    String @id @default(cuid())
+  betId String
+
+  /// Ordre d'affichage, et identité stable du camp dans les `customId` de
+  /// boutons : un libellé change, une position non.
+  position Int
+  label    String
+
+  /// Nombre de places, `null` pour un camp qui se remplit sans limite. En
+  /// `PER_SIDE`, la capacité est obligatoire : c'est elle qui rend la mise
+  /// individuelle calculable dès la création.
+  capacity Int?
+
+  bet          ClanBet              @relation(fields: [betId], references: [id], onDelete: Cascade)
+  participants ClanBetParticipant[]
+
+  @@unique([betId, position])
+  @@map("clan_bet_sides")
+}
+
+/// Engagement d'une personne dans un camp.
+///
+/// Les montants réellement prélevés sont conservés ici parce que le crédit est
+/// plafonné à la source et que le plafond de saison peut rogner un prélèvement :
+/// redistribuer la mise théorique plutôt que l'engagement réel créerait des
+/// points de clan à partir de rien.
+model ClanBetParticipant {
+  id     String @id @default(cuid())
+  betId  String
+  sideId String
+
+  /// Compte qui a cliqué, tel qu'il est mentionné dans les annonces.
+  userId String
+  /// Identifiant sous lequel ses points de clan sont comptés. Un membre à
+  /// comptes liés n'a qu'une ligne de contribution : c'est cette clé qui est
+  /// débitée, et c'est sur elle que porte l'unicité, sinon il suffirait de
+  /// basculer sur son double pour rejoindre deux fois le même pari.
+  userKey String
+
+  /// Clan figé à l'entrée. Un membre peut en changer pendant le pari ; sans
+  /// cette colonne, le remboursement ou le gain atterrirait sur une ligne de
+  /// contribution qui n'a jamais été débitée.
+  clanId String?
+
+  /// INVITED | JOINED | DECLINED
+  ///
+  /// `INVITED` est une place réservée qui n'a rien prélevé : c'est ce qui donne
+  /// à la personne défiée l'exclusivité du bouton d'acceptation.
+  status String @default("JOINED")
+
+  /// Ce que cette personne devait engager, figé à l'entrée. En `PER_SIDE`, il
+  /// dépend du nombre de places du camp et diffère donc de `ClanBet.stake`.
+  stake Int @default(0)
+
+  /// Points réellement prélevés sur son solde.
+  escrow Int @default(0)
+  /// Part de sa mise engagée à crédit, quand le mode dette est ouvert.
+  ///
+  /// Cette part est de la valeur réelle dans le pot, sinon le gagnant toucherait
+  /// moins que la mise annoncée. Au verdict, un perdant garde sa dette ; un
+  /// gagnant voit la sienne remboursée sur son gain, puisque tout crédit de
+  /// points de clan passe d'abord par le remboursement. En cas d'annulation,
+  /// chacun récupère son escrow et voit sa part à crédit effacée.
+  debt Int @default(0)
+
+  /// Ce qui lui a été versé au verdict, et la part partie en remboursement de sa
+  /// dette. Conservés pour que le récapitulatif explique l'écart entre l'enjeu
+  /// annoncé et ce qui est réellement arrivé au classement.
+  payout     Int @default(0)
+  debtRepaid Int @default(0)
+
+  bet  ClanBet     @relation(fields: [betId], references: [id], onDelete: Cascade)
+  side ClanBetSide @relation(fields: [sideId], references: [id], onDelete: Cascade)
+
+  joinedAt DateTime @default(now())
+
+  /// Le reliquat d'un partage inéquitable revient au premier inscrit du camp.
+  @@unique([betId, userKey])
+  @@index([betId, sideId, joinedAt])
+  @@index([userId, status])
+  @@map("clan_bet_participants")
+}
+
+/// Marque une saison dont le podium des parieurs a déjà été récompensé.
+///
+/// La ligne est posée avant le premier versement, et son unicité fait foi : une
+/// clôture qui n'arrive pas à l'écrire est une clôture déjà passée, elle
+/// s'arrête là. Sans elle, deux clôtures de la même saison - deux clics sur la
+/// remise à zéro qui lisent le même numéro avant de l'incrémenter, ou un cron
+/// qui repasse pendant que le précédent travaille encore - versaient les primes
+/// deux fois.
+///
+/// Effacée par un retour arrière, qui rend la saison à récompenser de nouveau.
+model ClanBetSeasonAward {
+  id      String @id @default(cuid())
+  guildId String
+  /// Saison qui vient de se clore, celle dont le palmarès est récompensé.
+  season  Int
+
+  /// Renseignés une fois les primes versées, pour que la table dise aussi ce
+  /// que la clôture a coûté.
+  laureates     Int @default(0)
+  awardedPoints Int @default(0)
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([guildId, season])
+  @@map("clan_bet_season_awards")
+}

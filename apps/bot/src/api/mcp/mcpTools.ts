@@ -16,11 +16,15 @@ import { registerReadSanctionsTools } from './tools/read-sanctions.js';
 import { registerReadStaffTools } from './tools/read-staff.js';
 import { registerReadTicketsTools } from './tools/read-tickets.js';
 import { registerWriteSanctionsTools } from './tools/write-sanctions.js';
+import { registerReadWorkflowsTools } from './tools/read-workflows.js';
+import { registerWriteWorkflowsTools } from './tools/write-workflows.js';
 import { registerReadServerNavigationTools } from './tools/read-server-navigation.js';
 import { registerWriteMessagesTools } from './tools/write-messages.js';
 import { registerWriteTicketsTools } from './tools/write-tickets.js';
 import { registerReadCommunityTools } from './tools/read-community.js';
 import { registerReadEconomyTools } from './tools/read-economy.js';
+import { registerReadClanBetsTools } from './tools/read-clan-bets.js';
+import { registerWriteClanBetsTools } from './tools/write-clan-bets.js';
 import { registerReadModerationTools } from './tools/read-moderation.js';
 import { registerReadAnalyticsTools } from './tools/read-analytics.js';
 import { registerWriteCommunityTools } from './tools/write-community.js';
@@ -39,6 +43,7 @@ import { registerWriteChannelsTools } from './tools/write-channels.js';
 import { registerReadStats2Tools } from './tools/read-stats-2.js';
 import { registerWriteMembers2Tools } from './tools/write-members-2.js';
 import { registerWriteWelcomeThreadTools } from './tools/write-welcome-thread.js';
+import { registerDashboardAccessTools } from './tools/dashboard-access.js';
 
 export function registerMcpTools(
   mcpServer: McpServer,
@@ -114,15 +119,19 @@ export function registerMcpTools(
   registerReadStaffTools(ctx);
   registerReadTicketsTools(ctx);
   registerWriteSanctionsTools(ctx);
+  registerReadWorkflowsTools(ctx);
+  registerWriteWorkflowsTools(ctx);
   registerReadServerNavigationTools(ctx);
   registerWriteMessagesTools(ctx);
   registerWriteTicketsTools(ctx);
   registerReadCommunityTools(ctx);
+  registerReadClanBetsTools(ctx);
   registerReadEconomyTools(ctx);
   registerReadModerationTools(ctx);
   registerReadAnalyticsTools(ctx);
   registerWriteCommunityTools(ctx);
   registerWriteCommunity2Tools(ctx);
+  registerWriteClanBetsTools(ctx);
   registerWriteMembersTools(ctx);
   registerWriteMembersAltAccountsTools(ctx);
   registerWriteStaffLeadershipTools(ctx);
@@ -137,4 +146,5 @@ export function registerMcpTools(
   registerReadStats2Tools(ctx);
   registerWriteMembers2Tools(ctx);
   registerWriteWelcomeThreadTools(ctx);
+  registerDashboardAccessTools(ctx);
 }

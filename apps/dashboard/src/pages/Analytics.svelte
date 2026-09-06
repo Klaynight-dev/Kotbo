@@ -679,6 +679,7 @@ import { m, dateLocale } from '../lib/i18n';
         <GlobalInteractionGraph 
           nodes={interactionsData.nodes || []} 
           edges={interactionsData.edges || []} 
+          hiddenMembersCount={interactionsData.hiddenMembersCount || 0} 
           onSelectNode={(userId) => openMemberDetails(userId, m.an_loading_short())}
         />
       {/if}

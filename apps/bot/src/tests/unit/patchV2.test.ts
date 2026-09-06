@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { MessageFlags, TextDisplayBuilder } from 'discord.js';
-import { transformUpdatePayload } from '../../utils/patchV2';
+import { embedToV2, transformUpdatePayload } from '../../utils/patchV2';
 
 const v2Message = {
   flags: { has: (f: number) => f === MessageFlags.IsComponentsV2 },
@@ -62,5 +62,80 @@ describe('transformUpdatePayload', () => {
 
     expect(payload.embeds).toBeUndefined();
     expect(payload.components.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/** Concatene les TextDisplay d'un container pour inspecter son rendu. */
+function containerText(container: ReturnType<typeof embedToV2>): string {
+  const json = container.toJSON() as { components: any[] };
+  const collect = (nodes: any[]): string[] => nodes.flatMap((node) => {
+    if (node.type === 10) return [node.content as string];
+    if (Array.isArray(node.components)) return collect(node.components);
+    return [];
+  });
+  return collect(json.components).join('\n');
+}
+
+describe('embedToV2', () => {
+  test('rend le titre cliquable quand l embed porte une url', () => {
+    const text = containerText(embedToV2({
+      title: 'Ma super video',
+      url: 'https://www.youtube.com/watch?v=abc123',
+      description: 'Desc',
+    }));
+
+    expect(text).toContain('[Ma super video](https://www.youtube.com/watch?v=abc123)');
+  });
+
+  test('sort le titre cliquable du heading, que Discord rendrait en clair', () => {
+    const text = containerText(embedToV2({
+      title: '📜 Reglement publie',
+      url: 'https://discord.com/channels/1/2/3',
+    }));
+
+    expect(text).toContain('**[📜 Reglement publie](https://discord.com/channels/1/2/3)**');
+    expect(text).not.toContain('### [');
+    expect(text).not.toContain('### **[');
+  });
+
+  test('garde l emoji hors du libelle et rend l auteur cliquable', () => {
+    const text = containerText(embedToV2({
+      title: 'Nouvelle actualite',
+      url: 'https://exemple.test/article',
+      author: { name: 'Ma chaine', url: 'https://exemple.test/chaine' },
+    }));
+
+    expect(text).toContain('**[Ma chaine](https://exemple.test/chaine)**');
+    expect(text).toContain('[Nouvelle actualite](https://exemple.test/article)');
+  });
+
+  test('ignore une url non http et laisse le titre en clair', () => {
+    const text = containerText(embedToV2({
+      title: 'Titre',
+      url: 'javascript:alert(1)',
+    }));
+
+    expect(text).toContain('### Titre');
+    expect(text).not.toContain('](');
+  });
+
+  test('neutralise les crochets du libelle', () => {
+    const text = containerText(embedToV2({
+      title: 'Live [FR] test',
+      url: 'https://exemple.test/live',
+    }));
+
+    // Backslash construit a la main pour rester lisible dans l'assertion.
+    const bs = String.fromCharCode(92);
+    expect(text).toContain(`[Live ${bs}[FR${bs}] test](https://exemple.test/live)`);
+  });
+
+  test('échappe les parenthèses de l URL pour préserver la syntaxe markdown', () => {
+    const text = containerText(embedToV2({
+      title: 'Documentation',
+      url: 'https://exemple.test/wiki/Page_(disambiguation)',
+    }));
+
+    expect(text).toContain('[Documentation](https://exemple.test/wiki/Page_%28disambiguation%29)');
   });
 });

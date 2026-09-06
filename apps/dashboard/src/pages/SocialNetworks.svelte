@@ -30,6 +30,46 @@
   });
 
   let availableChannels = $state<Array<{ id: string; name: string }>>([]);
+  const availableRoles = $derived((dashboardStore.state.discordRoles || []) as Array<{ id: string; name: string }>);
+
+  /**
+   * Options du selecteur de mention : le ping est envoye tel quel par le bot,
+   * donc seules `@everyone`, `@here` et un role existant peuvent fonctionner.
+   * La cle manipulee dans l'UI reste l'ID du role (lisible dans la liste), la
+   * conversion en mention Discord se fait a l'enregistrement.
+   */
+  const mentionOptions = $derived([
+    { id: 'everyone', name: '@everyone' },
+    { id: 'here', name: '@here' },
+    ...availableRoles.map(r => ({ id: r.id, name: '@' + r.name })),
+  ]);
+
+  /** Mention stockee en base -> cle du selecteur (vide si la valeur est inexploitable). */
+  function mentionToKey(mention?: string | null): string {
+    const raw = (mention || '').trim();
+    if (!raw) return '';
+    if (raw === '@everyone') return 'everyone';
+    if (raw === '@here') return 'here';
+    const tagged = raw.match(/^<@&(\d{5,})>$/);
+    if (tagged) return tagged[1];
+    // Ancien format : certains suivis ne stockaient que l'ID brut du role.
+    if (/^\d{5,}$/.test(raw)) return raw;
+    return '';
+  }
+
+  /** Cle du selecteur -> mention envoyee a l'API. */
+  function keyToMention(key?: string | null): string | null {
+    const raw = (key || '').trim();
+    if (!raw) return null;
+    if (raw === 'everyone') return '@everyone';
+    if (raw === 'here') return '@here';
+    return `<@&${raw}>`;
+  }
+
+  /** Ajoute la cle de selection aux suivis renvoyes par l'API. */
+  function withMentionKey<T extends { mention?: string | null }>(list: T[] | undefined | null) {
+    return (list || []).map(f => ({ ...f, mentionKey: mentionToKey(f.mention) }));
+  }
 
   let ytForm = $state({
     query: '',
@@ -61,8 +101,8 @@
       await dashboardStore.refresh();
       const res = await fetchSocialFollows();
       if (res) {
-        youtubeFollows = res.youtube || [];
-        twitchFollows = res.twitch || [];
+        youtubeFollows = withMentionKey(res.youtube);
+        twitchFollows = withMentionKey(res.twitch);
       }
       availableChannels = (dashboardStore.state.discordChannels || []) as Array<{ id: string; name: string }>;
     } catch (e) {
@@ -86,7 +126,7 @@
       const payload = {
         query: ytForm.query.trim(),
         discordChannelId: ytForm.discordChannelId || null,
-        mention: ytForm.mention || null,
+        mention: keyToMention(ytForm.mention),
         liveMessage: ytForm.liveMessage || null,
         videoMessage: ytForm.videoMessage || null,
         shortMessage: ytForm.shortMessage || null,
@@ -105,7 +145,7 @@
       };
 
       const updated = await fetchSocialFollows();
-      if (updated) youtubeFollows = updated.youtube || [];
+      if (updated) youtubeFollows = withMentionKey(updated.youtube);
       return true;
     }, { successMessage: m.social_yt_toast_added() });
   }
@@ -115,7 +155,7 @@
       const payload = {
         channelId: follow.channelId,
         discordChannelId: follow.discordChannelId || null,
-        mention: follow.mention || null,
+        mention: keyToMention(follow.mentionKey),
         liveMessage: follow.liveMessage || null,
         videoMessage: follow.videoMessage || null,
         shortMessage: follow.shortMessage || null,
@@ -148,7 +188,7 @@
       const payload = {
         streamerName: twitchForm.query.trim(),
         discordChannelId: twitchForm.discordChannelId || null,
-        mention: twitchForm.mention || null,
+        mention: keyToMention(twitchForm.mention),
         liveMessage: twitchForm.liveMessage || null,
       };
 
@@ -163,7 +203,7 @@
       };
 
       const updated = await fetchSocialFollows();
-      if (updated) twitchFollows = updated.twitch || [];
+      if (updated) twitchFollows = withMentionKey(updated.twitch);
       return true;
     }, { successMessage: m.social_twitch_toast_added() });
   }
@@ -173,7 +213,7 @@
       const payload = {
         streamerName: follow.streamerName,
         discordChannelId: follow.discordChannelId || null,
-        mention: follow.mention || null,
+        mention: keyToMention(follow.mentionKey),
         liveMessage: follow.liveMessage || null,
       };
       const res = await addTwitchFollow(payload);
@@ -285,12 +325,12 @@
 
               <div class="space-y-1.5">
                 <label for="yt-mention" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.social_mention_label()}</label>
-                <input
+                <SearchableSelect
                   id="yt-mention"
-                  type="text"
-                  placeholder={m.social_mention_ph()}
                   bind:value={ytForm.mention}
-                  class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-600/30 transition-all text-on-surface"
+                  options={mentionOptions}
+                  placeholder={m.social_mention_ph()}
+                  className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-red-600/30 transition-all"
                 />
               </div>
 
@@ -371,12 +411,12 @@
 
               <div class="space-y-1.5">
                 <label for="twitch-mention" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.social_mention_label()}</label>
-                <input
+                <SearchableSelect
                   id="twitch-mention"
-                  type="text"
-                  placeholder={m.social_mention_ph()}
                   bind:value={twitchForm.mention}
-                  class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#9146FF]/30 transition-all text-on-surface"
+                  options={mentionOptions}
+                  placeholder={m.social_mention_ph()}
+                  className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-[#9146FF]/30 transition-all"
                 />
               </div>
 
@@ -465,12 +505,12 @@
 
                       <div class="space-y-1">
                         <label for="yt-mention-{follow.id}" class="text-[11px] font-bold text-on-surface-variant/50 uppercase">{m.social_mention_label()}</label>
-                        <input
+                        <SearchableSelect
                           id="yt-mention-{follow.id}"
-                          type="text"
-                          bind:value={follow.mention}
-                          placeholder="@everyone"
-                          class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-600/30 transition-all text-on-surface"
+                          bind:value={follow.mentionKey}
+                          options={mentionOptions}
+                          placeholder={m.social_mention_ph()}
+                          className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-red-600/30 transition-all"
                         />
                       </div>
                     </div>
@@ -581,12 +621,12 @@
 
                       <div class="space-y-1">
                         <label for="twitch-mention-{follow.id}" class="text-[11px] font-bold text-on-surface-variant/50 uppercase">{m.social_mention_label()}</label>
-                        <input
+                        <SearchableSelect
                           id="twitch-mention-{follow.id}"
-                          type="text"
-                          bind:value={follow.mention}
-                          placeholder="@everyone"
-                          class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#9146FF]/30 transition-all text-on-surface"
+                          bind:value={follow.mentionKey}
+                          options={mentionOptions}
+                          placeholder={m.social_mention_ph()}
+                          className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-[#9146FF]/30 transition-all"
                         />
                       </div>
 

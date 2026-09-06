@@ -9,6 +9,7 @@ import {
   registerBanSanction,
   registerSoftbanSanction,
 } from './sanctionService.js';
+import { archiveScoreFilter } from './sanctionArchiveService.js';
 
 export type Actor = {
   id: string;
@@ -103,12 +104,15 @@ export async function getNextTierInfo(params: {
   if (params.bypassLevel && params.bypassLevel > 0) {
     targetLevel = params.bypassLevel;
   } else {
-    // Count how many sanctions under this table the user has already received
+    // Count how many sanctions under this table the user has already received.
+    // Les sanctions archivées ne font plus monter l'escalade, sauf si la guilde
+    // a demandé qu'elles restent comptabilisées.
     const count = await prisma.sanction.count({
       where: {
         guildId: params.guildId,
         targetUserId: params.targetUserId,
         sanctionTableId: table.id,
+        ...(await archiveScoreFilter(params.guildId)),
       },
     });
     targetLevel = count + 1;

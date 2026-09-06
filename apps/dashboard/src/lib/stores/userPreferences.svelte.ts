@@ -10,6 +10,8 @@ import { applyLocale, getLocale } from '../i18n';
 type Language = 'fr' | 'en';
 type DateFormat = 'relative' | 'absolute' | 'both';
 type SidebarBehavior = 'auto' | 'always-open' | 'always-closed';
+/** `'auto'` = suivre le fuseau du navigateur ; sinon un identifiant IANA. */
+type TimezonePreference = 'auto' | (string & Record<never, never>);
 
 // Keep old type alias for backward compat in imports
 type AccentColor = AccentColorId;
@@ -25,6 +27,11 @@ interface UserPrefs {
   accentColor: AccentColor;
   animationsEnabled: boolean;
   showOnlineStatus: boolean;
+  /**
+   * Fuseau de lecture des statistiques. Les agregats sont stockes en UTC :
+   * sans ce reglage, un lecteur parisien voyait son pic de 14h annonce a midi.
+   */
+  timezone: TimezonePreference;
 }
 
 const DEFAULT_PREFS: UserPrefs = {
@@ -38,6 +45,7 @@ const DEFAULT_PREFS: UserPrefs = {
   accentColor: 'violet',
   animationsEnabled: true,
   showOnlineStatus: true,
+  timezone: 'auto',
 };
 
 const STORAGE_KEY = 'kotbo_prefs';
@@ -149,9 +157,17 @@ class UserPreferencesStore {
       const { fetchUserSettings } = await import('../api');
       const data = await fetchUserSettings();
       if (data) {
-        if (data.themeId) {
+        // Le bouton clair/sombre ecrit localStorage de facon synchrone, alors
+        // qu'un rechargement - changer de langue en declenche un - peut annuler
+        // l'ecriture vers la base. Reappliquer la base par-dessus ressuscitait
+        // alors le theme d'avant la bascule. En cas de desaccord, le choix de
+        // cet appareil fait foi et c'est la base qu'on rattrape.
+        const localTheme = canUseDom() ? localStorage.getItem('kotbo_theme') : null;
+        if (data.themeId && !localTheme) {
           this.prefs.theme = data.themeId;
           themeStore.themeId = data.themeId;
+        } else if (data.themeId && data.themeId !== localTheme) {
+          void this.syncToDatabase();
         }
         if (data.customTheme) {
           themeStore.setCustomColors(data.customTheme);
@@ -165,6 +181,12 @@ class UserPreferencesStore {
         }
         if (data.compactMode !== undefined) {
           this.prefs.compactMode = data.compactMode;
+        }
+        // `null` en base veut dire « suivre le navigateur » : c'est une valeur
+        // choisie, pas une absence de reponse, donc elle doit ecraser un
+        // reglage local devenu obsolete.
+        if (data.timezone !== undefined) {
+          this.prefs.timezone = data.timezone ?? 'auto';
         }
         this.applyPreferences();
         this.save();
@@ -185,7 +207,8 @@ class UserPreferencesStore {
         customTheme: themeStore.themeId === 'custom' ? themeStore.customColors : null,
         accentColor: this.prefs.accentColor,
         sidebarBehavior: this.prefs.sidebarBehavior,
-        compactMode: this.prefs.compactMode
+        compactMode: this.prefs.compactMode,
+        timezone: this.prefs.timezone === 'auto' ? null : this.prefs.timezone
       });
     } catch (e) {
       console.warn("Failed to sync preferences to database:", e);
@@ -193,6 +216,13 @@ class UserPreferencesStore {
   }
 
   set<K extends keyof UserPrefs>(key: K, value: UserPrefs[K]) {
+    // Le bouton clair/sombre change le thème sans passer par ce magasin :
+    // enregistrer une autre préférence y réécrivait sinon le thème d'avant la
+    // bascule. Un appel qui porte justement sur le thème fait foi, lui, et
+    // `reset()` doit pouvoir revenir au thème par défaut.
+    if (key !== 'theme') {
+      this.prefs.theme = themeStore.themeId;
+    }
     this.prefs[key] = value;
     this.save();
     // Les messages Paraglide ne sont pas réactifs en Svelte pur : un changement
@@ -215,5 +245,5 @@ class UserPreferencesStore {
 }
 
 export const userPrefs = new UserPreferencesStore();
-export type { UserPrefs, Language, DateFormat, SidebarBehavior, AccentColor };
+export type { UserPrefs, Language, DateFormat, SidebarBehavior, AccentColor, TimezonePreference };
 export type { ThemeId } from './theme.svelte';

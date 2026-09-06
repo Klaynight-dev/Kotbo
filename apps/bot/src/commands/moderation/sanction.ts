@@ -36,7 +36,7 @@ import {
   runGuildBan,
 } from '../../services/moderation/sanctionService.js';
 import { applyProgressiveSanction, getOrCreateDefaultTables } from '../../services/moderation/sanctionTableService.js';
-import { sendBanAppealNotificationDM } from '../../services/moderation/banAppealService.js';
+import { sendBanAppealNotificationDM, sendPreActionAppealDM } from '../../services/moderation/banAppealService.js';
 import * as altAccountService from '../../services/moderation/altAccountService.js';
 import { buildMemberCaseActionRow } from '../../services/moderation/memberCaseService.js';
 import { extractTrackingInfo, resolveModuleFromCommand, wrapModuleTracking } from '../../utils/moduleTracking.js';
@@ -603,6 +603,9 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
         return;
       }
 
+      // Le lien de contestation doit partir avant l'expulsion : ensuite le
+      // membre ne partage plus forcément de serveur avec le bot.
+      await sendPreActionAppealDM(interaction.client, interaction.guildId, targetUser.id, SanctionType.KICK).catch(() => false);
       await targetMember.kick(`${reason} | Modération: ${interaction.user.tag}`);
       const sanction = await registerKickSanction({ guildId: interaction.guildId, target, moderator, reason, client: interaction.client });
 
@@ -661,6 +664,7 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
         return;
       }
 
+      await sendPreActionAppealDM(interaction.client, interaction.guildId, targetUser.id, SanctionType.TEMP_BAN).catch(() => false);
       await runGuildBan(interaction.guild, targetUser.id, `${reason} | Modération: ${interaction.user.tag}`);
       const sanction = await registerBanSanction({
         guildId: interaction.guildId,
@@ -697,6 +701,8 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
         await replyError(interaction, m.b1_action_impossible({}, { locale }), m.b1_cannot_softban_member({}, { locale }));
         return;
       }
+
+      await sendPreActionAppealDM(interaction.client, interaction.guildId, targetUser.id, SanctionType.SOFTBAN).catch(() => false);
 
       // 1. Bannir le membre avec suppression des messages de 7 jours (604800 secondes)
       await interaction.guild.members.ban(targetUser.id, {
@@ -747,8 +753,9 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
 
       await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
+      let result: Awaited<ReturnType<typeof applyProgressiveSanction>>;
       try {
-        const result = await applyProgressiveSanction({
+        result = await applyProgressiveSanction({
           guildId: interaction.guildId!,
           target,
           moderator,
@@ -759,34 +766,42 @@ async function executeInternal(interaction: ChatInputCommandInteraction | UserCo
           member: targetMember,
           client: interaction.client,
         });
-
-        const actionLabel = sanctionTypeLabel(result.action, locale);
-        const actionEmoji = sanctionTypeEmoji(result.action);
-        const bypassText = bypassLevel ? m.b1_bypass_forced({ level: bypassLevel }, { locale }) : '';
-
-        const embed = successEmbed(
-          m.b1_progressive_applied_title({}, { locale }),
-          m.b1_progressive_applied_desc({ user: `${targetUser}`, table: result.table.name }, { locale })
-        ).addFields(
-          { name: m.b1_applied_sanction({}, { locale }), value: `${actionEmoji} ${actionLabel}${bypassText}`, inline: true },
-          { name: m.b1_tier_reached({}, { locale }), value: `T${result.level}`, inline: true },
-          { name: m.b1_reason({}, { locale }), value: result.sanction.reason, inline: false },
-          { name: m.b1_sanction_id({}, { locale }), value: result.sanction.id, inline: false }
-        );
-
-        await interaction.editReply({
-          embeds: [embed],
-          components: [buildMemberCaseActionRow(targetUser.id)],
-        });
-
-        await notifyModeratorDashboardReportReminder(interaction, {
-          sanctionId: result.sanction.id,
-          targetLabel: targetUser.tag,
-        });
       } catch (err: unknown) {
         const embed = errorEmbed(m.b1_progressive_error_title({}, { locale }), errorMessage(err) || m.b1_progressive_error_fallback({}, { locale }));
         await interaction.editReply({ embeds: [embed] });
+        return;
       }
+
+      // Passé ce point la sanction est appliquée : un compte rendu qui échoue ne
+      // doit plus s'annoncer comme un échec de sanction, sinon le modérateur
+      // sanctionne une deuxième fois.
+      const actionLabel = sanctionTypeLabel(result.action, locale);
+      const actionEmoji = sanctionTypeEmoji(result.action);
+      const bypassText = bypassLevel ? m.b1_bypass_forced({ level: bypassLevel }, { locale }) : '';
+
+      const embed = successEmbed(
+        m.b1_progressive_applied_title({}, { locale }),
+        m.b1_progressive_applied_desc({ user: `${targetUser}`, table: result.table.name }, { locale })
+      ).addFields(
+        { name: m.b1_applied_sanction({}, { locale }), value: `${actionEmoji} ${actionLabel}${bypassText}`, inline: true },
+        { name: m.b1_tier_reached({}, { locale }), value: `T${result.level}`, inline: true },
+        { name: m.b1_reason({}, { locale }), value: result.sanction.reason, inline: false },
+        { name: m.b1_sanction_id({}, { locale }), value: result.sanction.id, inline: false }
+      );
+
+      await interaction
+        .editReply({
+          embeds: [embed],
+          components: [buildMemberCaseActionRow(targetUser.id)],
+        })
+        // Repli sans composants : Discord refuse le message entier si un bouton
+        // le gêne, or le compte rendu vaut mieux que rien.
+        .catch(() => interaction.editReply({ embeds: [embed] }).catch(() => null));
+
+      await notifyModeratorDashboardReportReminder(interaction, {
+        sanctionId: result.sanction.id,
+        targetLabel: targetUser.tag,
+      });
       return;
     }
 

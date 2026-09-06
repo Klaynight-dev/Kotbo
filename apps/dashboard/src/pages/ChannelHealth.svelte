@@ -11,11 +11,13 @@ import {
   resolveChannelHealthAlert,
   splitChannel,
   archiveChannel,
+  fetchDiscordChannels,
 } from '../lib/api';
 import { toast } from '../lib/stores/toast.svelte';
 import { channelDetailsModal } from '../lib/stores/channelDetailsModal.svelte';
 import ModulePage from '../lib/components/ModulePage.svelte';
 import ChannelHealthPresetPicker from '../lib/components/ChannelHealthPresetPicker.svelte';
+import MultiSelect from '../lib/components/MultiSelect.svelte';
 import {
   CHANNEL_HEALTH_DEFAULT_CONFIG,
   CHANNEL_HEALTH_EDITABLE_FIELDS,
@@ -32,6 +34,7 @@ let analysisLoading = $state(false);
 let configDraft: any = $state(null);
 let savedConfig: any = $state(null);
 let savingConfig = $state(false);
+let availableChannels: Array<{ id: string; name: string; type: string }> = $state([]);
 const healthTabs = ['accueil', 'overview', 'alerts', 'config'] as const;
 const DEFAULT_TAB = 'accueil';
 let activeTab = $state<'accueil' | 'overview' | 'alerts' | 'config'>(DEFAULT_TAB);
@@ -53,11 +56,19 @@ const activePreset = $derived(findChannelHealthPreset(savedConfig));
 const selectedCardId = $derived(configDraft ? selectedPreset?.id ?? 'custom' : null);
 const activeCardId = $derived(savedConfig ? activePreset?.id ?? 'custom' : null);
 
+// Compare a part : `some` compare par reference, deux listes de salons exclues
+// identiques seraient toujours vues comme differentes.
+const excludedDirty = $derived(
+  (configDraft?.excludedChannelIds ?? []).join(',') !== (savedConfig?.excludedChannelIds ?? []).join(','),
+);
+
 // Compare champ par champ plutot que les objets entiers : la reponse du serveur
 // porte aussi un `updatedAt`, qui rendrait la page eternellement modifiee.
 const configDirty = $derived(
   !!configDraft
-    && (!savedConfig || CHANNEL_HEALTH_EDITABLE_FIELDS.some((key) => configDraft[key] !== savedConfig[key])),
+    && (!savedConfig
+      || CHANNEL_HEALTH_EDITABLE_FIELDS.some((key) => configDraft[key] !== savedConfig[key])
+      || excludedDirty),
 );
 
 // Des qu'une sensibilite est choisie, la configuration courante est la sienne :
@@ -69,7 +80,7 @@ const customPresetValues = $derived(channelHealthValuesOf(selectedPreset ? saved
 // choisie sert alors d'initialisation, sans passer par l'onglet detaille.
 function applyPreset(preset: ChannelHealthPreset) {
   if (!configDraft) {
-    configDraft = { ...CHANNEL_HEALTH_DEFAULT_CONFIG, ...preset.values };
+    configDraft = { ...CHANNEL_HEALTH_DEFAULT_CONFIG, excludedChannelIds: [], ...preset.values };
     return;
   }
   Object.assign(configDraft, preset.values);
@@ -107,8 +118,8 @@ async function load() {
   try {
     data = await fetchChannelHealth();
     if (data?.config) {
-      configDraft = { ...data.config };
-      savedConfig = { ...data.config };
+      configDraft = { ...data.config, excludedChannelIds: [...(data.config.excludedChannelIds ?? [])] };
+      savedConfig = { ...data.config, excludedChannelIds: [...(data.config.excludedChannelIds ?? [])] };
     }
   } catch (e: any) {
     error = e.message || m.channel_health_err_load();
@@ -138,8 +149,8 @@ async function saveConfig() {
       // `data` est nul tant que le premier chargement a echoue : la
       // configuration vient alors d'etre creee de toutes pieces.
       if (data) data.config = result;
-      configDraft = { ...result };
-      savedConfig = { ...result };
+      configDraft = { ...result, excludedChannelIds: [...(result.excludedChannelIds ?? [])] };
+      savedConfig = { ...result, excludedChannelIds: [...(result.excludedChannelIds ?? [])] };
     }
   } catch (e: any) {
     toast.error(e.message || m.channel_health_err_save());
@@ -182,7 +193,15 @@ async function handleArchive(channelId: string) {
   }
 }
 
-onMount(load);
+onMount(async () => {
+  await load();
+  const channelsData = await fetchDiscordChannels().catch(() => null);
+  // L'analyse ne porte que sur les salons textuels : proposer les forums et les
+  // fils ferait croire qu'ils entrent dans le rapport.
+  if (channelsData) {
+    availableChannels = (channelsData.textChannels || []).filter((c: any) => c.type === 'text');
+  }
+});
 </script>
 
 <ModulePage
@@ -491,6 +510,25 @@ onMount(load);
           </select>
         </div>
 
+        <!-- Divider: Excluded channels -->
+        <hr class="border-outline-variant/10" />
+
+        <h4 class="text-sm font-semibold text-on-surface flex items-center gap-2">
+          <Papicon icon="filter_list_off" size={16} />
+          {m.channel_health_section_excluded()}
+        </h4>
+
+        <div class="space-y-1.5">
+          <span class="field-label">{m.channel_health_field_excluded_channels()}</span>
+          <MultiSelect
+            id="excluded-channels"
+            bind:values={configDraft.excludedChannelIds}
+            options={availableChannels.map((c) => ({ id: c.id, name: `#${c.name}` }))}
+            accentClass="bg-rose-500/20 text-rose-300 border-rose-500/40"
+          />
+          <p class="text-[11px] text-on-surface-variant/50">{m.channel_health_field_excluded_channels_help()}</p>
+        </div>
+
         <!-- Divider: Overload thresholds -->
         <hr class="border-outline-variant/10" />
 
@@ -574,7 +612,7 @@ onMount(load);
       <p class="text-sm text-on-surface-variant/60">{m.channel_health_not_configured_desc()}</p>
       <button
         class="px-4 py-2 bg-primary text-on-primary text-[13px] font-medium rounded-xl shadow-sm active:scale-[0.98] transition-all flex items-center gap-2"
-        onclick={() => { configDraft = { ...CHANNEL_HEALTH_DEFAULT_CONFIG }; }}
+        onclick={() => { configDraft = { ...CHANNEL_HEALTH_DEFAULT_CONFIG, excludedChannelIds: [] }; }}
       >
         {m.channel_health_init_config_btn()}
       </button>

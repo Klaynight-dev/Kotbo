@@ -11,7 +11,7 @@
   } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
   import Skeleton from '../../lib/components/Skeleton.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
 
   type BannedWordEntry = {
     id: string;
@@ -334,18 +334,11 @@
   }
 </script>
 
-<AdminLayout>
+<AdminShell title="Mots globaux" description="Liste de mots interdits appliquée à tous les serveurs.">
   <div class="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-3 duration-600">
-  <!-- Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
-    <div>
-      <h2 class="text-lg font-semibold text-on-surface tracking-tight">Mots globaux</h2>
-      <p class="text-sm text-on-surface-variant/50 font-medium">Gestion des mots interdits globalement sur tous les serveurs</p>
-    </div>
-    <div class="flex items-center gap-2">
-      <div class="px-3 py-1.5 rounded-lg bg-on-surface/5 border border-outline-variant/10 text-xs font-semibold text-on-surface-variant">
-        {globalBannedWords.length} mot{globalBannedWords.length > 1 ? 's' : ''}
-      </div>
+  <div class="flex items-center justify-end">
+    <div class="px-3 py-1.5 rounded-lg bg-on-surface/6 border border-outline-variant/25 text-xs font-semibold text-on-surface-variant">
+      {globalBannedWords.length} mot{globalBannedWords.length > 1 ? 's' : ''}
     </div>
   </div>
 
@@ -599,4 +592,4 @@
     </div>
   </div>
 </div>
-</AdminLayout>
+</AdminShell>

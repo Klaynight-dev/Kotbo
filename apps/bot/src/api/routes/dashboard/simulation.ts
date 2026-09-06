@@ -38,12 +38,20 @@ export async function handleSimulationRoutes(
   client: Client,
   user: AuthClaims,
   guildId: string,
-  _access: DashboardAccess,
+  access: DashboardAccess,
 ): Promise<boolean> {
   if (parts[4] !== 'simulation') return false;
 
   const method = req.method;
   const sub = parts[5];
+
+  // Ces routes n'avaient aucun controle : n'importe quel membre du staff
+  // pouvait reecrire la configuration et supprimer les scenarios. La lecture
+  // reste ouverte a qui a deja acces au dashboard, comme sur les autres modules.
+  if (method !== 'GET' && !access.canManageSettings) {
+    json(res, 403, { error: 'Accès refusé. Permissions administratives requises.' });
+    return true;
+  }
 
   const audit = (action: string, details: string) => safePushAudit(guildId, {
     user: `${user.username ?? 'Inconnu'} (${user.userId})`,

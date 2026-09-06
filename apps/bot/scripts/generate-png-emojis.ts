@@ -17,6 +17,28 @@ const COLORS = {
   darkGray: '#4F545C',
 };
 
+/**
+ * Palette du module RPG.
+ *
+ * Distincte de `COLORS`, et volontairement claire : ces icônes se posent sur
+ * des boutons Discord, qui ont leur propre fond coloré (blurple #5865F2, vert
+ * #248046, rouge #DA373C, gris #4E5058). Une teinte saturée reprise de la
+ * charte du bot disparaît sur le bouton de même famille ; une teinte pastel se
+ * détache des quatre fonds comme du fond sombre d'un conteneur.
+ */
+const RPG = {
+  steel: '#DBDEE1',
+  parchment: '#EFE0C0',
+  gold: '#FFD166',
+  ember: '#FF8F8F',
+  mint: '#8FE3B0',
+  azure: '#9BC5FF',
+  amethyst: '#C9A7FF',
+  rose: '#FFA8D5',
+  bronze: '#E3B48A',
+  slate: '#B9BDC7',
+};
+
 interface EmojiConfig {
   type: 'lucide' | 'custom';
   lucideName?: string;
@@ -25,6 +47,29 @@ interface EmojiConfig {
   fillOpacity?: number;
   strokeWidth?: number;
   svg?: string;
+}
+
+/**
+ * Les trois segments pleins d'une jauge RPG, dans la teinte de la ressource.
+ *
+ * Même géométrie que `ktb_fl/fm/fr` pour que les segments pleins et vides se
+ * raccordent sans décrochage : extrémités arrondies, milieu droit.
+ */
+function rpgBar(key: string, color: string): Record<string, EmojiConfig> {
+  return {
+    [`ktb_rpg_${key}_l`]: {
+      type: 'custom',
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.5"><path d="M22 7H8c-2.8 0-5 2.2-5 5s2.2 5 5 5h14" fill="${color}"/></svg>`,
+    },
+    [`ktb_rpg_${key}_m`]: {
+      type: 'custom',
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.5"><rect x="0" y="7" width="24" height="10" fill="${color}"/></svg>`,
+    },
+    [`ktb_rpg_${key}_r`]: {
+      type: 'custom',
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.5"><path d="M2 7h14c2.8 0 5 2.2 5 5s-2.2 5-5 5H2" fill="${color}"/></svg>`,
+    },
+  };
 }
 
 type IconNode = [string, Record<string, string | number>];
@@ -311,6 +356,85 @@ const EMOJI_CONFIGS: Record<string, EmojiConfig> = {
     type: 'custom',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${COLORS.darkGray}" stroke-width="2.5"><path d="M2 7h14c2.8 0 5 2.2 5 5s-2.2 5-5 5H2"/></svg>`,
   },
+
+  // ─────────────────────────────────────────────────────────────
+  // RPG - jeu de pictogrammes dédié
+  // ─────────────────────────────────────────────────────────────
+  // Le hub /rpg s'écrivait en emojis Unicode : un rendu différent sur chaque
+  // plateforme, aucune parenté visuelle entre deux écrans, et des glyphes
+  // (🦺, 🧬) qui ne disaient rien du jeu. Un trait Lucide commun donne au
+  // module l'identité d'un vrai client de jeu.
+  //
+  // La palette est volontairement CLAIRE et n'emprunte rien à `COLORS`. Ces
+  // icônes se posent sur des boutons Discord, qui ont leur propre fond coloré :
+  // une épée rouge sur un bouton Danger rouge, une boussole blurple sur un
+  // bouton Primary blurple, une flèche grise sur un bouton Secondary gris
+  // disparaissaient purement et simplement. Des teintes pastel se détachent des
+  // quatre fonds de bouton comme du fond sombre d'un conteneur.
+  //
+  // Trait à 3 : Discord affiche ces PNG autour de 22 px, où un trait à 2,5
+  // s'efface.
+
+  // --- Catégories d'objets ---
+  ktb_rpg_sword: { type: 'lucide', lucideName: 'sword', color: RPG.steel, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_armor: { type: 'lucide', lucideName: 'shirt', color: RPG.azure, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_accessory: { type: 'lucide', lucideName: 'gem', color: RPG.rose, fillType: 'opacity', fillOpacity: 0.35, strokeWidth: 3 },
+  ktb_rpg_potion: { type: 'lucide', lucideName: 'flask-conical', color: RPG.mint, fillType: 'opacity', fillOpacity: 0.35, strokeWidth: 3 },
+  ktb_rpg_key: { type: 'lucide', lucideName: 'key', color: RPG.gold, fillType: 'none', strokeWidth: 3 },
+
+  // --- Raretés (même glyphe, teinte croissante : la couleur porte le rang) ---
+  ktb_rar_common: { type: 'lucide', lucideName: 'circle-dot', color: RPG.slate, fillType: 'none', strokeWidth: 3 },
+  ktb_rar_uncommon: { type: 'lucide', lucideName: 'gem', color: RPG.mint, fillType: 'opacity', fillOpacity: 0.3, strokeWidth: 3 },
+  ktb_rar_rare: { type: 'lucide', lucideName: 'gem', color: RPG.azure, fillType: 'opacity', fillOpacity: 0.45, strokeWidth: 3 },
+  ktb_rar_epic: { type: 'lucide', lucideName: 'gem', color: RPG.amethyst, fillType: 'opacity', fillOpacity: 0.6, strokeWidth: 3 },
+  ktb_rar_legendary: { type: 'lucide', lucideName: 'gem', color: RPG.gold, fillType: 'full', strokeWidth: 3 },
+
+  // --- Navigation du hub ---
+  ktb_rpg_bag: { type: 'lucide', lucideName: 'backpack', color: RPG.bronze, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_shop: { type: 'lucide', lucideName: 'shopping-cart', color: RPG.gold, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_fight: { type: 'lucide', lucideName: 'swords', color: RPG.steel, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_boss: { type: 'lucide', lucideName: 'skull', color: RPG.parchment, fillType: 'opacity', fillOpacity: 0.3, strokeWidth: 3 },
+  ktb_rpg_travel: { type: 'lucide', lucideName: 'compass', color: RPG.gold, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_character: { type: 'lucide', lucideName: 'user-round', color: RPG.parchment, fillType: 'opacity', fillOpacity: 0.3, strokeWidth: 3 },
+  ktb_rpg_craft: { type: 'lucide', lucideName: 'hammer', color: RPG.bronze, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_forge: { type: 'lucide', lucideName: 'anvil', color: RPG.slate, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_enchant: { type: 'lucide', lucideName: 'wand-sparkles', color: RPG.amethyst, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_bestiary: { type: 'lucide', lucideName: 'book-open', color: RPG.parchment, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_guild: { type: 'lucide', lucideName: 'castle', color: RPG.steel, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_war: { type: 'lucide', lucideName: 'flag', color: RPG.ember, fillType: 'opacity', fillOpacity: 0.4, strokeWidth: 3 },
+  ktb_rpg_clan: { type: 'lucide', lucideName: 'users', color: RPG.azure, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_daily: { type: 'lucide', lucideName: 'gift', color: RPG.rose, fillType: 'opacity', fillOpacity: 0.35, strokeWidth: 3 },
+  ktb_rpg_fish: { type: 'lucide', lucideName: 'fish', color: RPG.azure, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_blackmarket: { type: 'lucide', lucideName: 'venetian-mask', color: RPG.amethyst, fillType: 'opacity', fillOpacity: 0.35, strokeWidth: 3 },
+  ktb_rpg_raid: { type: 'lucide', lucideName: 'flame', color: RPG.gold, fillType: 'opacity', fillOpacity: 0.4, strokeWidth: 3 },
+  ktb_rpg_pay: { type: 'lucide', lucideName: 'hand-coins', color: RPG.mint, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_sell: { type: 'lucide', lucideName: 'shopping-bag', color: RPG.gold, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_map: { type: 'lucide', lucideName: 'map', color: RPG.mint, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_rest: { type: 'lucide', lucideName: 'tent', color: RPG.parchment, fillType: 'none', strokeWidth: 3 },
+
+  // --- Jauges et statistiques ---
+  ktb_rpg_hp: { type: 'lucide', lucideName: 'heart', color: RPG.ember, fillType: 'full', strokeWidth: 3 },
+  ktb_rpg_energy: { type: 'lucide', lucideName: 'zap', color: RPG.gold, fillType: 'full', strokeWidth: 3 },
+  ktb_rpg_xp: { type: 'lucide', lucideName: 'sparkles', color: RPG.azure, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_atk: { type: 'lucide', lucideName: 'sword', color: RPG.ember, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_def: { type: 'lucide', lucideName: 'shield-half', color: RPG.azure, fillType: 'opacity', fillOpacity: 0.3, strokeWidth: 3 },
+  ktb_rpg_spd: { type: 'lucide', lucideName: 'footprints', color: RPG.mint, fillType: 'none', strokeWidth: 3 },
+  ktb_rpg_crit: { type: 'lucide', lucideName: 'crosshair', color: RPG.gold, fillType: 'none', strokeWidth: 3 },
+
+  // --- Commandes de navigation ---
+  ktb_rpg_back: { type: 'lucide', lucideName: 'arrow-left', color: RPG.steel, fillType: 'none', strokeWidth: 3.5 },
+  ktb_rpg_prev: { type: 'lucide', lucideName: 'chevron-left', color: RPG.steel, fillType: 'none', strokeWidth: 3.5 },
+  ktb_rpg_next: { type: 'lucide', lucideName: 'chevron-right', color: RPG.steel, fillType: 'none', strokeWidth: 3.5 },
+  ktb_rpg_refresh: { type: 'lucide', lucideName: 'refresh-cw', color: RPG.mint, fillType: 'none', strokeWidth: 3 },
+
+  // --- Jauges segmentées ---
+  // Les barres s'écrivaient en carrés Unicode répétés (❤️❤️❤️, ⚡⚡⚡) : dix
+  // glyphes côte à côte donnaient une frise hachée, pas une jauge. Trois
+  // segments - gauche, milieu, droite - composent une capsule continue, une
+  // teinte par ressource. Le segment vide est partagé avec `ktb_el/em/er`.
+  ...rpgBar('hp', RPG.ember),
+  ...rpgBar('en', RPG.gold),
+  ...rpgBar('xp', RPG.azure),
 
   // --- Branding ---
   ktb_logo: {

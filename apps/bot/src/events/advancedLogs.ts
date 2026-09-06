@@ -19,7 +19,7 @@ import {
 import prisma from '../utils/db.js';
 import { logger } from '../utils/logger.js';
 import { queueAuditLog } from '../utils/auditLogger.js';
-import { cache } from '../utils/cache.js';
+import { cache, getCachedGuild } from '../utils/cache.js';
 import { recordStaffActivity, syncStaffHierarchyMembership } from '../services/staff/staffManagementService.js';
 import { resolveOnlineMembersCount } from '../services/core/presenceDetectionService.js';
 import { syncGuildInvites, markInviteAsDeleted, recordInvitedMemberLeave } from '../services/analytics/inviteService.js';
@@ -482,15 +482,49 @@ async function getGuildLogChannelId(guildId: string): Promise<string | null> {
   return channelId;
 }
 
+/**
+ * Salons dont l'activité ne doit générer aucun log. La liste ne contient que
+ * des salons : un fil suit l'exclusion de son parent, sans quoi la moitié des
+ * messages d'un salon exclu continuerait d'être journalisée.
+ */
+async function isLogIgnoredChannel(
+  guild: Guild,
+  channelIds: Array<string | null | undefined>,
+): Promise<boolean> {
+  const ids = channelIds.filter((id): id is string => !!id);
+  if (ids.length === 0) return false;
+
+  const guildConfig = await getCachedGuild(guild.id);
+  const ignored = (guildConfig?.logIgnoredChannelIds ?? []) as string[];
+  if (ignored.length === 0) return false;
+
+  return ids.some((id) => {
+    if (ignored.includes(id)) return true;
+    const channel = guild.channels.cache.get(id);
+    return !!channel?.isThread() && !!channel.parentId && ignored.includes(channel.parentId);
+  });
+}
+
 async function sendLogEmbed(
   guild: Guild,
   embed: EmbedBuilder,
   eventType: string,
   components?: Array<ActionRowBuilder<ButtonBuilder>>,
   executorTag?: string | null,
+  sourceChannelIds?: Array<string | null | undefined>,
 ): Promise<void> {
+  if (sourceChannelIds && await isLogIgnoredChannel(guild, sourceChannelIds)) return;
+
   const summary = embedSummary(embed);
-  
+
+  // Pied de page « Action realisee par » : le titre dit ce qui s'est passe, le
+  // pied de page dit par qui. Un embed qui porte deja son propre pied de page
+  // garde le sien - il n'y a qu'un emplacement, et l'ecraser perdrait une
+  // information au lieu d'en ajouter une.
+  if (executorTag && !embed.toJSON().footer) {
+    embed.setFooter({ text: `Action réalisée par ${executorTag}` });
+  }
+
   // 1. Fetch event config from cache/database
   const cacheKey = `guild:${guild.id}:log_event_config:${eventType}`;
   let config = await cache.get<GuildLogEventConfig | { disabledDummy: true }>(cacheKey);
@@ -540,6 +574,9 @@ async function sendLogEmbed(
 
 async function recordMessageAudit(message: Message | PartialMessage): Promise<void> {
   if (!message.guildId || !message.author || message.author.bot) return;
+  // Sans ce filtre, le contenu des messages d'un salon exclu continuerait
+  // d'arriver dans le journal du dashboard.
+  if (message.guild && await isLogIgnoredChannel(message.guild, [message.channelId])) return;
 
   queueAuditLog({
     guildId: message.guildId,
@@ -638,17 +675,62 @@ function shouldIgnoreMessage(message: Message | PartialMessage): boolean {
   return !message.guildId || !!message.author?.bot;
 }
 
+/**
+ * Auteur d'une action que l'evenement Discord ne nomme pas.
+ *
+ * `ChannelCreate`, `GuildRoleUpdate` & co. ne portent pas d'auteur : seul le
+ * journal d'audit le sait. On ne regarde que les entrees recentes (meme fenetre
+ * que pour les suppressions de messages) : au-dela, ce serait une action
+ * anterieure qu'on attribuerait a tort a l'evenement du moment.
+ *
+ * Rend un nom lisible, pas une mention : la valeur alimente le pied de page des
+ * embeds, ou Discord n'en resout aucune.
+ */
+async function resolveAuditExecutorName(
+  guild: Guild,
+  type: AuditLogEvent,
+  targetId?: string | null,
+): Promise<string | null> {
+  try {
+    const audit = await guild.fetchAuditLogs({ type, limit: 6 });
+    const now = Date.now();
+
+    const matching = audit.entries.find((entry) => {
+      if (now - (entry.createdTimestamp ?? 0) > AUDIT_LOOKBACK_MS) return false;
+      if (targetId && typeof entry.targetId === 'string' && entry.targetId !== targetId) return false;
+      return true;
+    });
+
+    const executor = matching?.executor;
+    if (!executor) return null;
+    return executor.tag ?? executor.username ?? `Utilisateur ${executor.id}`;
+  } catch {
+    // Journal d'audit ferme (permission « Voir les logs du serveur » absente) :
+    // le log part sans pied de page plutot que d'inventer un auteur.
+    return null;
+  }
+}
+
+/**
+ * Qui a supprime le message : `display` pour le champ de l'embed (mention
+ * cliquable), `name` pour le pied de page, ou Discord ne resout aucune mention.
+ */
+type LogActor = { display: string; name: string | null };
+
 async function resolveMessageDeleteActor(
   guild: Guild,
   message: Message | PartialMessage,
   snapshot: MessageSnapshot | null,
-): Promise<string> {
+): Promise<LogActor> {
   const authorId = snapshot?.authorId ?? message.author?.id;
   const authorTag = snapshot?.authorTag ?? message.author?.tag;
 
   if (!authorId || !authorTag) {
-    return 'Inconnu';
+    return { display: 'Inconnu', name: null };
   }
+
+  // Aucune entree d'audit : personne d'autre que l'auteur n'a touche au message.
+  const selfDelete: LogActor = { display: formatUser(authorId, authorTag), name: authorTag };
 
   try {
     const audit = await guild.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 6 });
@@ -669,20 +751,18 @@ async function resolveMessageDeleteActor(
     });
 
     if (!matching?.executor) {
-      return formatUser(authorId, authorTag);
+      return selfDelete;
     }
 
     const executorId = matching.executor.id;
     if (!executorId) {
-      return formatUser(authorId, authorTag);
+      return selfDelete;
     }
 
-    return formatUser(
-      executorId,
-      matching.executor.tag ?? matching.executor.username ?? `Utilisateur ${executorId}`,
-    );
+    const executorName = matching.executor.tag ?? matching.executor.username ?? `Utilisateur ${executorId}`;
+    return { display: formatUser(executorId, executorName), name: executorName };
   } catch {
-    return formatUser(authorId, authorTag);
+    return selfDelete;
   }
 }
 
@@ -690,7 +770,7 @@ async function resolveBulkDeleteActor(
   guild: Guild,
   channelId: string,
   deletedCount: number,
-): Promise<string> {
+): Promise<LogActor> {
   try {
     const audit = await guild.fetchAuditLogs({ type: AuditLogEvent.MessageBulkDelete, limit: 6 });
     const now = Date.now();
@@ -710,10 +790,11 @@ async function resolveBulkDeleteActor(
 
     const executor = matching?.executor;
     const executorId = executor?.id;
-    if (!executor || !executorId) return 'Inconnu';
-    return formatUser(executorId, executor.tag ?? executor.username ?? `Utilisateur ${executorId}`);
+    if (!executor || !executorId) return { display: 'Inconnu', name: null };
+    const executorName = executor.tag ?? executor.username ?? `Utilisateur ${executorId}`;
+    return { display: formatUser(executorId, executorName), name: executorName };
   } catch {
-    return 'Inconnu';
+    return { display: 'Inconnu', name: null };
   }
 }
 
@@ -950,9 +1031,9 @@ export function registerAdvancedLogsListener(client: Client): void {
     messageSnapshotStore.delete(message.id);
 
     const deletedBy = await resolveMessageDeleteActor(message.guild, message, snapshot);
-    const embed = buildMessageDeleteEmbed(snapshot, deletedBy);
+    const embed = buildMessageDeleteEmbed(snapshot, deletedBy.display);
     const components = [buildMemberCaseActionRow(snapshot.authorId)];
-    await sendLogEmbed(message.guild, embed, 'message_delete', components);
+    await sendLogEmbed(message.guild, embed, 'message_delete', components, deletedBy.name, [message.channelId]);
   });
 
   client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
@@ -987,7 +1068,7 @@ export function registerAdvancedLogsListener(client: Client): void {
       createdAt: Date.now(),
     });
 
-    await sendLogEmbed(newMessage.guild, embed, 'message_edit', [buildMemberCaseActionRow(snapshot.authorId)]);
+    await sendLogEmbed(newMessage.guild, embed, 'message_edit', [buildMemberCaseActionRow(snapshot.authorId)], snapshot.authorTag, [newMessage.channelId]);
   });
 
   client.on(Events.MessageBulkDelete, async (messages, channel) => {
@@ -1021,11 +1102,11 @@ export function registerAdvancedLogsListener(client: Client): void {
     const embed = buildBulkDeleteEmbed(
       channelId,
       total,
-      deletedBy,
+      deletedBy.display,
       preview.length > 0 ? preview : 'Auteur non déterminé (messages non présents en cache).',
     );
 
-    await sendLogEmbed(guild, embed, 'message_bulk_delete');
+    await sendLogEmbed(guild, embed, 'message_bulk_delete', undefined, deletedBy.name, [channelId]);
   });
 
   client.on(Events.VoiceStateUpdate, async (oldState: VoiceState, newState: VoiceState) => {
@@ -1058,7 +1139,7 @@ export function registerAdvancedLogsListener(client: Client): void {
         });
       }
 
-      await sendLogEmbed(guild, embed, 'voice_join', [buildMemberCaseActionRow(userId)]);
+      await sendLogEmbed(guild, embed, 'voice_join', [buildMemberCaseActionRow(userId)], safeTag(member, userId), [newState.channelId]);
       return;
     }
 
@@ -1100,7 +1181,7 @@ export function registerAdvancedLogsListener(client: Client): void {
         void incrementMemberDailyVoice(guild.id, member.id, durationMinutes);
       }
 
-      await sendLogEmbed(guild, embed, 'voice_leave', [buildMemberCaseActionRow(userId)]);
+      await sendLogEmbed(guild, embed, 'voice_leave', [buildMemberCaseActionRow(userId)], safeTag(member, userId), [previousChannelId]);
       return;
     }
 
@@ -1143,7 +1224,7 @@ export function registerAdvancedLogsListener(client: Client): void {
         });
       }
 
-      await sendLogEmbed(guild, embed, 'voice_move', [buildMemberCaseActionRow(userId)]);
+      await sendLogEmbed(guild, embed, 'voice_move', [buildMemberCaseActionRow(userId)], safeTag(member, userId), [oldState.channelId, newState.channelId]);
     }
   });
 
@@ -1376,7 +1457,8 @@ export function registerAdvancedLogsListener(client: Client): void {
       channel,
       `Type: ${channel.type}`,
     );
-    await sendLogEmbed(channel.guild, embed, 'channel_lifecycle');
+    const executor = await resolveAuditExecutorName(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
+    await sendLogEmbed(channel.guild, embed, 'channel_lifecycle', undefined, executor);
   });
 
   client.on(Events.ChannelDelete, async (channel) => {
@@ -1388,7 +1470,8 @@ export function registerAdvancedLogsListener(client: Client): void {
       channel,
       `Type: ${channel.type}`,
     );
-    await sendLogEmbed(channel.guild, embed, 'channel_lifecycle');
+    const executor = await resolveAuditExecutorName(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
+    await sendLogEmbed(channel.guild, embed, 'channel_lifecycle', undefined, executor);
   });
 
   client.on(Events.ChannelUpdate, async (oldChannel, newChannel) => {
@@ -1435,17 +1518,20 @@ export function registerAdvancedLogsListener(client: Client): void {
       details.length > 0 ? details.join('\n') : 'Modification détectée.',
     );
 
-    await sendLogEmbed(newChannel.guild, embed, 'channel_lifecycle');
+    const executor = await resolveAuditExecutorName(newChannel.guild, AuditLogEvent.ChannelUpdate, newChannel.id);
+    await sendLogEmbed(newChannel.guild, embed, 'channel_lifecycle', undefined, executor);
   });
 
   client.on(Events.GuildRoleCreate, async (role) => {
     const embed = buildRoleEventEmbed('🆕 Rôle créé', 0x2a9d8f, role, `Couleur: #${role.color.toString(16).padStart(6, '0')}`);
-    await sendLogEmbed(role.guild, embed, 'role_lifecycle');
+    const executor = await resolveAuditExecutorName(role.guild, AuditLogEvent.RoleCreate, role.id);
+    await sendLogEmbed(role.guild, embed, 'role_lifecycle', undefined, executor);
   });
 
   client.on(Events.GuildRoleDelete, async (role) => {
     const embed = buildRoleEventEmbed('🗑️ Rôle supprimé', 0xe63946, role, `Couleur: #${role.color.toString(16).padStart(6, '0')}`);
-    await sendLogEmbed(role.guild, embed, 'role_lifecycle');
+    const executor = await resolveAuditExecutorName(role.guild, AuditLogEvent.RoleDelete, role.id);
+    await sendLogEmbed(role.guild, embed, 'role_lifecycle', undefined, executor);
   });
 
   client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
@@ -1469,7 +1555,8 @@ export function registerAdvancedLogsListener(client: Client): void {
     if (changes.length === 0) return;
 
     const embed = buildRoleEventEmbed('🛠️ Rôle modifié', 0xf4a261, newRole, changes.join('\n'));
-    await sendLogEmbed(newRole.guild, embed, 'role_lifecycle');
+    const executor = await resolveAuditExecutorName(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id);
+    await sendLogEmbed(newRole.guild, embed, 'role_lifecycle', undefined, executor);
   });
 
   client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
@@ -1495,7 +1582,8 @@ export function registerAdvancedLogsListener(client: Client): void {
         )
         .setTimestamp();
 
-      await sendLogEmbed(newMember.guild, embed, 'member_roles_update', [buildMemberCaseActionRow(newMember.id)]);
+      const roleExecutor = await resolveAuditExecutorName(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id);
+      await sendLogEmbed(newMember.guild, embed, 'member_roles_update', [buildMemberCaseActionRow(newMember.id)], roleExecutor);
     }
 
     const oldTimeout = oldMember.communicationDisabledUntilTimestamp ?? null;
@@ -1516,7 +1604,8 @@ export function registerAdvancedLogsListener(client: Client): void {
         )
         .setTimestamp();
 
-      await sendLogEmbed(newMember.guild, embed, 'member_timeout', [buildMemberCaseActionRow(newMember.id)]);
+      const timeoutExecutor = await resolveAuditExecutorName(newMember.guild, AuditLogEvent.MemberUpdate, newMember.id);
+      await sendLogEmbed(newMember.guild, embed, 'member_timeout', [buildMemberCaseActionRow(newMember.id)], timeoutExecutor);
     }
   });
 

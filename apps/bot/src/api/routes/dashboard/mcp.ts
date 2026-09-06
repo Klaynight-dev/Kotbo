@@ -21,6 +21,8 @@ const VALID_PERMISSIONS: McpKeyPermission[] = [
   'WRITE_TICKETS',
   'WRITE_COMMUNITY',
   'WRITE_MEMBERS',
+  'READ_WORKFLOWS',
+  'WRITE_WORKFLOWS',
 ];
 
 export async function handleMCPKeyRoutes(
@@ -29,7 +31,7 @@ export async function handleMCPKeyRoutes(
   parts: string[],
   _url: URL,
   _client: Client,
-  _user: AuthClaims,
+  user: AuthClaims,
   guildId: string,
   access: DashboardAccess
 ): Promise<boolean> {
@@ -73,7 +75,9 @@ export async function handleMCPKeyRoutes(
       const permissions: McpKeyPermission[] = (body.permissions ?? ['READ_STATS', 'READ_MEMBERS', 'READ_SANCTIONS'])
         .filter((p): p is McpKeyPermission => VALID_PERMISSIONS.includes(p as McpKeyPermission));
 
-      const created = await createMcpKey(guildId, body.name.trim(), permissions);
+      // La cle agit au nom de qui la cree : c'est ce rattachement qui permet
+      // de la couper quand ce compte perd ses droits sur le serveur.
+      const created = await createMcpKey(guildId, body.name.trim(), permissions, user.userId);
       json(res, 201, {
         id: created.id,
         name: created.name,

@@ -5,7 +5,7 @@
   import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
   import { authStore } from '../lib/stores/auth.svelte';
-  import { fetchLinkedAccounts, updateLinkedAccountStatus, deleteLinkedAccount, fetchMemberCase, fetchFeatureConfigurations, updateFeatureConfiguration, scanSuspectedDetections, fetchSuspectedDetections, fetchChannelsManagementConfig, updateChannelsManagementConfig, linkDetectedAccount, dismissDetection, restoreDetection, fetchMessageLogStats, updateMessageLogConfig } from '../lib/api';
+  import { fetchLinkedAccounts, updateLinkedAccountStatus, deleteLinkedAccount, fetchMemberCase, fetchFeatureConfigurations, updateFeatureConfiguration, updateModuleStatus, scanSuspectedDetections, fetchSuspectedDetections, fetchChannelsManagementConfig, updateChannelsManagementConfig, linkDetectedAccount, dismissDetection, restoreDetection, fetchMessageLogStats, updateMessageLogConfig } from '../lib/api';
   import { toast } from '../lib/stores/toast.svelte';
   import { confirmDialog } from '../lib/stores/confirmDialog.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
@@ -271,8 +271,10 @@
       const configs = await fetchFeatureConfigurations();
       doubleAccountsConfig = configs?.features?.find((c: any) => c.featureKey === 'double_accounts') || null;
       if (doubleAccountsConfig) {
-        const m = doubleAccountsConfig.metadata || {};
-        workflowDraft = { validationRoleId: m.validationRoleId || '', sanctionRoleId: m.sanctionRoleId || '', dsRoleId: m.dsRoleId || '', autoDetectionEnabled: m.autoDetectionEnabled ?? true };
+        // `meta` et non `m` : ce nom masquait les messages i18n dans toute la
+        // fonction, et le premier `m.xxx()` ajoute ici aurait lu la metadonnee.
+        const meta = doubleAccountsConfig.metadata || {};
+        workflowDraft = { validationRoleId: meta.validationRoleId || '', sanctionRoleId: meta.sanctionRoleId || '', dsRoleId: meta.dsRoleId || '', autoDetectionEnabled: meta.autoDetectionEnabled ?? true };
         savedConfig = { enabled: doubleAccountsConfig.enabled, ...workflowDraft };
       }
     } catch {}
@@ -282,11 +284,23 @@
     if (!doubleAccountsConfig) return false;
     let success = false;
     await saveAction.run(async () => {
+      // L'activation part par sa propre route : le serveur y attache la cascade
+      // des dependances, le controle de l'offre et la purge du cache d'etats. La
+      // route de configuration ne fait qu'ecrire la colonne, ce qui donnait une
+      // pastille juste et un bot qui n'avait rien change.
+      if (doubleAccountsConfig.enabled !== savedConfig.enabled) {
+        const toggled = await updateModuleStatus(
+          'double_accounts',
+          doubleAccountsConfig.enabled ? 'active' : 'inactive'
+        );
+        if (!toggled) throw new Error(m.da_error_api());
+      }
+
       const ok = await updateFeatureConfiguration('double_accounts', {
-        enabled: doubleAccountsConfig.enabled, channelId: doubleAccountsConfig.channelId, secondaryChannelId: doubleAccountsConfig.secondaryChannelId,
-        requiredRoleId: doubleAccountsConfig.requiredRoleId, notificationRoleId: doubleAccountsConfig.notificationRoleId,
+        channelId: doubleAccountsConfig.channelId, secondaryChannelId: doubleAccountsConfig.secondaryChannelId,
+        notificationRoleId: doubleAccountsConfig.notificationRoleId,
         notifyViaDiscordChannel: doubleAccountsConfig.notifyViaDiscordChannel, notifyViaDM: doubleAccountsConfig.notifyViaDM,
-        loggingEnabled: doubleAccountsConfig.loggingEnabled, userActivityTracking: doubleAccountsConfig.userActivityTracking, metadata: workflowDraft,
+        metadata: workflowDraft,
       });
       if (!ok) throw new Error(m.da_error_api());
       await loadConfig();
@@ -334,6 +348,8 @@
     verificationWarnThreshold: number | null;
     warnWeightingEnabled: boolean;
     warnDecayDays: number | null;
+    countArchivedInWarnScore: boolean;
+    warnAutoArchiveDays: number | null;
     wordStatsEnabled: boolean;
     banHygieneEnabled: boolean;
     verificationWarnAutoMode: string;
@@ -364,6 +380,8 @@
           verificationWarnThreshold: data.verificationWarnThreshold ?? null,
           warnWeightingEnabled: data.warnWeightingEnabled ?? false,
           warnDecayDays: data.warnDecayDays ?? null,
+          countArchivedInWarnScore: data.countArchivedInWarnScore ?? false,
+          warnAutoArchiveDays: data.warnAutoArchiveDays ?? null,
           wordStatsEnabled: data.wordStatsEnabled ?? false,
           banHygieneEnabled: data.banHygieneEnabled ?? true,
           verificationWarnAutoMode: data.verificationWarnAutoMode ?? 'FULL_AUTO',
@@ -1258,6 +1276,34 @@
                 </span>
               </div>
             {/if}
+
+            <!-- Archivage des warns : expiration automatique + poids au score -->
+            <div class="pt-4 mt-2 border-t border-outline-variant/10 space-y-4">
+              <label class="space-y-1.5 block">
+                <span class="text-xs font-medium text-on-surface-variant/40">{m.da_warn_auto_archive()}</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="3650"
+                  placeholder={m.da_never_zero()}
+                  value={verifConfig.warnAutoArchiveDays ?? ''}
+                  oninput={(e) => {
+                    const v = parseInt((e.target as HTMLInputElement).value);
+                    verifConfig!.warnAutoArchiveDays = isNaN(v) || v <= 0 ? null : v;
+                  }}
+                  class="w-full rounded-lg border border-outline-variant/10 bg-surface-container-high/40 px-3 py-2.5 text-sm"
+                />
+                <p class="text-[10px] text-on-surface-variant/40">{m.da_warn_auto_archive_hint()}</p>
+              </label>
+
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" bind:checked={verifConfig.countArchivedInWarnScore} class="mt-0.5 accent-indigo-500" />
+                <span>
+                  <span class="text-sm font-medium text-on-surface block">{m.da_count_archived()}</span>
+                  <span class="text-[11px] text-on-surface-variant/50 block mt-0.5">{m.da_count_archived_desc()}</span>
+                </span>
+              </label>
+            </div>
 
             <!-- Warns pondérés -->
             <div class="pt-4 mt-2 border-t border-outline-variant/10 space-y-4">

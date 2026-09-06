@@ -1,10 +1,6 @@
-/** Centre de gestion et configuration centralisee. */
+/** Configuration par fonctionnalite et detection de doubles comptes. */
 import { authStore } from '../stores/auth.svelte';
 import { dashboardMutation, dashboardRequest } from './client';
-
-// ==========================================
-// MANAGEMENT CENTER / CENTRALIZED CONFIG APIs
-// ==========================================
 
 export async function fetchFeatureConfigurations(guildId = authStore.selectedGuildId) {
   return dashboardRequest('/notifications/features', {
@@ -73,14 +69,5 @@ export async function updateRoleAccess(featureKey, roleAccessConfigs, guildId = 
     payload: { roleAccessConfigs },
     guildId,
     errorContext: 'API Error (Update Role Access):'
-  });
-}
-
-export async function updateNotificationTargets(featureKey, notificationTargets, guildId = authStore.selectedGuildId) {
-  return dashboardMutation(`/management/features/${featureKey}/notification-targets`, {
-    method: 'PUT',
-    payload: { notificationTargets },
-    guildId,
-    errorContext: 'API Error (Update Notification Targets):'
   });
 }

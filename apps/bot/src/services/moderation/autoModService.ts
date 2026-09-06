@@ -153,7 +153,47 @@ export async function syncDiscordAutoModRules(client: Client, guildId: string, c
       where: { id: guildId },
       select: { logChannelId: true }
     });
-    const logChannelId = guildDb?.logChannelId || null;
+    const rawLogChannelId = guildDb?.logChannelId || null;
+
+    /**
+     * Le salon d'alerte, s'il est utilisable.
+     *
+     * Discord refuse la regle entiere - 50035
+     * INVALID_AUTO_MODERATION_CHANNEL_FLAG_ACTION_ACCESS - quand le bot n'a pas
+     * « Voir le salon » et « Envoyer des messages » sur le salon d'alerte. Le
+     * salon de logs pose par la mise en place est reserve au staff : sur un
+     * serveur qui vient d'etre monte, aucune regle native ne se creait, et
+     * l'AutoMod entier restait muet a cause d'une action accessoire.
+     *
+     * On retombe donc sur les seules actions qui bloquent. L'alerte revient
+     * d'elle-meme a la prochaine synchronisation, le jour ou le salon s'ouvre.
+     */
+    const logChannelId = await (async () => {
+      if (!rawLogChannelId) return null;
+
+      const me = guild.members.me;
+      if (!me) return null;
+
+      const channel = guild.channels.cache.get(rawLogChannelId)
+        ?? await guild.channels.fetch(rawLogChannelId).catch(() => null);
+      if (!channel || !channel.isTextBased()) return null;
+
+      const permissions = channel.permissionsFor(me);
+      const usable = !!permissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+      ]);
+
+      if (!usable) {
+        logger.warn(
+          'AutoModService',
+          `Salon d'alerte AutoMod ${rawLogChannelId} inaccessible au bot sur ${guild.name} (${guildId}) : `
+          + `les regles natives sont creees sans action d'alerte.`,
+        );
+      }
+
+      return usable ? rawLogChannelId : null;
+    })();
 
     // Définir les rôles et salons exemptés (limités par Discord : max 20 rôles, max 50 salons)
     const exemptRoles = (config.bypassRoles || []).slice(0, 20);

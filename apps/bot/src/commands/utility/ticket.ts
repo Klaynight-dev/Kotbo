@@ -2,7 +2,17 @@ import { errorMessage } from '../../utils/errors.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { ActionRowBuilder, SlashCommandBuilder, type ChatInputCommandInteraction, PermissionFlagsBits, MessageFlags, TextChannel, Role, User, type GuildMember, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } from 'discord.js';
 import prisma from '../../utils/db.js';
-import { canManageTicket, findActiveTicketBlacklist, renameTicketChannel, renameChannelToOpen, closeTicket, ticketBlacklistMessage } from '../../services/features/ticketService.js';
+import { canManageTicket, findActiveTicketBlacklist, renameTicketChannel, renameChannelToOpen, closeTicket, logTicketEvent, ticketBlacklistMessage } from '../../services/features/ticketService.js';
+import {
+  archiveTicket,
+  DELETION_LOCK_DURATIONS,
+  deletionLockMessage,
+  lockTicketDeletion,
+  resolveDeletionLock,
+  resolveLockDuration,
+  unarchiveTicket,
+  unlockTicketDeletion,
+} from '../../services/features/ticketLifecycleService.js';
 import { buildMemberCasePanel } from '../../services/moderation/memberCaseService.js';
 import { generateTranscript } from '../../services/features/transcriptService.js';
 import { successEmbed } from '../../utils/embeds.js';
@@ -59,6 +69,45 @@ const data = new SlashCommandBuilder()
       .setName('delete')
       .setDescription(m.c7_ticket_delete_desc({}, { locale: 'en' }))
       .setDescriptionLocalizations({ fr: m.c7_ticket_delete_desc({}, { locale: 'fr' }) })
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('archive')
+      .setDescription(m.c7_ticket_archive_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_archive_desc({}, { locale: 'fr' }) })
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('unarchive')
+      .setDescription(m.c7_ticket_unarchive_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_unarchive_desc({}, { locale: 'fr' }) })
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('lock')
+      .setDescription(m.c7_ticket_lock_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_lock_desc({}, { locale: 'fr' }) })
+      .addStringOption((option) =>
+        option
+          .setName('duree')
+          .setDescription(m.c7_ticket_lock_opt_duree_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_lock_opt_duree_desc({}, { locale: 'fr' }) })
+          .setRequired(true)
+          .addChoices(...DELETION_LOCK_DURATIONS.map((d) => ({ name: d.label, value: d.value })))
+      )
+      .addStringOption((option) =>
+        option
+          .setName('raison')
+          .setDescription(m.c7_ticket_lock_opt_raison_desc({}, { locale: 'en' }))
+          .setDescriptionLocalizations({ fr: m.c7_ticket_lock_opt_raison_desc({}, { locale: 'fr' }) })
+          .setMaxLength(400)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('unlock')
+      .setDescription(m.c7_ticket_unlock_desc({}, { locale: 'en' }))
+      .setDescriptionLocalizations({ fr: m.c7_ticket_unlock_desc({}, { locale: 'fr' }) })
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -279,6 +328,79 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     return;
   }
 
+  // ─── Archivage : ranger sans rien detruire ───────────────
+  if (subcommand === 'archive' || subcommand === 'unarchive') {
+    if (!isStaff) {
+      await interaction.reply({
+        content: m.c7_ticket_access_err_staff_only({}, { locale }),
+        flags: [MessageFlags.Ephemeral],
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+    const actor = { id: interaction.user.id, username: interaction.user.username };
+
+    try {
+      if (subcommand === 'archive') {
+        const result = await archiveTicket(interaction.client, ticket.id, actor);
+        const link = result.transcriptId
+          ? `${(process.env.DASHBOARD_URL || 'http://localhost:5173').replace(/\/$/, '')}/transcripts/${result.transcriptId}`
+          : undefined;
+        await logTicketEvent(interaction.client, guildConfig, 'ARCHIVED', result.ticket, interaction.user, link);
+        await interaction.editReply({ content: m.c7_ticket_archive_success({}, { locale }) });
+      } else {
+        const updated = await unarchiveTicket(interaction.client, ticket.id, actor);
+        await logTicketEvent(interaction.client, guildConfig, 'UNARCHIVED', updated, interaction.user);
+        await interaction.editReply({ content: m.c7_ticket_unarchive_success({}, { locale }) });
+      }
+    } catch (error: unknown) {
+      await interaction.editReply({ content: `❌ ${errorMessage(error) || m.c7_ticket_unknown_error({}, { locale })}` });
+    }
+    return;
+  }
+
+  // ─── Verrou anti-suppression ─────────────────────────────
+  if (subcommand === 'lock' || subcommand === 'unlock') {
+    if (!isStaff) {
+      await interaction.reply({
+        content: m.c7_ticket_access_err_staff_only({}, { locale }),
+        flags: [MessageFlags.Ephemeral],
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+    if (subcommand === 'unlock') {
+      const updated = await unlockTicketDeletion(ticket.id);
+      await logTicketEvent(interaction.client, guildConfig, 'UNLOCKED', updated, interaction.user);
+      await interaction.editReply({ content: m.c7_ticket_unlock_success({}, { locale }) });
+      return;
+    }
+
+    const rawDuration = interaction.options.getString('duree', true);
+    const known = DELETION_LOCK_DURATIONS.find((d) => d.value === rawDuration);
+    if (!known) {
+      await interaction.editReply({
+        content: m.c7_ticket_lock_err_duration({ values: DELETION_LOCK_DURATIONS.map((d) => d.value).join(', ') }, { locale }),
+      });
+      return;
+    }
+
+    const updated = await lockTicketDeletion(
+      ticket.id,
+      { id: interaction.user.id, username: interaction.user.username },
+      { durationMs: resolveLockDuration(rawDuration), reason: interaction.options.getString('raison') },
+    );
+    await logTicketEvent(
+      interaction.client, guildConfig, 'LOCKED', updated, interaction.user,
+      updated.deletionLockedUntil ? `<t:${Math.floor(updated.deletionLockedUntil.getTime() / 1000)}:f>` : undefined,
+    );
+    await interaction.editReply({ content: m.c7_ticket_lock_success({ duration: known.label }, { locale }) });
+    return;
+  }
+
   if (subcommand === 'reopen') {
     if (!isStaff) {
       await interaction.reply({
@@ -331,6 +453,13 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
         content: m.c7_ticket_delete_err_staff_only({}, { locale }),
         flags: [MessageFlags.Ephemeral],
       });
+      return;
+    }
+
+    // Le verrou prime sur la permission staff : c'est tout son objet.
+    const deletionLock = resolveDeletionLock(ticket);
+    if (deletionLock.locked) {
+      await interaction.reply({ content: deletionLockMessage(deletionLock), flags: [MessageFlags.Ephemeral] });
       return;
     }
 

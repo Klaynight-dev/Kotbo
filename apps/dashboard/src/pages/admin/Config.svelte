@@ -4,7 +4,7 @@
   import { confirmDialog } from '../../lib/stores/confirmDialog.svelte';
   import { fetchMaintenanceConfig, updateMaintenanceConfig, fetchBotErrors, clearBotErrors } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
   import { m } from '../../lib/i18n';
 
   interface BotError {
@@ -50,16 +50,8 @@
   }
 </script>
 
-<AdminLayout>
+<AdminShell title="Configuration avancée" description="Réglages globaux de l’instance Kotbo.">
   <div class="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-3 duration-600">
-  <!-- Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
-    <div>
-      <h2 class="text-lg font-semibold text-on-surface tracking-tight">{m.d7_advanced()}</h2>
-      <p class="text-sm text-on-surface-variant/50 font-medium">{m.d7_system_config_desc()}</p>
-    </div>
-  </div>
-
   {#if loading}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
       <div class="premium-card rounded-[2.25rem] p-8 space-y-6 h-full">
@@ -149,4 +141,4 @@
     </div>
   {/if}
   </div>
-</AdminLayout>
+</AdminShell>

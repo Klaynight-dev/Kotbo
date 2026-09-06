@@ -3,6 +3,7 @@
   import { channelDisplayName } from '../lib/channelUtils';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
@@ -68,7 +69,10 @@
     }
   });
 
+  let unsubscribeRealtime: (() => void) | null = null;
+
   onDestroy(() => {
+    unsubscribeRealtime?.();
     unsavedChanges.release('suggestions');
   });
 
@@ -120,6 +124,13 @@
     } finally {
       loading = false;
     }
+
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: ['suggestions_updated'],
+      onUpdate: () => {
+        void loadSuggestions();
+      },
+    });
   });
 
   async function handleSaveConfig(): Promise<boolean> {

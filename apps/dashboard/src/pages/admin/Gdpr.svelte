@@ -2,7 +2,7 @@
   import { toast } from '../../lib/stores/toast.svelte';
   import { fetchGdprPreview, downloadGdprExport, type GdprPreview } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
   import { m } from '../../lib/i18n';
 
   let userId = $state('');
@@ -56,7 +56,7 @@
   }
 </script>
 
-<AdminLayout>
+<AdminShell title="Export RGPD" description="Aperçu et export des données personnelles détenues sur un utilisateur.">
   <div class="max-w-4xl mx-auto space-y-6">
     <!-- Header -->
     <div class="space-y-2">
@@ -219,4 +219,4 @@
       </div>
     {/if}
   </div>
-</AdminLayout>
+</AdminShell>

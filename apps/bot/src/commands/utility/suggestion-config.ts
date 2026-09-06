@@ -10,6 +10,7 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import { getOrCreateFeatureConfigs, updateFeatureConfig } from '../../services/core/dashboardManagementService.js';
+import { setDashboardModuleStatus } from '../../services/core/moduleActivationService.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { SlashCommandDefinition } from '../../commands.js';
 import { getCommandMetadata } from '../../utils/i18n.js';
@@ -91,8 +92,11 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     try {
       await getOrCreateFeatureConfigs(guildId);
+      // `setDashboardModuleStatus` et non la ligne de configuration : lui seul
+      // propage la cascade, refuse un module hors offre et purge le cache que
+      // la garde de lecture consulte.
+      await setDashboardModuleStatus(guildId, 'suggestions', true);
       await updateFeatureConfig(guildId, 'suggestions', {
-        enabled: true,
         channelId: channel.id,
       });
 
@@ -114,8 +118,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
 
     try {
       await getOrCreateFeatureConfigs(guildId);
+      await setDashboardModuleStatus(guildId, 'suggestions', false);
       await updateFeatureConfig(guildId, 'suggestions', {
-        enabled: false,
         channelId: null,
       });
 

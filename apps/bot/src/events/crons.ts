@@ -18,7 +18,7 @@ import { checkExpiredGiveaways } from '../services/features/giveawayService.js';
 import { refreshAllAutoLeaderboards } from '../services/progression/leaderboardService.js';
 import { pruneOldMessageLogs } from './messageLogging.js';
 import { pruneOldAuditEvents } from '../services/analytics/auditDiffService.js';
-import { resumePendingExecutions } from '../services/features/workflow/workflowService.js';
+import { dispatchScheduledWorkflows, resumePendingExecutions } from '../services/features/workflow/workflowService.js';
 import { pruneOldWordStats } from '../services/analytics/wordStatsService.js';
 import { runBanHygieneScan } from '../services/moderation/banHygieneService.js';
 import { isModuleEnabled } from '../services/core/moduleGate.js';
@@ -184,6 +184,21 @@ export async function registerCrons(client: Client): Promise<void> {
       const { runBlackMarketCycle } = await import('../services/features/rpg/rpgBlackMarketService.js');
       await runBlackMarketCycle(client);
     },
+    'drop-cycle': async () => {
+      logger.debug('Cron', 'Cycle des drops (planification, publication, clôture)...');
+      const { runDropCycle } = await import('../services/features/dropService.js');
+      await runDropCycle(client);
+    },
+    'campaign-cycle': async () => {
+      logger.debug('Cron', 'Cycle des campagnes (étapes dues, mesures)...');
+      const { runCampaignCycle } = await import('../services/features/campaignService.js');
+      await runCampaignCycle(client);
+    },
+    'raid-cycle': async () => {
+      logger.debug('Cron', 'Cycle du raid hebdomadaire (ouverture, avancement, clôture)...');
+      const { runRaidCycle } = await import('../services/features/rpg/rpgRaidService.js');
+      await runRaidCycle(client);
+    },
     'meeting-notifications': async () => {
       await processMeetingNotifications();
     },
@@ -206,6 +221,16 @@ export async function registerCrons(client: Client): Promise<void> {
       logger.debug('Cron', 'Vérification des saisons de clans...');
       const { checkAndProgressClanSeasons } = await import('../services/community/clanService.js');
       await checkAndProgressClanSeasons(client);
+    },
+    'clan-weekly-digest': async () => {
+      logger.debug('Cron', 'Bilan hebdomadaire des clans...');
+      const { runClanWeeklyDigests } = await import('../services/community/clanDigestService.js');
+      await runClanWeeklyDigests(client);
+    },
+    'clan-bet-expiration': async () => {
+      logger.debug('Cron', 'Expiration des propositions de paris sans réponse...');
+      const { expireStaleBets } = await import('../services/community/clanBetService.js');
+      await expireStaleBets(client);
     },
     'marketplace-expiration': async () => {
       logger.debug('Cron', 'Traitement des annonces marketplace expirées...');
@@ -277,14 +302,53 @@ export async function registerCrons(client: Client): Promise<void> {
     },
     'message-logs-prune': pruneOldMessageLogs,
     'audit-events-prune': pruneOldAuditEvents,
+    'billing-events-prune': async () => {
+      const { pruneOldBillingEvents } = await import('../services/billing/subscriptionSync.js');
+      await pruneOldBillingEvents();
+    },
+    'billing-renewal-notice': async () => {
+      const { runRenewalNoticeCheck } = await import('../services/billing/renewalNoticeService.js');
+      await runRenewalNoticeCheck(client);
+    },
+    'analytics-daily-snapshot': async () => {
+      const { runDailySnapshot } = await import('../services/analytics/acquisitionSnapshotService.js');
+      await runDailySnapshot();
+    },
+    'acquisition-events-prune': async () => {
+      const { pruneAcquisitionEvents, anonymiseDepartedGuilds } = await import(
+        '../services/analytics/acquisitionMaintenance.js'
+      );
+      await pruneAcquisitionEvents();
+      await anonymiseDepartedGuilds();
+    },
+    'acquisition-abandon-scan': async () => {
+      const { scanAbandonedOnboardings } = await import('../services/analytics/acquisitionMaintenance.js');
+      await scanAbandonedOnboardings();
+    },
+    'acquisition-alerts-check': async () => {
+      const { runAcquisitionAlertsCheck } = await import('../services/analytics/acquisitionAlertsService.js');
+      await runAcquisitionAlertsCheck(client);
+    },
+    'acquisition-weekly-recap': async () => {
+      const { runWeeklyAcquisitionRecap } = await import('../services/analytics/acquisitionAlertsService.js');
+      await runWeeklyAcquisitionRecap(client);
+    },
     'workflow-resume': async () => {
       await resumePendingExecutions(client);
+    },
+    'workflow-schedule': async () => {
+      await dispatchScheduledWorkflows(client);
     },
     'word-stats-prune': async () => {
       await pruneOldWordStats();
     },
     'ban-hygiene-scan': async () => {
       await runBanHygieneScan(client);
+    },
+    'warn-auto-archive': async () => {
+      const { runWarnAutoArchive } = await import('../services/moderation/sanctionArchiveService.js');
+      const archived = await runWarnAutoArchive();
+      if (archived > 0) logger.info('Cron', `${archived} warn(s) archivé(s) automatiquement`);
     },
     'staff-reminders': async () => {
       const { processDueReminders } = await import('../services/staff/reminderService.js');
@@ -391,6 +455,22 @@ export async function registerCrons(client: Client): Promise<void> {
     }, 1000);
   });
 
+  // 🎁 Drops: Toutes les minutes (apparition à l'heure tirée au sort + clôture des expirés)
+  cron.schedule('* * * * *', async () => {
+    await runCronJob('drop-cycle', async () => {
+      const { runDropCycle } = await import('../services/features/dropService.js');
+      await runDropCycle(client);
+    }, 1000);
+  });
+
+  // ⚔️ Raid hebdomadaire: Toutes les minutes (ouverture, barre de progression, clôture)
+  cron.schedule('* * * * *', async () => {
+    await runCronJob('raid-cycle', async () => {
+      const { runRaidCycle } = await import('../services/features/rpg/rpgRaidService.js');
+      await runRaidCycle(client);
+    }, 1000);
+  });
+
   // 📊 Activity & Heatmap: Toutes les 10 minutes (Snapshot présences lissé)
   // Offloaded to BullMQ worker to avoid blocking the main event loop
   cron.schedule('*/10 * * * *', async () => {
@@ -418,10 +498,101 @@ export async function registerCrons(client: Client): Promise<void> {
     await runCronJob('audit-events-prune', pruneOldAuditEvents, 2000);
   });
 
+  // 💳 Facturation: purge des webhooks Stripe archivés (tous les jours à 03:40).
+  // Ces lignes servent d'abord de verrou d'idempotence, sur une fenêtre bien
+  // plus courte que leur intérêt d'audit : Stripe cesse de rejouer un événement
+  // au bout de 3 jours, on garde large.
+  cron.schedule('40 3 * * *', async () => {
+    await runCronJob('billing-events-prune', async () => {
+      const { pruneOldBillingEvents } = await import('../services/billing/subscriptionSync.js');
+      await pruneOldBillingEvents();
+    }, 2000);
+  });
+
+  // 📅 Facturation: avis de reconduction des abonnements annuels (tous les jours à 09:15).
+  // L'article L215-1 du code de la consommation impose de prevenir entre trois
+  // mois et un mois avant l'echeance. En matinee plutot qu'en pleine nuit : le
+  // message part aussi en prive, et un avis commercial recu a 3 h du matin se
+  // lit mal.
+  cron.schedule('15 9 * * *', async () => {
+    await runCronJob('billing-renewal-notice', async () => {
+      const { runRenewalNoticeCheck } = await import('../services/billing/renewalNoticeService.js');
+      await runRenewalNoticeCheck(client);
+    }, 2000);
+  });
+
+  // 📊 Acquisition: instantane quotidien de l'etat commercial (03:20).
+  // Fige la veille, pas le jour courant : une journee en cours donnerait un
+  // instantane partiel qui serait pris pour un chiffre definitif des le
+  // lendemain matin.
+  cron.schedule('20 3 * * *', async () => {
+    await runCronJob('analytics-daily-snapshot', async () => {
+      const { runDailySnapshot } = await import('../services/analytics/acquisitionSnapshotService.js');
+      await runDailySnapshot();
+    }, 2000);
+  });
+
+  // 🧹 Acquisition: purge du journal et anonymisation des serveurs partis (03:50).
+  // Apres l'instantane : ce qui est purge doit d'abord avoir ete agrege.
+  cron.schedule('50 3 * * *', async () => {
+    await runCronJob('acquisition-events-prune', async () => {
+      const { pruneAcquisitionEvents, anonymiseDepartedGuilds } = await import(
+        '../services/analytics/acquisitionMaintenance.js'
+      );
+      await pruneAcquisitionEvents();
+      await anonymiseDepartedGuilds();
+    }, 2000);
+  });
+
+  // 🕳️ Acquisition: parcours de configuration abandonnes (toutes les heures).
+  // L'abandon est la seule etape que personne n'emet : un visiteur qui renonce
+  // ferme l'onglet. Elle ne peut etre que deduite.
+  cron.schedule('40 * * * *', async () => {
+    await runCronJob('acquisition-abandon-scan', async () => {
+      const { scanAbandonedOnboardings } = await import('../services/analytics/acquisitionMaintenance.js');
+      await scanAbandonedOnboardings();
+    }, 2000);
+  });
+
+  // 🔔 Acquisition: vérification des alertes et anomalies commerciales (tous les jours à 09:30).
+  cron.schedule('30 9 * * *', async () => {
+    await runCronJob('acquisition-alerts-check', async () => {
+      const { runAcquisitionAlertsCheck } = await import('../services/analytics/acquisitionAlertsService.js');
+      await runAcquisitionAlertsCheck(client);
+    }, 2000);
+  });
+
+  // 📬 Acquisition: récapitulatif commercial hebdomadaire (chaque lundi à 09:00).
+  cron.schedule('0 9 * * 1', async () => {
+    await runCronJob('acquisition-weekly-recap', async () => {
+      const { runWeeklyAcquisitionRecap } = await import('../services/analytics/acquisitionAlertsService.js');
+      await runWeeklyAcquisitionRecap(client);
+    }, 2000);
+  });
+
   // 🧩 Workflows: reprise des exécutions suspendues par un nœud « Attendre »
   cron.schedule('* * * * *', async () => {
     await runCronJob('workflow-resume', async () => {
       await resumePendingExecutions(client);
+    });
+  });
+
+  // 🧩 Workflows: déclencheurs planifiés. Un balayage plutôt qu'une tâche cron
+  // par workflow : la liste change à chaque enregistrement, et un balayage
+  // reprend tout seul après un redémarrage.
+  cron.schedule('* * * * *', async () => {
+    await runCronJob('workflow-schedule', async () => {
+      await dispatchScheduledWorkflows(client);
+    });
+  });
+
+  // 📣 Campagnes : un balayage a la minute plutot qu'une tache cron par
+  // campagne. La liste change a chaque enregistrement, et un balayage reprend
+  // les etapes en retard tout seul apres un redemarrage.
+  cron.schedule('* * * * *', async () => {
+    await runCronJob('campaign-cycle', async () => {
+      const { runCampaignCycle } = await import('../services/features/campaignService.js');
+      await runCampaignCycle(client);
     });
   });
 
@@ -436,6 +607,15 @@ export async function registerCrons(client: Client): Promise<void> {
   cron.schedule('15 5 * * *', async () => {
     await runCronJob('ban-hygiene-scan', async () => {
       await runBanHygieneScan(client);
+    }, 3000);
+  });
+
+  // 📦 Sanctions: expiration automatique des warns (tous les jours à 05:30)
+  cron.schedule('30 5 * * *', async () => {
+    await runCronJob('warn-auto-archive', async () => {
+      const { runWarnAutoArchive } = await import('../services/moderation/sanctionArchiveService.js');
+      const archived = await runWarnAutoArchive();
+      if (archived > 0) logger.info('Cron', `${archived} warn(s) archivé(s) automatiquement`);
     }, 3000);
   });
 
@@ -629,6 +809,24 @@ export async function registerCrons(client: Client): Promise<void> {
     await runCronJob('clan-season-check', async () => {
       const { checkAndProgressClanSeasons } = await import('../services/community/clanService.js');
       await checkAndProgressClanSeasons(client);
+    }, 3000);
+  });
+
+  // 🛡️ Clans: Bilan hebdomadaire dans les QG, toutes les heures.
+  // Toutes les heures et non le lundi : l'heure de parution suit le fuseau de chaque
+  // serveur, et un bot arrêté ce matin-là doit pouvoir rattraper son bilan.
+  cron.schedule('20 * * * *', async () => {
+    await runCronJob('clan-weekly-digest', async () => {
+      const { runClanWeeklyDigests } = await import('../services/community/clanDigestService.js');
+      await runClanWeeklyDigests(client);
+    }, 5000);
+  });
+
+  // 🎲 Paris: Expiration des propositions sans réponse toutes les 15 minutes
+  cron.schedule('*/15 * * * *', async () => {
+    await runCronJob('clan-bet-expiration', async () => {
+      const { expireStaleBets } = await import('../services/community/clanBetService.js');
+      await expireStaleBets(client);
     }, 3000);
   });
 

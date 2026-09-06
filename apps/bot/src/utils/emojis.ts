@@ -4,6 +4,8 @@
 // Emojis are loaded dynamically from the bot's Application Emojis
 // at startup via `loadApplicationEmojis(client)`.
 // Fallback: Unicode emojis if the application emoji is not found.
+// Un ID d'emoji d'application n'appartient qu'à une application : rien ici ne
+// sert un ID qui n'a pas été lu sur l'application courante.
 // ─────────────────────────────────────────────────────────────
 
 import type { Client } from 'discord.js';
@@ -70,6 +72,62 @@ const EMOJI_NAME_MAP: Record<string, string> = {
   barEmptyM: 'ktb_em',
   barEmptyR: 'ktb_er',
 
+
+  // ─── RPG ───
+  // Le hub /rpg a son propre jeu de pictogrammes : voir `generate-png-emojis.ts`.
+  rpgSword: 'ktb_rpg_sword',
+  rpgArmor: 'ktb_rpg_armor',
+  rpgAccessory: 'ktb_rpg_accessory',
+  rpgPotion: 'ktb_rpg_potion',
+  rpgKey: 'ktb_rpg_key',
+  rarCommon: 'ktb_rar_common',
+  rarUncommon: 'ktb_rar_uncommon',
+  rarRare: 'ktb_rar_rare',
+  rarEpic: 'ktb_rar_epic',
+  rarLegendary: 'ktb_rar_legendary',
+  rpgBag: 'ktb_rpg_bag',
+  rpgShop: 'ktb_rpg_shop',
+  rpgFight: 'ktb_rpg_fight',
+  rpgBoss: 'ktb_rpg_boss',
+  rpgTravel: 'ktb_rpg_travel',
+  rpgCharacter: 'ktb_rpg_character',
+  rpgCraft: 'ktb_rpg_craft',
+  rpgForge: 'ktb_rpg_forge',
+  rpgEnchant: 'ktb_rpg_enchant',
+  rpgBestiary: 'ktb_rpg_bestiary',
+  rpgGuild: 'ktb_rpg_guild',
+  rpgWar: 'ktb_rpg_war',
+  rpgClan: 'ktb_rpg_clan',
+  rpgDaily: 'ktb_rpg_daily',
+  rpgFish: 'ktb_rpg_fish',
+  rpgBlackMarket: 'ktb_rpg_blackmarket',
+  rpgRaid: 'ktb_rpg_raid',
+  rpgPay: 'ktb_rpg_pay',
+  rpgSell: 'ktb_rpg_sell',
+  rpgMap: 'ktb_rpg_map',
+  rpgHp: 'ktb_rpg_hp',
+  rpgEnergy: 'ktb_rpg_energy',
+  rpgXp: 'ktb_rpg_xp',
+  rpgAtk: 'ktb_rpg_atk',
+  rpgDef: 'ktb_rpg_def',
+  rpgSpd: 'ktb_rpg_spd',
+  rpgCrit: 'ktb_rpg_crit',
+  rpgRest: 'ktb_rpg_rest',
+  rpgBack: 'ktb_rpg_back',
+  rpgPrev: 'ktb_rpg_prev',
+  rpgNext: 'ktb_rpg_next',
+  rpgRefresh: 'ktb_rpg_refresh',
+
+  // Jauges segmentées du RPG. Le segment vide est partagé avec `barEmpty*`.
+  rpgBarHpL: 'ktb_rpg_hp_l',
+  rpgBarHpM: 'ktb_rpg_hp_m',
+  rpgBarHpR: 'ktb_rpg_hp_r',
+  rpgBarEnL: 'ktb_rpg_en_l',
+  rpgBarEnM: 'ktb_rpg_en_m',
+  rpgBarEnR: 'ktb_rpg_en_r',
+  rpgBarXpL: 'ktb_rpg_xp_l',
+  rpgBarXpM: 'ktb_rpg_xp_m',
+  rpgBarXpR: 'ktb_rpg_xp_r',
   // ─── Branding ───
   kotbo: 'ktb_logo',
 };
@@ -89,6 +147,19 @@ export const UNICODE_FALLBACKS: Record<string, string> = {
   online: '🟢', idle: '🟡', dnd: '🔴', offline: '⚫',
   barFullL: '▰', barFullM: '▰', barFullR: '▰',
   barEmptyL: '▱', barEmptyM: '▱', barEmptyR: '▱',
+  // RPG : repli Unicode tant que les emojis d'application ne sont pas déposés.
+  rpgSword: '🗡️', rpgArmor: '🛡️', rpgAccessory: '💍', rpgPotion: '🧪', rpgKey: '🔑',
+  rarCommon: '⬜', rarUncommon: '🟩', rarRare: '🟦', rarEpic: '🟪', rarLegendary: '🟨',
+  rpgBag: '🎒', rpgShop: '🛒', rpgFight: '⚔️', rpgBoss: '💀', rpgTravel: '🧭',
+  rpgCharacter: '🧬', rpgCraft: '⚒️', rpgForge: '🔨', rpgEnchant: '🔮', rpgBestiary: '📖',
+  rpgGuild: '🏰', rpgWar: '🚩', rpgClan: '👥', rpgDaily: '🎁', rpgFish: '🎣',
+  rpgBlackMarket: '🕯️', rpgRaid: '🐲', rpgPay: '💸', rpgSell: '🪙', rpgMap: '🗺️',
+  rpgHp: '❤️', rpgEnergy: '⚡', rpgXp: '✨', rpgAtk: '⚔️', rpgDef: '🛡️', rpgSpd: '💨',
+  rpgCrit: '🎯', rpgRest: '🏡',
+  rpgBack: '◀️', rpgPrev: '◀️', rpgNext: '▶️', rpgRefresh: '🔄',
+  rpgBarHpL: '❤️', rpgBarHpM: '❤️', rpgBarHpR: '❤️',
+  rpgBarEnL: '⚡', rpgBarEnM: '⚡', rpgBarEnR: '⚡',
+  rpgBarXpL: '🟦', rpgBarXpM: '🟦', rpgBarXpR: '🟦',
   kotbo: '🔮',
 };
 
@@ -100,67 +171,37 @@ const STATIC_VALUES: Record<string, string> = {
   bullet: '▸',
 };
 
-// ─── Hardcoded Application Emoji IDs (fallback before dynamic load) ───
-const HARDCODED_APP_EMOJIS: Record<string, string> = {
-  success: '<:ktb_check:1519265258538143834>',
-  error: '<:ktb_cross:1519265262690373632>',
-  warning: '<:ktb_warn:1519265315077226668>',
-  info: '<:ktb_info:1519265282915569704>',
-  arrow: '<:ktb_arrow:1519265251378335814>',
-  dot: '<:ktb_dot:1519265268143226961>',
-  rank1: '<:ktb_gold:1519265280608436344>',
-  rank2: '<:ktb_silver:1519265304092606484>',
-  rank3: '<:ktb_bronze:1519265255358726246>',
-  moderation: '<:ktb_mod:1519265290662187028>',
-  stats: '<:ktb_stats:1519265306277711993>',
-  trophy: '<:ktb_trophy:1519265309649932419>',
-  profile: '<:ktb_profile:1519265300099502130>',
-  xp: '<:ktb_xp:1519265316348235877>',
-  level: '<:ktb_level:1519265285251792927>',
-  messages: '<:ktb_msg:1519265291849170994>',
-  voice: '<:ktb_voice:1519265313911345234>',
-  coins: '<:ktb_coins:1519265260874371152>',
-  calendar: '<:ktb_cal:1519265257032384512>',
-  clock: '<:ktb_clock:1519265259758682172>',
-  ticket: '<:ktb_ticket:1519265307582009344>',
-  news: '<:ktb_news:1519265294541914152>',
-  settings: '<:ktb_settings:1519265301345075282>',
-  shield: '<:ktb_shield:1519265302968406096>',
-  star: '<:ktb_star:1519265305245909113>',
-  fire: '<:ktb_fire:1519265274916896888>',
-  crown: '<:ktb_crown:1519265264129019904>',
-  link: '<:ktb_link:1519265286572871691>',
-  lock: '<:ktb_lock:1519265287889752215>',
-  unlock: '<:ktb_unlock:1519265312501928016>',
-  ban: '<:ktb_ban:1519265253463031838>',
-  mute: '<:ktb_mute:1519265292969316362>',
-  kick: '<:ktb_kick:1519265284144496670>',
-  youtube: '<:ktb_yt:1519265317665247232>',
-  twitch: '<:ktb_twitch:1519265311365533787>',
-  online: '<:ktb_online:1519265298698600579>',
-  idle: '<:ktb_idle:1519265281728450571>',
-  dnd: '<:ktb_dnd:1519265267086135318>',
-  offline: '<:ktb_offline:1519265296748253245>',
-  barFullL: '<:ktb_fl:1519265276435103805>',
-  barFullM: '<:ktb_fm:1519265277760765972>',
-  barFullR: '<:ktb_fr:1519265278956146699>',
-  barEmptyL: '<:ktb_el:1519265269594329128>',
-  barEmptyM: '<:ktb_em:1519265270898622504>',
-  barEmptyR: '<:ktb_er:1519265272274358333>',
-  kotbo: '<:ktb_logo:1519265289446100992>',
-};
-
-// Mutable emoji store - starts with hardcoded app emojis, refreshed at runtime
+// Magasin d'emojis vivant : il démarre en Unicode et n'accueille un ID d'emoji
+// d'application qu'après l'avoir lu sur l'application courante. Aucun ID n'est
+// codé en dur ici : ceux-ci n'appartiennent qu'à une seule application, et un
+// autre bot (recette, instance white-label) qui les renverrait verrait Discord
+// afficher `:ktb_xxx:` en clair et rejeter tout message qui les pose sur un
+// bouton (`COMPONENT_INVALID_EMOJI`).
 const emojiStore: Record<string, string> = {
   ...UNICODE_FALLBACKS,
-  ...HARDCODED_APP_EMOJIS,
   ...STATIC_VALUES,
 };
 
+const CUSTOM_EMOJI_FORMAT = /^<a?:\w+:\d+>$/;
+
+// Emojis confirmés présents sur l'application courante par `loadApplicationEmojis`.
+// Garde-fou du magasin : tant qu'une clé n'y est pas, son ID n'a pas été vu sur
+// cette application et ne doit pas partir vers Discord.
+let verifiedEmojiKeys = new Set<string>();
+
+/** Valeur servie pour une clé : jamais un ID d'emoji non confirmé. */
+function safeEmojiValue(key: string): string {
+  const value = emojiStore[key] ?? '';
+  if (CUSTOM_EMOJI_FORMAT.test(value) && !verifiedEmojiKeys.has(key)) {
+    return UNICODE_FALLBACKS[key] ?? '';
+  }
+  return value;
+}
+
 // Proxy so `E.trophy` always reads the latest value from emojiStore
 export const E: Record<string, string> = new Proxy(emojiStore, {
-  get(target, prop: string) {
-    return target[prop] ?? '';
+  get(_target, prop: string) {
+    return safeEmojiValue(prop);
   },
 });
 
@@ -172,6 +213,7 @@ export async function loadApplicationEmojis(client: Client): Promise<void> {
   try {
     if (!client.application) {
       logger.warn('Emojis', 'client.application indisponible, utilisation des fallbacks Unicode.');
+      fallbackToUnicode();
       return;
     }
 
@@ -183,11 +225,13 @@ export async function loadApplicationEmojis(client: Client): Promise<void> {
       nameToFormatted.set(emoji.name!, `<${prefix}:${emoji.name}:${emoji.id}>`);
     }
 
+    const verified = new Set<string>();
     let loaded = 0;
     for (const [key, discordName] of Object.entries(EMOJI_NAME_MAP)) {
       const formatted = nameToFormatted.get(discordName);
       if (formatted) {
         emojiStore[key] = formatted;
+        verified.add(key);
         loaded++;
       } else {
         logger.warn('Emojis', `Emoji d'application "${discordName}" introuvable, fallback: ${UNICODE_FALLBACKS[key] || '?'}`);
@@ -195,22 +239,51 @@ export async function loadApplicationEmojis(client: Client): Promise<void> {
       }
     }
 
+    verifiedEmojiKeys = verified;
+
     // Rebuild the shortcode map after loading
     rebuildShortcodeMap();
 
     logger.success('Emojis', `${loaded}/${Object.keys(EMOJI_NAME_MAP).length} emojis d'application chargés.`);
   } catch (err) {
     logger.error('Emojis', "Impossible de charger les emojis d'application, fallback Unicode.", err);
+    fallbackToUnicode();
   }
+}
+
+/**
+ * Repli complet sur l'Unicode : faute d'avoir pu interroger l'application, plus
+ * aucun ID n'est confirmé, donc on remet le magasin à plat plutôt que de servir
+ * des IDs lus lors d'une session précédente. Un ID qui n'appartient pas à
+ * l'application courante fait rejeter tout le message dès qu'il atterrit sur un
+ * bouton (`COMPONENT_INVALID_EMOJI`).
+ */
+function fallbackToUnicode(): void {
+  verifiedEmojiKeys = new Set();
+  for (const key of Object.keys(EMOJI_NAME_MAP)) {
+    emojiStore[key] = UNICODE_FALLBACKS[key] || '';
+  }
+  rebuildShortcodeMap();
 }
 
 // ─── Shortcode Resolution ───
 function rebuildShortcodeMap() {
   SHORTCODE_MAP = new Map();
-  for (const [key, val] of Object.entries(emojiStore)) {
+  for (const key of Object.keys(emojiStore)) {
+    const val = safeEmojiValue(key);
+    if (!val) continue;
     const m = val.match(/^<a?:(\w+):\d+>$/);
     if (m) {
       SHORTCODE_MAP.set(m[1], val);
+      SHORTCODE_MAP.set(key, val);
+      continue;
+    }
+    // Emoji d'application absent : `:ktb_xxx:` (et un `<:ktb_xxx:ID>` périmé
+    // laissé en base) doit quand même se résoudre, vers le glyphe Unicode cette
+    // fois, sinon le raccourci ressort tel quel devant les membres.
+    const discordName = EMOJI_NAME_MAP[key];
+    if (discordName) {
+      SHORTCODE_MAP.set(discordName, val);
       SHORTCODE_MAP.set(key, val);
     }
   }

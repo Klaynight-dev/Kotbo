@@ -1,4 +1,5 @@
 import type { PageConfig } from '../config/pages';
+import { onNavigationStorageCleared } from './navigationStorage';
 
 /**
  * Which shortcuts the phone tab bar shows.
@@ -107,3 +108,9 @@ class MobileTabsStore {
 }
 
 export const mobileTabs = new MobileTabsStore();
+
+// Les raccourcis de la barre mobile sont des chemins choisis par un compte,
+// stockes sous une cle globale : sans cette purge ils passaient au compte
+// suivant sur le meme navigateur, revelant au passage les pages auxquelles le
+// precedent avait acces.
+onNavigationStorageCleared(() => mobileTabs.reset());

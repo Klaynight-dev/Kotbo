@@ -17,6 +17,7 @@ import {
   MessageFlags,
   DiscordAPIError,
   type ChatInputCommandInteraction,
+  type Guild,
   type Interaction,
 } from 'discord.js';
 import { logger } from './utils/logger.js';
@@ -31,7 +32,8 @@ import {
   handleModalSubmit,
 } from './handlers/interactionHandler.js';
 import prisma from './utils/db.js';
-import { errorEmbed } from './utils/embeds.js';
+import { trackAcquisitionStep } from './services/analytics/acquisitionService.js';
+import { successEmbed } from './utils/embeds.js';
 import { loadApplicationEmojis } from './utils/emojis.js';
 import { getCachedDashboardSettings, cache } from './utils/cache.js';
 import {
@@ -56,6 +58,7 @@ import { registerMeetingEvents } from './events/meetingEvents.js';
 import { syncOngoingDailyAlgoButtons } from './services/progression/dailyAlgoService.js';
 import { checkTranslationProviderHealth } from './services/integrations/translationService.js';
 import { startDashboardApi } from './api/dashboardApi.js';
+import { broadcastDashboardEventAcrossShards } from './api/shared/sharding.js';
 import { initBotSentry, captureException } from './observability/sentry.js';
 import { initRedis, assertRedisConnection } from './infra/redis.js';
 import { startBackgroundQueueWorker } from './infra/queues/backgroundQueue.js';
@@ -83,7 +86,7 @@ import { registerStickyMessageBusSubscribers } from './modules/stickyMessage.mod
 import { registerWelcomeGoodbyeBusSubscribers } from './modules/welcomeGoodbye.module.js';
 import { registerModerationBusSubscribers } from './modules/moderation.module.js';
 import { registerTicketsBusSubscribers } from './modules/tickets.module.js';
-import { loadActivatedGuilds, isGuildActivated } from './utils/activation.js';
+import { loadActivatedGuilds, isGuildActivated, activateGuildSelfServe } from './utils/activation.js';
 import {
   dispatchLinkGuestEvent,
   isLinkGuestGuild,
@@ -429,7 +432,7 @@ client.once(Events.ClientReady, async (c) => {
   registerCloseSourceWarningListener(client);
   registerNicknameModerationListener(scopeClientToModule(client, 'nickname_moderation'));
   registerTempVoiceListener(scopeClientToModule(client, 'auto_thread'));
-  registerStarboardListener(scopeClientToModule(client, 'auto_thread'));
+  registerStarboardListener(scopeClientToModule(client, 'starboard'));
   registerHoneypotListener(scopeClientToModule(client, 'automod'));
   registerMessageLoggingListener(scopeClientToModule(client, 'logs'));
   registerAuditEventsListener(scopeClientToModule(client, 'logs'));
@@ -552,24 +555,60 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.GuildCreate, async (guild) => {
   logger.info('System', `Le bot a rejoint le serveur : ${guild.name} (${guild.id})`);
-  
+
+  // Entree du tunnel cote serveur. `void` volontaire : l'arrivee ne doit pas
+  // attendre une ecriture de statistiques, et le service n'echoue jamais.
+  void recordBotArrival(guild);
+
+  // « Mes serveurs » attendait cette arrivee en redemandant la liste toutes les
+  // trois secondes, pendant deux minutes, apres quoi elle abandonnait : une
+  // autorisation un peu lente laissait la personne devant un serveur toujours
+  // annonce comme depourvu du bot. L'annoncer coute un message.
+  void announceBotGuildChange(guild.id, 'joined');
+
   // Initialize auto backup if the guild is activated
   await initializeAutoBackup(guild).catch((err) =>
     logger.error('AutoBackup', `Impossible d'initialiser les backups pour le serveur ${guild.name}:`, err)
   );
 
+  // Le serveur entre seul : reclamer un code a quelqu'un qui vient d'inviter
+  // le bot arretait net tout parcours en libre-service. L'entree ne donne
+  // acces a rien - l'offre `FREE` ne comprend aucun module - elle ouvre
+  // seulement le dashboard et la mise en place. Ce qui se vend reste ferme.
+  const justActivated = await activateGuildSelfServe(guild.id).catch((err) => {
+    logger.error('Activation', `Activation libre-service impossible pour ${guild.id}:`, err);
+    return false;
+  });
+
   if (isGuildActivated(guild.id)) {
     const { scheduleGuildDataSync } = await import('./services/analytics/guildDataSyncService.js');
     scheduleGuildDataSync(client, guild.id);
-  } else {
+  }
+
+  // Seulement a la premiere arrivee : un serveur deja active qui reapparait
+  // apres un redemarrage n'a pas a etre accueilli une seconde fois.
+  if (justActivated) {
     const channel = guild.systemChannel || guild.channels.cache.find(
       (c) => c.isTextBased() && c.permissionsFor(guild.members.me!)?.has('SendMessages')
     );
 
     if (channel && channel.isTextBased()) {
-      const embed = errorEmbed(
-        '🔑 Activation Requise',
-        `Merci d'avoir invité **Kotbo** sur votre serveur !\n\nPour des raisons de sécurité, ce bot nécessite un code d'activation pour fonctionner.\n\n👉 **Comment faire ?**\n1. Récupérez un code auprès de l'administrateur global de Kotbo.\n2. Exécutez la commande slash suivante sur ce serveur : \`/activate <code>\`\n\n*Note : Tant que le serveur n'est pas activé, aucune fonctionnalité du bot ni du dashboard ne sera opérationnelle.*\n\n🔗 **Vous ne voulez qu'un pont entre deux communautés ?**\nPas besoin de code. Demandez une invitation de liaison à l'autre serveur, puis lancez ici \`/link accept code:<code>\`. Le bot passera en **mode liaison seule** : il ne fera que faire circuler les messages du salon relié, sans activer le moindre autre module et sans enregistrer aucune donnée d'activité. \`/link status\` détaille à tout moment ce qui est actif.`
+      const embed = successEmbed(
+        'Kotbo est en place',
+        `Merci d'avoir invité **Kotbo** sur **${guild.name}** !
+
+`
+        + `👉 **La suite se passe sur le tableau de bord.**
+`
+        + `Il regarde si votre serveur est neuf ou déjà installé, puis vous guide : salons, rôles, modération, accueil. Quelques minutes suffisent.
+
+`
+        + `*Configurer ne coûte rien.* Les modules se mettent en place tout de suite et s'allument le jour où vous choisissez une offre - il n'y a rien à refaire.
+
+`
+        + `🔗 **Vous ne vouliez qu'un pont entre deux communautés ?**
+`
+        + `Demandez une invitation de liaison à l'autre serveur, puis lancez ici \`/link accept code:<code>\`. Le bot passera en **mode liaison seule** : il ne fera que faire circuler les messages du salon relié, sans activer le moindre autre module et sans enregistrer aucune donnée d'activité. \`/link status\` détaille à tout moment ce qui est actif.`
       );
       await channel.send({ embeds: [embed] }).catch(() => null);
     }
@@ -579,7 +618,78 @@ client.on(Events.GuildCreate, async (guild) => {
 client.on(Events.GuildDelete, (guild) => {
   logger.info('System', `Le bot a quitté le serveur : ${guild.name} (${guild.id})`);
   stopAutoBackup(guild.id);
+  void announceBotGuildChange(guild.id, 'left');
+
+  // Jusqu'ici, un depart ne laissait que la ligne de journal ci-dessus : aucun
+  // churn n'etait mesurable, et la seule question qui compte vraiment - qui
+  // part, et quand - n'avait aucune reponse en base.
+  trackAcquisitionStep({
+    step: 'bot_removed',
+    guildId: guild.id,
+    metadata: { memberCount: guild.memberCount ?? null, name: guild.name },
+  });
 });
+
+/**
+ * Enregistre l'arrivee du bot, en distinguant une premiere fois d'un retour.
+ *
+ * La distinction n'est pas cosmetique : compter une reinstallation comme une
+ * acquisition neuve gonflerait le haut du tunnel et ferait changer le serveur
+ * de cohorte, ce qui deplacerait les courbes de retention sans que rien ne le
+ * signale. `GuildLifecycle` sait deja si le serveur est connu.
+ *
+ * La provenance est relue depuis le serveur lui-meme quand elle a ete posee au
+ * passage par le dashboard ; sinon l'arrivee reste sans provenance plutot que
+ * de s'en inventer une.
+ */
+async function recordBotArrival(guild: Guild): Promise<void> {
+  try {
+    const known = await prisma.guildLifecycle.findUnique({
+      where: { guildId: guild.id },
+      select: { invitedAt: true, source: true },
+    });
+
+    const row = await prisma.guild.findUnique({
+      where: { id: guild.id },
+      select: { instanceId: true, language: true, timezone: true },
+    });
+
+    trackAcquisitionStep({
+      step: known?.invitedAt ? 'bot_reinstalled' : 'bot_joined',
+      guildId: guild.id,
+      metadata: {
+        memberCount: guild.memberCount ?? null,
+        locale: row?.language ?? guild.preferredLocale ?? null,
+        timezone: row?.timezone ?? null,
+        instanceId: row?.instanceId ?? null,
+      },
+    });
+  } catch (error) {
+    logger.warn('Acquisition', `Arrivee sur ${guild.id} non enregistree: ${String(error)}`);
+  }
+}
+
+/**
+ * Prevenir les dashboards ouverts que la liste des serveurs equipes a change.
+ *
+ * Le message ne porte que l'identifiant : il part vers tous les onglets
+ * connectes, y compris ceux de personnes etrangeres a ce serveur. Ce sont les
+ * clients qui redemandent ensuite leur propre liste a l'API, laquelle la
+ * restreint a ce qu'ils administrent reellement.
+ */
+async function announceBotGuildChange(guildId: string, change: 'joined' | 'left') {
+  try {
+    await broadcastDashboardEventAcrossShards(client, {
+      type: 'bot_guilds_changed',
+      guildId,
+      change,
+    });
+  } catch (error) {
+    // Une diffusion ratee ne fait perdre que l'instantaneite : les vues
+    // concernees gardent un rafraichissement de secours.
+    logger.warn('DashboardWS', `Diffusion de l'arrivee/depart du serveur ${guildId} impossible:`, error);
+  }
+}
 
 client.on(Events.InteractionCreate, async (interaction) => {
   logger.info('Interactions', `Interaction reçue: ${interaction.type} - ${interaction.id}`);

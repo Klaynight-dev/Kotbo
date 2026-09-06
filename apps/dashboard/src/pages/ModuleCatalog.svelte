@@ -25,6 +25,8 @@
   import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import RolePermissionSettings from '../lib/components/RolePermissionSettings.svelte';
+  import { m } from '../lib/i18n';
+  import { moduleDescription, moduleName } from '../lib/moduleLabels';
 
   interface ModuleRow {
     id: string;
@@ -39,11 +41,47 @@
     blockedBy?: string[];
     settingsPath?: string;
     interactions?: number;
+    /**
+     * Eteint parce que l'offre du serveur ne le comprend pas. A distinguer de
+     * `blockedBy` : celui-la se debloque en rallumant un autre module, celui-ci
+     * en changeant d'offre. L'API envoyait deja les deux champs ; ne pas les
+     * lire laissait un interrupteur vivant sur un module verrouille, que la
+     * garde d'execution rebasculait aussitot - le clic partait en boucle.
+     */
+    lockedByPlan?: boolean;
+    requiredPlan?: string | null;
   }
+
+  // « Pro » et « Ultimate » sont des noms d'offres, ils ne se traduisent pas.
+  const planLabel = (key?: string | null) => {
+    if (!key) return m.mc_plan_paid();
+    if (key === 'CUSTOM') return m.mc_plan_custom();
+    return key === 'PLUS' ? 'Plus' : key === 'PRO' ? 'Pro' : key === 'ULTIMATE' ? 'Ultimate' : key;
+  };
+
+  const CATEGORY_LABELS: Record<string, () => string> = {
+    core: () => m.mc_cat_core_label(),
+    moderation: () => m.mc_cat_moderation_label(),
+    staff: () => m.mc_cat_staff_label(),
+    community: () => m.mc_cat_community_label(),
+    content: () => m.mc_cat_content_label(),
+    integrations: () => m.mc_cat_integrations_label(),
+    cross_server: () => m.mc_cat_cross_server_label(),
+  };
+
+  const CATEGORY_DESCRIPTIONS: Record<string, () => string> = {
+    core: () => m.mc_cat_core_desc(),
+    moderation: () => m.mc_cat_moderation_desc(),
+    staff: () => m.mc_cat_staff_desc(),
+    community: () => m.mc_cat_community_desc(),
+    content: () => m.mc_cat_content_desc(),
+    integrations: () => m.mc_cat_integrations_desc(),
+    cross_server: () => m.mc_cat_cross_server_desc(),
+  };
 
   const modules = $derived((dashboardStore.state.modules ?? []) as ModuleRow[]);
   const moduleById = $derived(new Map(modules.map((mod) => [mod.id, mod])));
-  const nameOf = (id: string) => moduleById.get(id)?.name ?? id;
+  const nameOf = (id: string) => moduleName(id, moduleById.get(id)?.name ?? id);
 
   const canManageSettings = $derived(
     !!dashboardStore.state.featureAccess?.modules?.canConfigure
@@ -62,7 +100,7 @@
 
   // ── Filtres ────────────────────────────────────────────────────────────
   let search = $state('');
-  let statusFilter = $state<'all' | 'active' | 'inactive' | 'blocked'>('all');
+  let statusFilter = $state<'all' | 'active' | 'inactive' | 'blocked' | 'locked'>('all');
   let collapsedCategories = $state<Record<string, boolean>>({});
   let selectedId = $state<string | null>(null);
 
@@ -72,27 +110,40 @@
   const filtered = $derived.by(() => {
     const needle = normalize(search.trim());
     return modules.filter((mod) => {
-      const blocked = (mod.blockedBy?.length ?? 0) > 0;
+      const blocked = (mod.blockedBy?.length ?? 0) > 0 && !mod.lockedByPlan;
       if (statusFilter === 'active' && mod.status !== 'active') return false;
-      if (statusFilter === 'inactive' && (mod.status === 'active' || blocked)) return false;
+      if (statusFilter === 'inactive' && (mod.status === 'active' || blocked || mod.lockedByPlan)) return false;
       if (statusFilter === 'blocked' && !blocked) return false;
+      if (statusFilter === 'locked' && !mod.lockedByPlan) return false;
       if (!needle) return true;
-      return normalize(`${mod.name} ${mod.description} ${mod.id}`).includes(needle);
+      return normalize(
+        `${moduleName(mod.id, mod.name)} ${moduleDescription(mod.id, mod.description)} ${mod.id}`,
+      ).includes(needle);
     });
   });
 
+  // `MODULE_CATEGORIES` porte des libelles en dur cote contrats : la page les
+  // remplace par les siens, traduits, et ne garde du registre que l'ordre,
+  // la cle et l'icone.
   const groups = $derived(
     MODULE_CATEGORIES.map((category) => ({
       ...category,
+      label: CATEGORY_LABELS[category.key]?.() ?? category.label,
+      description: CATEGORY_DESCRIPTIONS[category.key]?.() ?? category.description,
       items: filtered.filter((mod) => (mod.category ?? 'core') === category.key),
     })).filter((group) => group.items.length > 0),
   );
 
   const activeCount = $derived(modules.filter((mod) => mod.status === 'active').length);
   const inactiveCount = $derived(
-    modules.filter((mod) => mod.status !== 'active' && (mod.blockedBy?.length ?? 0) === 0).length,
+    modules.filter(
+      (mod) => mod.status !== 'active' && (mod.blockedBy?.length ?? 0) === 0 && !mod.lockedByPlan,
+    ).length,
   );
-  const blockedCount = $derived(modules.filter((mod) => (mod.blockedBy?.length ?? 0) > 0).length);
+  const blockedCount = $derived(
+    modules.filter((mod) => (mod.blockedBy?.length ?? 0) > 0 && !mod.lockedByPlan).length,
+  );
+  const lockedCount = $derived(modules.filter((mod) => mod.lockedByPlan).length);
 
   const selected = $derived(selectedId ? moduleById.get(selectedId) ?? null : null);
 
@@ -117,6 +168,14 @@
   async function toggleModule(mod: ModuleRow) {
     if (mod.isFixed || pending[mod.id] || !canConfigureModule(mod.id)) return;
 
+    // Un module hors offre ne se bascule pas : l'API le refuse desormais, et
+    // l'appeler quand meme ne ferait qu'afficher une erreur a laquelle
+    // l'administrateur ne peut rien. On l'envoie la ou la reponse se trouve.
+    if (mod.lockedByPlan) {
+      toast.error(m.mc_toast_locked({ name: nameOf(mod.id), plan: planLabel(mod.requiredPlan) }));
+      return;
+    }
+
     const current = displayedStatus(mod);
     const next = current === 'active' ? 'inactive' : 'active';
 
@@ -129,11 +188,9 @@
       );
       if (activeDependents.length > 0) {
         const confirmed = await confirmDialog.ask({
-          title: `Désactiver « ${mod.name} » ?`,
-          description:
-            `${activeDependents.length} module(s) en dépendent et seront désactivés en même temps : `
-            + `${activeDependents.map(nameOf).join(', ')}.`,
-          confirmLabel: 'Désactiver quand même',
+          title: m.mc_confirm_disable_title({ name: nameOf(mod.id) }),
+          description: m.mc_confirm_disable_desc({ list: activeDependents.map(nameOf).join(', ') }),
+          confirmLabel: m.mc_confirm_disable_label(),
           variant: 'warning',
         });
         if (!confirmed) return;
@@ -154,16 +211,21 @@
     if (!result) {
       // Rollback : sans lui, la page afficherait un état que le bot n'a pas.
       optimistic = clearOptimistic(mod.id);
-      toast.error(`Impossible de changer l'état de « ${mod.name} ».`);
+      toast.error(m.mc_toast_toggle_error({ name: nameOf(mod.id) }));
       return;
     }
 
     if (missingRequirements.length > 0) {
-      toast.success(
-        `« ${mod.name} » activé, avec ses dépendances : ${missingRequirements.map(nameOf).join(', ')}.`,
-      );
+      toast.success(m.mc_toast_enabled_with_deps({
+        name: nameOf(mod.id),
+        list: missingRequirements.map(nameOf).join(', '),
+      }));
     } else {
-      toast.success(`« ${mod.name} » ${next === 'active' ? 'activé' : 'désactivé'}.`);
+      toast.success(
+        next === 'active'
+          ? m.mc_toast_enabled({ name: nameOf(mod.id) })
+          : m.mc_toast_disabled({ name: nameOf(mod.id) }),
+      );
     }
 
     await dashboardStore.refresh();
@@ -172,35 +234,38 @@
   }
 
   // ── Presets ────────────────────────────────────────────────────────────
-  const presets = [
+  const presets = $derived([
     {
       key: 'general',
-      title: 'Communauté générale',
-      description: 'Traduction active, modules dev en veille, commandes admin sous contrôle.',
+      title: m.mgmt_preset_general(),
+      description: m.mc_preset_general_desc(),
       icon: 'Users',
     },
     {
       key: 'gaming',
-      title: 'Gaming / Esport',
-      description: 'Traduction active, stack de modération simple, focus salons joueurs.',
+      title: m.mgmt_preset_gaming(),
+      description: m.mc_preset_gaming_desc(),
       icon: 'Sparkles',
     },
     {
       key: 'dev',
-      title: 'Dev / Tech',
-      description: 'Daily Algo et Code Police actifs, commandes techniques ouvertes.',
+      title: m.mgmt_preset_dev(),
+      description: m.mc_preset_dev_desc(),
       icon: 'Code',
     },
-  ];
+  ]);
 
   let applyingPreset = $state<string | null>(null);
 
   async function applyPreset(presetKey: string) {
     if (!canApplyPreset || applyingPreset) return;
+    // Le libelle et non la cle : « Appliquer le preset general ? » laissait
+    // l'administrateur deviner de quelle configuration on parlait.
+    const presetName = presets.find((preset) => preset.key === presetKey)?.title ?? presetKey;
     const confirmed = await confirmDialog.ask({
-      title: `Appliquer le preset « ${presetKey} » ?`,
-      description: 'Certains réglages actuels seront remplacés.',
-      confirmLabel: 'Appliquer',
+      title: m.mc_preset_confirm_title({ preset: presetName }),
+      description: m.mc_preset_confirm_desc(),
+      confirmLabel: m.mc_apply(),
       variant: 'warning',
     });
     if (!confirmed) return;
@@ -209,7 +274,7 @@
     const ok = await applyGuildPreset(presetKey);
     applyingPreset = null;
     if (ok) {
-      toast.success('Preset appliqué.');
+      toast.success(m.mc_preset_applied({ preset: presetName }));
       await dashboardStore.refresh();
     }
   }
@@ -231,53 +296,55 @@
           <Papicon icon="Grid" size={20} />
         </div>
         <div class="min-w-0">
-          <h1 class="text-xl font-semibold text-on-surface tracking-tight leading-tight">Modules</h1>
-          <p class="text-[13px] text-on-surface-variant leading-relaxed max-w-xl">
-            Un module désactivé cesse réellement de fonctionner : ses commandes, ses boutons,
-            ses tâches planifiées et sa page de configuration deviennent inaccessibles.
-          </p>
+          <h1 class="text-xl font-semibold text-on-surface tracking-tight leading-tight">{m.mc_title()}</h1>
+          <p class="text-[13px] text-on-surface-variant leading-relaxed max-w-xl">{m.mc_intro()}</p>
         </div>
       </div>
 
       <div class="flex items-center gap-4 text-xs font-medium">
         <span class="flex items-center gap-2 text-on-surface-variant">
-          <span class="w-2 h-2 rounded-full bg-emerald-500"></span>{activeCount} actifs
+          <span class="w-2 h-2 rounded-full bg-emerald-500"></span>{m.mc_count_active({ count: activeCount })}
         </span>
         <span class="flex items-center gap-2 text-on-surface-variant">
-          <span class="w-2 h-2 rounded-full bg-on-surface-variant/30"></span>{inactiveCount} inactifs
+          <span class="w-2 h-2 rounded-full bg-on-surface-variant/30"></span>{m.mc_count_inactive({ count: inactiveCount })}
         </span>
         {#if blockedCount > 0}
           <span class="flex items-center gap-2 text-amber-500">
-            <span class="w-2 h-2 rounded-full bg-amber-500"></span>{blockedCount} bloqués
+            <span class="w-2 h-2 rounded-full bg-amber-500"></span>{m.mc_count_blocked({ count: blockedCount })}
           </span>
+        {/if}
+        {#if lockedCount > 0}
+          <a href="/billing" class="flex items-center gap-2 text-primary hover:underline">
+            <Papicon icon="Lock" size={12} />{m.mc_count_locked({ count: lockedCount })}
+          </a>
         {/if}
 
         <a
-          href="/server-template"
+          href="/setup#structure"
           class="flex items-center gap-2 h-9 px-3 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/15 transition-colors"
         >
           <Papicon icon="sparkles" size={16} />
-          Créer mon serveur
+          {m.mc_create_server()}
         </a>
       </div>
     </div>
 
     <div class="flex flex-col sm:flex-row gap-3">
       <label class="relative flex-1 min-w-0">
-        <span class="sr-only">Rechercher un module</span>
+        <span class="sr-only">{m.mc_search_label()}</span>
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/60 pointer-events-none">
           <Papicon icon="Search" size={16} />
         </span>
         <input
           type="search"
           bind:value={search}
-          placeholder="Rechercher un module…"
+          placeholder={m.mc_search_placeholder()}
           class="w-full h-10 pl-9 pr-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40"
         />
       </label>
 
       <div class="flex gap-1 p-1 rounded-lg bg-surface-container-low border border-outline-variant/40 shrink-0">
-        {#each [['all', 'Tous'], ['active', 'Actifs'], ['inactive', 'Inactifs'], ['blocked', 'Bloqués']] as [value, label]}
+        {#each [['all', m.mc_filter_all()], ['active', m.mc_filter_active()], ['inactive', m.mc_filter_inactive()], ['blocked', m.mc_filter_blocked()], ...(lockedCount > 0 ? [['locked', m.mc_filter_locked()]] : [])] as [value, label]}
           <button
             type="button"
             onclick={() => (statusFilter = value as typeof statusFilter)}
@@ -301,7 +368,7 @@
     </div>
   {:else if groups.length === 0}
     <div class="py-20 text-center">
-      <p class="text-sm text-on-surface-variant">Aucun module ne correspond à cette recherche.</p>
+      <p class="text-sm text-on-surface-variant">{m.mc_empty()}</p>
     </div>
   {:else}
     <div class="space-y-4">
@@ -333,7 +400,8 @@
             <ul transition:slide={{ duration: 180 }} class="divide-y divide-outline-variant/20 border-t border-outline-variant/20">
               {#each group.items as mod (mod.id)}
                 {@const status = displayedStatus(mod)}
-                {@const blocked = (mod.blockedBy?.length ?? 0) > 0}
+                {@const locked = !!mod.lockedByPlan}
+                {@const blocked = !locked && (mod.blockedBy?.length ?? 0) > 0}
                 {@const busy = pending[mod.id]}
                 <li class="flex items-center gap-3 px-4 py-3 hover:bg-surface-container-low/50 transition-colors {status === 'active' ? '' : 'opacity-70'}">
                   <span
@@ -350,44 +418,59 @@
                     class="min-w-0 flex-1 text-left group"
                   >
                     <span class="flex items-center gap-2 flex-wrap">
-                      <span class="text-sm font-medium text-on-surface group-hover:text-primary transition-colors">{mod.name}</span>
+                      <span class="text-sm font-medium text-on-surface group-hover:text-primary transition-colors">{nameOf(mod.id)}</span>
                       {#if mod.isFixed}
                         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-surface-container-high text-on-surface-variant/70">
-                          <Papicon icon="Lock" size={9} /> Cœur
+                          <Papicon icon="Lock" size={9} /> {m.mc_badge_core()}
                         </span>
                       {/if}
-                      {#if blocked}
+                      {#if locked}
+                        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-primary/15 text-primary">
+                          <Papicon icon="Lock" size={9} /> {planLabel(mod.requiredPlan)}
+                        </span>
+                      {:else if blocked}
                         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-600">
-                          Bloqué
+                          {m.mc_badge_blocked()}
                         </span>
                       {/if}
                     </span>
                     <span class="block text-[12px] text-on-surface-variant/70 leading-snug line-clamp-1">
-                      {#if blocked}
-                        Inactif tant que {mod.blockedBy!.map(nameOf).join(', ')} {mod.blockedBy!.length > 1 ? 'sont éteints' : 'est éteint'}.
+                      {#if locked}
+                        {m.mc_row_in_plan({ plan: planLabel(mod.requiredPlan) })}
+                      {:else if blocked}
+                        {m.mc_state_blocked_desc({ list: mod.blockedBy!.map(nameOf).join(', ') })}
                       {:else}
-                        {mod.description}
+                        {moduleDescription(mod.id, mod.description)}
                       {/if}
                     </span>
                   </button>
 
-                  {#if mod.settingsPath && status === 'active'}
+                  {#if locked}
                     <a
-                      href={mod.settingsPath}
-                      class="hidden sm:inline-flex items-center gap-1 px-2.5 h-8 rounded-lg text-[12px] font-medium text-on-surface-variant hover:text-primary hover:bg-primary/5 transition-colors shrink-0"
+                      href="/billing"
+                      class="inline-flex items-center gap-1 px-2.5 h-8 rounded-lg text-[12px] font-medium text-primary bg-primary/10 hover:bg-primary/15 transition-colors shrink-0"
                     >
-                      Configurer <Papicon icon="ArrowRight" size={11} />
+                      {m.mc_unlock()} <Papicon icon="ArrowRight" size={11} />
                     </a>
-                  {/if}
+                  {:else}
+                    {#if mod.settingsPath && status === 'active'}
+                      <a
+                        href={mod.settingsPath}
+                        class="hidden sm:inline-flex items-center gap-1 px-2.5 h-8 rounded-lg text-[12px] font-medium text-on-surface-variant hover:text-primary hover:bg-primary/5 transition-colors shrink-0"
+                      >
+                        {m.mc_configure()} <Papicon icon="ArrowRight" size={11} />
+                      </a>
+                    {/if}
 
-                  <span class="shrink-0 {busy ? 'opacity-50 pointer-events-none' : ''}">
-                    <ToggleSwitch
-                      checked={status === 'active'}
-                      disabled={mod.isFixed || !canConfigureModule(mod.id)}
-                      ariaLabel={`Activer ou désactiver ${mod.name}`}
-                      onToggle={() => toggleModule(mod)}
-                    />
-                  </span>
+                    <span class="shrink-0 {busy ? 'opacity-50 pointer-events-none' : ''}">
+                      <ToggleSwitch
+                        checked={status === 'active'}
+                        disabled={mod.isFixed || !canConfigureModule(mod.id)}
+                        ariaLabel={m.mc_toggle_aria({ name: nameOf(mod.id) })}
+                        onToggle={() => toggleModule(mod)}
+                      />
+                    </span>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -400,11 +483,8 @@
   <!-- Presets, en bas : c'est une action de mise en route, pas le geste courant -->
   <section class="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-5 space-y-4">
     <div>
-      <h2 class="text-sm font-semibold text-on-surface">Configurations types</h2>
-      <p class="text-[13px] text-on-surface-variant mt-0.5">
-        Applique en une fois un jeu de modules et de permissions adapté à un type de serveur.
-        Remplace les réglages concernés.
-      </p>
+      <h2 class="text-sm font-semibold text-on-surface">{m.mc_presets_title()}</h2>
+      <p class="text-[13px] text-on-surface-variant mt-0.5">{m.mc_presets_desc()}</p>
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
       {#each presets as preset}
@@ -424,7 +504,7 @@
               ? 'bg-surface-container-high text-on-surface-variant/40 cursor-not-allowed'
               : 'bg-primary text-on-primary hover:bg-primary/90'}"
           >
-            {applyingPreset === preset.key ? 'Application…' : 'Appliquer'}
+            {applyingPreset === preset.key ? m.mc_applying() : m.mc_apply()}
           </button>
         </div>
       {/each}
@@ -439,7 +519,7 @@
     class="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px]"
     role="button"
     tabindex="-1"
-    aria-label="Fermer le panneau"
+    aria-label={m.mc_close_panel()}
     onclick={() => (selectedId = null)}
     onkeydown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') selectedId = null; }}
   ></div>
@@ -452,13 +532,13 @@
         <Papicon icon={mod.icon || 'Grid'} size={19} />
       </span>
       <div class="min-w-0 flex-1">
-        <h2 class="text-base font-semibold text-on-surface leading-tight">{mod.name}</h2>
+        <h2 class="text-base font-semibold text-on-surface leading-tight">{nameOf(mod.id)}</h2>
         <p class="text-[12px] text-on-surface-variant/70 font-mono">{mod.id}</p>
       </div>
       <button
         type="button"
         onclick={() => (selectedId = null)}
-        aria-label="Fermer"
+        aria-label={m.mc_close()}
         class="w-8 h-8 rounded-lg text-on-surface-variant hover:bg-surface-container-high flex items-center justify-center shrink-0"
       >
         <Papicon icon="Cross" size={15} />
@@ -466,42 +546,55 @@
     </div>
 
     <div class="p-5 space-y-6">
-      <p class="text-[13px] text-on-surface-variant leading-relaxed">{mod.description}</p>
+      <p class="text-[13px] text-on-surface-variant leading-relaxed">{moduleDescription(mod.id, mod.description)}</p>
 
-      <div class="flex items-center justify-between gap-3 rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-3">
+      <div class="flex items-center justify-between gap-3 rounded-lg border {mod.lockedByPlan ? 'border-primary/25 bg-primary/5' : 'border-outline-variant/30 bg-surface-container-low'} px-4 py-3">
         <div class="min-w-0">
           <p class="text-sm font-medium text-on-surface">
-            {#if mod.isFixed}
-              Toujours actif
+            {#if mod.lockedByPlan}
+              {m.mc_state_plan({ plan: planLabel(mod.requiredPlan) })}
+            {:else if mod.isFixed}
+              {m.mc_state_always_active()}
             {:else if displayedStatus(mod) === 'active'}
-              Actif
+              {m.mc_state_active()}
             {:else}
-              Inactif
+              {m.mc_state_inactive()}
             {/if}
           </p>
           <p class="text-[12px] text-on-surface-variant/70">
-            {#if mod.isFixed}
-              Module du cœur : il ne peut pas être désactivé.
+            {#if mod.lockedByPlan}
+              {m.mc_state_plan_desc()}
+            {:else if mod.isFixed}
+              {m.mc_state_core_desc()}
             {:else if (mod.blockedBy?.length ?? 0) > 0}
-              Bloqué par {mod.blockedBy!.map(nameOf).join(', ')}.
+              {m.mc_state_blocked_desc({ list: mod.blockedBy!.map(nameOf).join(', ') })}
             {:else if displayedStatus(mod) === 'active'}
-              Commandes, événements et page de configuration disponibles.
+              {m.mc_state_active_desc()}
             {:else}
-              Commandes refusées, événements ignorés, page inaccessible.
+              {m.mc_state_inactive_desc()}
             {/if}
           </p>
         </div>
-        <ToggleSwitch
-          checked={displayedStatus(mod) === 'active'}
-          disabled={mod.isFixed || !canConfigureModule(mod.id)}
-          ariaLabel={`Activer ou désactiver ${mod.name}`}
-          onToggle={() => toggleModule(mod)}
-        />
+        {#if mod.lockedByPlan}
+          <a
+            href="/billing"
+            class="inline-flex items-center gap-1.5 px-3 h-9 rounded-lg text-[13px] font-medium text-on-primary bg-primary hover:opacity-90 transition-opacity shrink-0"
+          >
+            {m.mc_see_plans()} <Papicon icon="ArrowRight" size={12} />
+          </a>
+        {:else}
+          <ToggleSwitch
+            checked={displayedStatus(mod) === 'active'}
+            disabled={mod.isFixed || !canConfigureModule(mod.id)}
+            ariaLabel={m.mc_toggle_aria({ name: nameOf(mod.id) })}
+            onToggle={() => toggleModule(mod)}
+          />
+        {/if}
       </div>
 
       {#if (mod.requires?.length ?? 0) > 0}
         <div class="space-y-2">
-          <h3 class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/60">Nécessite</h3>
+          <h3 class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/60">{m.mc_requires()}</h3>
           <ul class="space-y-1.5">
             {#each mod.requires! as key}
               {@const dep = moduleById.get(key)}
@@ -511,7 +604,7 @@
                   {nameOf(key)}
                 </button>
                 {#if dep?.status !== 'active'}
-                  <span class="text-[11px] text-amber-600">inactif</span>
+                  <span class="text-[11px] text-amber-600">{m.mc_dep_inactive()}</span>
                 {/if}
               </li>
             {/each}
@@ -522,7 +615,7 @@
       {#if (mod.dependents?.length ?? 0) > 0}
         <div class="space-y-2">
           <h3 class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant/60">
-            S'arrête avec ce module
+            {m.mc_stops_with()}
           </h3>
           <ul class="space-y-1.5">
             {#each mod.dependents! as key}
@@ -542,7 +635,7 @@
           href={mod.settingsPath}
           class="flex items-center justify-between gap-2 rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm text-on-surface hover:border-primary/40 hover:text-primary transition-colors"
         >
-          <span>Ouvrir la configuration détaillée</span>
+          <span>{m.mc_open_settings()}</span>
           <Papicon icon="ArrowRight" size={14} />
         </a>
       {/if}
@@ -551,8 +644,8 @@
         <div class="pt-2 border-t border-outline-variant/20">
           <RolePermissionSettings
             featureKey={mod.id}
-            title="Accès par rôle"
-            description="Qui peut consulter, modérer et configurer ce module depuis le dashboard."
+            title={m.mc_role_access_title()}
+            description={m.mc_role_access_desc()}
           />
         </div>
       {/if}

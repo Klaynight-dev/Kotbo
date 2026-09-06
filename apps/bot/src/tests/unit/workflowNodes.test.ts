@@ -12,6 +12,18 @@ import {
 const effects: WorkflowEffects = {
   getRole: async (id) => (id ? { kind: 'Role', id, name: `role-${id}` } : null),
   getChannel: async (id) => (id ? { kind: 'Channel', id, name: `salon-${id}`, categoryName: 'Général' } : null),
+  getMember: async (id) => (id
+    ? {
+      kind: 'Member',
+      id,
+      tag: `${id}#0000`,
+      displayName: `membre-${id}`,
+      isBot: false,
+      roleIds: [],
+      accountCreatedAt: null,
+      joinedAt: null,
+    }
+    : null),
   getGuildInfo: async () => ({ name: 'Kotbo', memberCount: 1234 }),
   runAction: async () => ({}),
 };
@@ -81,13 +93,14 @@ describe('MemberInfo', () => {
 });
 
 describe('MessageInfo et ChannelInfo', () => {
-  test('expose contenu, longueur et salon d\'un message', async () => {
+  test('expose contenu, longueur, salon et auteur d\'un message', async () => {
     const result = await evaluate('MessageInfo', {
       message: { kind: 'Message', id: 'm1', content: 'bonjour', channelId: 'c1', authorId: 'u1' },
     });
     expect(result.content).toBe('bonjour');
     expect(result.length).toBe(7);
     expect(result.channel).toMatchObject({ id: 'c1' });
+    expect(result.author).toMatchObject({ kind: 'Member', id: 'u1' });
   });
 
   test('reste neutre sans message', async () => {

@@ -11,7 +11,7 @@
  * Le test `rpgContent.test.ts` vérifie ces trois invariants.
  */
 
-export type ItemType = 'WEAPON' | 'ARMOR' | 'ACCESSORY' | 'POTION' | 'MATERIAL';
+export type ItemType = 'WEAPON' | 'ARMOR' | 'ACCESSORY' | 'POTION' | 'MATERIAL' | 'SCROLL';
 export type Rarity = 'COMMON' | 'UNCOMMON' | 'RARE' | 'EPIC' | 'LEGENDARY';
 
 export type SeedItem = {
@@ -27,6 +27,9 @@ export type SeedItem = {
   hpBonus?: number;
   hpRestore?: number;
   energyRestore?: number;
+  /** Parchemins uniquement : entrée du catalogue `rpgEnchantments.ts` et palier posé. */
+  enchantId?: string;
+  enchantTier?: number;
   price: number;
   /** Les objets fabriqués et les matériaux ne s'achètent pas en boutique. */
   purchasable: boolean;
@@ -210,7 +213,53 @@ const MATERIALS: SeedItem[] = [
   material('Bourse Volée', 'Le butin d’un bandit, récupéré sur son cadavre.', '💰', 'UNCOMMON', 50),
 ];
 
-export const RPG_ITEMS: SeedItem[] = [...WEAPONS, ...ARMORS, ...ACCESSORIES, ...POTIONS, ...MATERIALS];
+// ════════════════════════════════════════════════════════════════════════════
+// PARCHEMINS D'ENCHANTEMENT
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Un parchemin est un objet ordinaire dont le seul rôle est de désigner une entrée du
+// catalogue `rpgEnchantments.ts` et le palier qu'il pose. Il ne s'achète pas : il se
+// fabrique à partir de matériaux, ce qui donne un second débouché au butin de combat.
+//
+// Le test `rpgContent.test.ts` vérifie que chaque `enchantId` existe bel et bien dans le
+// catalogue et que le palier tient dans le `maxTier` de l'enchantement.
+
+function scroll(
+  name: string,
+  description: string,
+  emoji: string,
+  rarity: Rarity,
+  enchantId: string,
+  enchantTier: number,
+  price: number,
+): SeedItem {
+  return { name, description, emoji, type: 'SCROLL', rarity, enchantId, enchantTier, price, purchasable: false };
+}
+
+const SCROLLS: SeedItem[] = [
+  // ── Armes ──
+  scroll('Parchemin d’Embrasement I', "L'encre rougeoie encore quand on la touche.", '📜', 'UNCOMMON', 'flame', 1, 400),
+  scroll('Parchemin d’Embrasement II', 'Le vélin fume légèrement, en permanence.', '🔥', 'RARE', 'flame', 2, 900),
+  scroll('Parchemin d’Embrasement III', 'Le tenir trop longtemps laisse une marque.', '🌋', 'EPIC', 'flame', 3, 1800),
+  scroll('Parchemin de Tranchant I', 'Les bords du papier coupent les doigts distraits.', '📜', 'UNCOMMON', 'keen', 1, 400),
+  scroll('Parchemin de Tranchant II', 'On y a écrit avec une lame, pas une plume.', '🗡️', 'RARE', 'keen', 2, 900),
+  scroll('Parchemin de Brise-Armure', "Chaque rune y a été frappée au burin.", '🪓', 'RARE', 'sunder', 1, 800),
+  scroll('Parchemin de Vampirisme', 'Écrit avec un sang qui refuse de sécher.', '🩸', 'EPIC', 'vampiric', 1, 1600),
+
+  // ── Armures ──
+  scroll('Parchemin de Rempart I', 'Le vélin résiste au feu comme à la lame.', '📜', 'UNCOMMON', 'bulwark', 1, 400),
+  scroll('Parchemin de Rempart II', 'Impossible à plier, encore moins à déchirer.', '🛡️', 'RARE', 'bulwark', 2, 900),
+  scroll('Parchemin de Vitalité I', 'Les runes battent doucement, comme un pouls.', '📜', 'UNCOMMON', 'vitality', 1, 400),
+  scroll('Parchemin de Vitalité II', 'Le posé sur une plaie l’apaise. Personne ne sait pourquoi.', '❤️', 'RARE', 'vitality', 2, 900),
+  scroll('Parchemin d’Épines', 'Le manipuler sans gants est une mauvaise idée.', '🌵', 'RARE', 'thorns', 1, 800),
+  scroll('Parchemin de Sauvegarde', 'Une prière ancienne, dans une langue oubliée.', '✨', 'EPIC', 'warding', 1, 1600),
+
+  // ── Accessoires ──
+  scroll('Parchemin de Célérité I', 'Il glisse des mains si on ne le tient pas fermement.', '📜', 'COMMON', 'swiftness', 1, 250),
+  scroll('Parchemin de Célérité II', 'Les runes bougent trop vite pour être lues.', '🌪️', 'UNCOMMON', 'swiftness', 2, 600),
+];
+
+export const RPG_ITEMS: SeedItem[] = [...WEAPONS, ...ARMORS, ...ACCESSORIES, ...POTIONS, ...MATERIALS, ...SCROLLS];
 
 // ════════════════════════════════════════════════════════════════════════════
 // BESTIAIRE
@@ -386,4 +435,23 @@ export const RPG_RECIPES: SeedRecipe[] = [
   { resultItemName: 'Égide des Titans', levelRequired: 25, coinCost: 6500, ingredients: [{ itemName: 'Cœur de Dragon', quantity: 2 }, { itemName: 'Cœur de Givre', quantity: 3 }, { itemName: "Cœur d'Obsidienne", quantity: 2 }] },
   { resultItemName: 'Voile du Néant', levelRequired: 26, coinCost: 7000, ingredients: [{ itemName: 'Orbe des Ombres', quantity: 2 }, { itemName: "Croc d'Hydre", quantity: 3 }, { itemName: 'Ectoplasme', quantity: 5 }] },
   { resultItemName: 'Faux des Âmes', levelRequired: 27, coinCost: 7500, ingredients: [{ itemName: 'Orbe des Ombres', quantity: 2 }, { itemName: 'Grimoire Maudit', quantity: 3 }, { itemName: 'Crinière de Chimère', quantity: 2 }] },
+
+  // ── Parchemins d'enchantement ──
+  // Les paliers supérieurs coûtent des matériaux nettement plus rares : c'est ce qui étale
+  // l'enchantement sur toute la progression au lieu d'en faire une case à cocher au niveau 5.
+  { resultItemName: 'Parchemin de Célérité I', levelRequired: 6, coinCost: 200, ingredients: [{ itemName: 'Aile de Chauve-souris', quantity: 3 }, { itemName: 'Queue de Rat', quantity: 2 }] },
+  { resultItemName: 'Parchemin d’Embrasement I', levelRequired: 8, coinCost: 350, ingredients: [{ itemName: 'Os Enchanté', quantity: 2 }, { itemName: 'Dent de Gobelin', quantity: 3 }] },
+  { resultItemName: 'Parchemin de Tranchant I', levelRequired: 8, coinCost: 350, ingredients: [{ itemName: 'Défense de Sanglier', quantity: 3 }, { itemName: "Soie d'Araignée", quantity: 2 }] },
+  { resultItemName: 'Parchemin de Rempart I', levelRequired: 8, coinCost: 350, ingredients: [{ itemName: 'Mousse de Troll', quantity: 3 }, { itemName: 'Fourrure de Loup', quantity: 3 }] },
+  { resultItemName: 'Parchemin de Vitalité I', levelRequired: 8, coinCost: 350, ingredients: [{ itemName: 'Gelée de Slime', quantity: 4 }, { itemName: 'Mousse de Troll', quantity: 2 }] },
+  { resultItemName: 'Parchemin de Célérité II', levelRequired: 12, coinCost: 500, ingredients: [{ itemName: 'Plume de Harpie', quantity: 3 }, { itemName: 'Aile de Chauve-souris', quantity: 4 }] },
+  { resultItemName: 'Parchemin de Brise-Armure', levelRequired: 14, coinCost: 700, ingredients: [{ itemName: 'Éclat de Granite', quantity: 3 }, { itemName: 'Fragment d’Armure Maudite', quantity: 2 }] },
+  { resultItemName: 'Parchemin d’Épines', levelRequired: 14, coinCost: 700, ingredients: [{ itemName: 'Aiguillon de Wyverne', quantity: 2 }, { itemName: 'Éclat de Granite', quantity: 3 }] },
+  { resultItemName: 'Parchemin d’Embrasement II', levelRequired: 16, coinCost: 800, ingredients: [{ itemName: 'Braise Éternelle', quantity: 3 }, { itemName: 'Corne Démoniaque', quantity: 1 }] },
+  { resultItemName: 'Parchemin de Tranchant II', levelRequired: 16, coinCost: 800, ingredients: [{ itemName: 'Œil de Basilic', quantity: 2 }, { itemName: 'Corne de Minotaure', quantity: 2 }] },
+  { resultItemName: 'Parchemin de Rempart II', levelRequired: 16, coinCost: 800, ingredients: [{ itemName: "Cœur d'Obsidienne", quantity: 1 }, { itemName: 'Écaille de Dragon', quantity: 2 }] },
+  { resultItemName: 'Parchemin de Vitalité II', levelRequired: 16, coinCost: 800, ingredients: [{ itemName: 'Corne de Minotaure', quantity: 2 }, { itemName: 'Mousse de Troll', quantity: 5 }] },
+  { resultItemName: 'Parchemin de Vampirisme', levelRequired: 20, coinCost: 1500, ingredients: [{ itemName: "Croc d'Hydre", quantity: 1 }, { itemName: 'Phylactère Brisé', quantity: 2 }, { itemName: 'Ectoplasme', quantity: 4 }] },
+  { resultItemName: 'Parchemin de Sauvegarde', levelRequired: 20, coinCost: 1500, ingredients: [{ itemName: 'Cœur de Givre', quantity: 1 }, { itemName: 'Grimoire Maudit', quantity: 2 }, { itemName: 'Écaille de Dragon', quantity: 3 }] },
+  { resultItemName: 'Parchemin d’Embrasement III', levelRequired: 24, coinCost: 2500, ingredients: [{ itemName: 'Cœur de Dragon', quantity: 1 }, { itemName: 'Braise Éternelle', quantity: 5 }, { itemName: 'Corne Démoniaque', quantity: 2 }] },
 ];

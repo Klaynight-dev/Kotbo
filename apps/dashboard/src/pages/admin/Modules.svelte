@@ -4,7 +4,7 @@
   import { fetchAdminModuleStats } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
   import Skeleton from '../../lib/components/Skeleton.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
 
   interface ModuleStats {
     topModules?: Array<{ name: string; usageCount: number; usagePercentage: number }>;
@@ -43,16 +43,8 @@
   });
 </script>
 
-<AdminLayout>
+<AdminShell title="Modules" description="Activation, usage et performance des modules Kotbo sur l’ensemble du parc.">
   <div class="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-3 duration-600">
-  <!-- Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
-    <div>
-      <h2 class="text-lg font-semibold text-on-surface tracking-tight">Modules</h2>
-      <p class="text-sm text-on-surface-variant/50 font-medium">Statistiques d'utilisation et performance des modules</p>
-    </div>
-  </div>
-
   <!-- Controls -->
   <div class="flex flex-wrap items-center justify-between gap-4">
     <div class="flex items-center gap-4">
@@ -283,4 +275,4 @@
     </div>
   {/if}
   </div>
-</AdminLayout>
+</AdminShell>

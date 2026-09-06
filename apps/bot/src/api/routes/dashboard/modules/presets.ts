@@ -1,5 +1,6 @@
 /** Routes dashboard du module `presets`. */
 import prisma from '../../../../utils/db.js';
+import { cache } from '../../../../utils/cache.js';
 import { logger } from '../../../../utils/logger.js';
 import { type DashboardPresetKey, getGuildName, json, pushAudit, readJsonBody, resolveFeatureAccessMap } from '../../../shared.js';
 import { Prisma } from '@prisma/client';
@@ -69,6 +70,11 @@ export async function handlePresetsRoutes(ctx: ModuleRouteContext): Promise<bool
         prisma.guild.update({ where: { id: guildId }, data: moduleUpdates }),
         prisma.dashboardSettings.update({ where: { guildId }, data: { commandRestrictions: commandRestrictions as unknown as Prisma.InputJsonValue } }),
       ]);
+
+      // Les acces et les etats de modules vivent tous deux sous le prefixe
+      // `guild:`. Un preset reecrit les deux d'un coup : sans purge, il
+      // s'appliquait a retardement, jusqu'a une minute apres le clic.
+      await cache.invalidateGuild(guildId);
 
       await pushAudit(guildId, {
         user: auditUser,

@@ -1947,7 +1947,7 @@
 
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <button
-                  onclick={() => router.goto('/settings')}
+                  onclick={() => router.goto('/management')}
                   disabled={!canManageSettings}
                   class="px-5 py-4 rounded-lg border border-outline-variant/30 bg-surface-container-low text-sm font-semibold uppercase tracking-wider text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-all"
                 >

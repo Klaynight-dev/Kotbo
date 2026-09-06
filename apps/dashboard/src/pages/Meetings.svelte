@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { authStore } from '../lib/stores/auth.svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import { parseDiscordEmojisAndMarkdown } from '../lib/emojiParser';
   import { fetchMeetings, createMeeting, deleteMeeting, updateMeeting, fetchMemberCase, fetchFeatureConfigurations, updateStaffConfig, fetchStaffServerChannels } from '../lib/api';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
@@ -14,6 +15,9 @@
   import MemberCaseModal from '../lib/components/MemberCaseModal.svelte';
   import RolePermissionSettings from '../lib/components/RolePermissionSettings.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
+  import { timezoneStore } from '../lib/stores/timezone.svelte';
+  import { formatWallClockInTimezone, parseDateTimeInTimezone } from '@kotbo/contracts';
+  import TimezoneHint from '../lib/components/TimezoneHint.svelte';
 
   let meetings = $state<any[]>([]);
   let loading = $state(true);
@@ -32,16 +36,19 @@
 
   let meetingTitle = $state('');
   let meetingDesc = $state('');
-  // Helper to format a Date as a local datetime-local string (YYYY-MM-DDTHH:mm)
-  const formatLocal = (date: Date) => {
-    const tzOffset = date.getTimezoneOffset() * 60000; // offset in ms
-    const local = new Date(date.getTime() - tzOffset);
-    return local.toISOString().slice(0, 16);
-  };
+  // Fuseau choisi pour la reunion en cours. `null` = repli sur le serveur ;
+  // plusieurs reunions peuvent porter chacune leur propre fuseau.
+  let meetingTimezone = $state<string | null>(null);
+  const effectiveTimezone = $derived(meetingTimezone ?? timezoneStore.timezone);
 
-  // Initialise dates in the user's local timezone rather than UTC
+  // Interprete la saisie dans ce fuseau, pas celui du navigateur : ouvrir le
+  // dashboard depuis Paris pour une reunion regie sur Montreal stockait sinon
+  // l'instant Paris et decalait les rappels de six heures.
+  const formatLocal = (date: Date) => formatWallClockInTimezone(date, effectiveTimezone);
+  const parseLocal = (input: string) => parseDateTimeInTimezone(input, effectiveTimezone) ?? new Date();
+
   let meetingDate = $state(formatLocal(new Date()));
-  // Default duration 2h
+  // Duree par defaut : 2h.
   let meetingEndDate = $state(formatLocal(new Date(Date.now() + 7200000)));
   let currentMeetingId = $state<string | null>(null);
   let selectedMeeting = $state<any>(null);
@@ -146,8 +153,16 @@
       // ou on peut mettre une erreur locale
       return;
     }
-    let interval: ReturnType<typeof setInterval> | null = null;
+    let unsubscribe: (() => void) | null = null;
     void (async () => {
+      // Charge le fuseau du serveur avant de peindre les inputs : sans ca, la
+      // premiere ouverture affichait la date en heure navigateur puis basculait
+      // sur le fuseau du serveur au rechargement suivant.
+      await timezoneStore.ensureLoaded();
+      const now = new Date();
+      meetingDate = formatLocal(now);
+      meetingEndDate = formatLocal(new Date(now.getTime() + 7200000));
+
       loadMeetings();
       loadStaffServerChannels();
 
@@ -161,25 +176,28 @@
         loadingConfig = false;
       }
 
-      // Polling toutes les 10 secondes pour le "temps réel" demandé
-      interval = setInterval(() => {
-      // On ne rafraîchit que si on n'est pas en train d'éditer ou de supprimer
-      if (!modalOpen && !deleteModalOpen && !saving && !deleting) {
-        void fetchMeetings().then(data => {
-          meetings = data.meetings || [];
-          meetings.sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime());
-          
-          if (detailModalOpen && selectedMeeting) {
-            const updated = meetings.find(m => m.id === selectedMeeting.id);
-            if (updated) selectedMeeting = updated;
+      // Synchronisation temps réel lors de créations / modifications / émargements
+      unsubscribe = subscribeRealtime({
+        reasons: ['meetings_updated'],
+        fallbackMs: 60_000,
+        onUpdate: () => {
+          if (!modalOpen && !deleteModalOpen && !saving && !deleting) {
+            void fetchMeetings().then(data => {
+              meetings = data.meetings || [];
+              meetings.sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime());
+              
+              if (detailModalOpen && selectedMeeting) {
+                const updated = meetings.find(m => m.id === selectedMeeting.id);
+                if (updated) selectedMeeting = updated;
+              }
+            });
           }
-        });
-      }
-      }, 10000);
+        },
+      });
     })();
 
     return () => {
-      if (interval) clearInterval(interval);
+      unsubscribe?.();
     };
   });
 
@@ -188,6 +206,7 @@
     editMode = false;
     meetingTitle = '';
     meetingDesc = '';
+    meetingTimezone = null;
     // Default start 1h from now, end 2h from now, both in local format
     meetingDate = formatLocal(new Date(Date.now() + 3600000));
     meetingEndDate = formatLocal(new Date(Date.now() + 7200000));
@@ -201,6 +220,9 @@
     currentMeetingId = meeting.id;
     meetingTitle = meeting.title;
     meetingDesc = meeting.description || '';
+    // Le fuseau doit etre restaure AVANT le format, sinon `formatLocal` lit
+    // encore le fuseau precedent et affiche une heure decalee au premier rendu.
+    meetingTimezone = meeting.timezone ?? null;
     meetingDate = formatLocal(new Date(meeting.scheduledAt));
     meetingEndDate = meeting.endedAt ? formatLocal(new Date(meeting.endedAt)) : formatLocal(new Date(new Date(meeting.scheduledAt).getTime() + 3600000));
     meetingError = '';
@@ -213,8 +235,8 @@
       meetingError = m.meetings_err_required();
       return;
     }
-    const start = new Date(meetingDate);
-    const end = new Date(meetingEndDate);
+    const start = parseLocal(meetingDate);
+    const end = parseLocal(meetingEndDate);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       meetingError = m.meetings_err_invalid_dates();
       return;
@@ -231,13 +253,14 @@
         title: meetingTitle,
         description: meetingDesc,
         scheduledAt: start.toISOString(),
-        endedAt: end.toISOString()
+        endedAt: end.toISOString(),
+        timezone: meetingTimezone,
       };
 
       if (editMode && currentMeetingId) {
         await updateMeeting(currentMeetingId, payload);
       } else {
-        await createMeeting(meetingTitle, meetingDesc, payload.scheduledAt);
+        await createMeeting(meetingTitle, meetingDesc, payload.scheduledAt, payload.endedAt, meetingTimezone);
       }
       modalOpen = false;
       await loadMeetings();
@@ -587,6 +610,11 @@
             bind:value={meetingEndDate}
             className="w-full"
           />
+          {#if timezoneStore.loaded}
+            <div class="mt-1.5">
+              <TimezoneHint bind:value={meetingTimezone} />
+            </div>
+          {/if}
         </div>
 
         <div>

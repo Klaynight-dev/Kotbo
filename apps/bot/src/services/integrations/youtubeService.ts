@@ -3,6 +3,7 @@ import pLimit from 'p-limit';
 import prisma from '../../utils/db.js';
 import { buildYouTubeComponents, buildYouTubeEmbed, youtubeVideoUrl } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
+import { allowedMentionsFor } from '../../utils/mentions.js';
 import { resolveFollowMessage, templateHasVariable } from './socialTemplates.js';
 import type { DashboardFeatureConfig, Guild, YoutubeChannelFollow } from '@prisma/client';
 
@@ -687,7 +688,14 @@ async function sendNotification(
     return;
   }
 
-  await channel.send({ content: mention ? `${mention} ${content}` : content, embeds: [embed], components })
+  await channel.send({
+    content: mention ? `${mention} ${content}` : content,
+    embeds: [embed],
+    components,
+    // Sans consigne explicite, la conversion V2 des embeds neutralise tous
+    // les pings : la mention configuree doit etre autorisee nommement.
+    allowedMentions: allowedMentionsFor(mention),
+  })
     .catch((e: Error) => logger.error('YouTubeService', 'Envoi de la notification impossible:', e));
 }
 

@@ -2,6 +2,7 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { type GuildMember, Client, EmbedBuilder } from 'discord.js';
 import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
+import { resolveViewTimezone } from '../../../utils/timezone.js';
 import { COLORS } from '../../../utils/embeds.js';
 import * as altAccountService from '../../../services/moderation/altAccountService.js';
 import { scanGuildMembersForYoungAccounts, getDetectionEvidence } from '../../../services/moderation/dcDetectionService.js';
@@ -1345,7 +1346,8 @@ export async function handleMembersRoutes(
           // seulement la période affichée : la rétention à 30 jours n'a pas de
           // sens si on tronque les arrivées à la fenêtre courante.
           const { getInviteInsights } = await import('../../../services/analytics/inviteDetailService.js');
-          const insights = await getInviteInsights(guildId, code, joins, labels, counts);
+          const timezone = await resolveViewTimezone(url.searchParams.get('tz'), guildId);
+          const insights = await getInviteInsights(guildId, code, joins, labels, counts, timezone);
 
           json(res, 200, {
             invite,

@@ -1,9 +1,8 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Client } from 'discord.js';
 import { validateGraph, type WorkflowGraph } from '@kotbo/shared';
-import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
-import { json, readJsonBody, getGuildName, safePushAudit, type AuthClaims, type DashboardAccess } from '../../shared.js';
+import { json, readJsonBody, getGuildName, resolveMemberFeatureAccess, safePushAudit, type AuthClaims, type DashboardAccess } from '../../shared.js';
 import {
   WorkflowValidationError,
   createWorkflow,
@@ -12,6 +11,7 @@ import {
   getWorkflow,
   listExecutions,
   listWorkflows,
+  setWorkflowEnabled,
   updateWorkflow,
 } from '../../../services/features/workflow/workflowService.js';
 
@@ -38,12 +38,40 @@ export async function handleWorkflowRoutes(
   client: Client,
   user: AuthClaims,
   guildId: string,
-  _access: DashboardAccess,
+  access: DashboardAccess,
 ): Promise<boolean> {
   if (parts[4] !== 'workflows') return false;
 
   const method = req.method;
   const sub = parts[5];
+
+  // Masquer la section dans la navigation ne suffit pas : sans ce controle,
+  // l'URL et l'API continuent de servir les workflows a un staff a qui le role
+  // interdit la page.
+  const featureAccess = await resolveMemberFeatureAccess(client, guildId, access, user.userId);
+  if (!featureAccess.workflows?.canView) {
+    json(res, 403, { error: 'Accès refusé. Votre rôle ne donne pas accès aux automatisations.' });
+    return true;
+  }
+
+  // Creer, modifier, activer et supprimer un workflow n'avait aucun controle :
+  // tout staff pouvait effacer les automatisations du serveur.
+  //
+  // La suppression se demande a part, comme sur les reunions : la matrice des
+  // acces distingue « Configurer » de « Supprimer », et un role autorise a
+  // regler les automatisations n'a pas pour autant celui de les effacer.
+  const requiredWorkflowRight = method === 'DELETE'
+    ? featureAccess.workflows?.canDelete
+    : featureAccess.workflows?.canConfigure;
+
+  if (method !== 'GET' && !access.canManageSettings && !requiredWorkflowRight) {
+    json(res, 403, {
+      error: method === 'DELETE'
+        ? 'Accès refusé. Votre rôle ne permet pas de supprimer les automatisations.'
+        : 'Accès refusé. Votre rôle ne permet pas de modifier les automatisations.',
+    });
+    return true;
+  }
 
   const audit = (action: string, details: string) => safePushAudit(guildId, {
     user: `${user.username ?? 'Inconnu'} (${user.userId})`,
@@ -195,12 +223,9 @@ export async function handleWorkflowRoutes(
   if (sub && parts[6] === 'toggle' && method === 'POST') {
     try {
       const body = await readJsonBody<{ enabled?: unknown }>(req);
-      const { count } = await prisma.workflow.updateMany({
-        where: { id: sub, guildId },
-        data: { enabled: body?.enabled === true },
-      });
+      const toggled = await setWorkflowEnabled(guildId, sub, body?.enabled === true);
 
-      if (count === 0) {
+      if (!toggled) {
         json(res, 404, { error: 'Workflow introuvable' });
         return true;
       }

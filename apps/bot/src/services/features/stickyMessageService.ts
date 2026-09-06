@@ -30,6 +30,40 @@ const CONFIG_TTL_SECONDS = 300;
 const pendingCounts = new Map<string, number>();
 /** Salons dont un renvoi est en cours : évite les doublons sur les rafales. */
 const reposting = new Set<string>();
+/**
+ * Envoi sticky en place, par salon, pour que l'autothread ne lui ouvre pas de
+ * fil : le sticky remonte à chaque seuil, chaque renvoi laisserait sinon un fil
+ * vide derrière lui.
+ *
+ * Indexé par salon et non par message : un salon n'a qu'un sticky à la fois, et
+ * un ensemble d'identifiants grossissait à chaque renvoi sans jamais se vider.
+ */
+const stickyMessageByChannel = new Map<string, string>();
+
+function trackStickyMessage(channelId: string, messageId: string | null): void {
+  if (messageId) stickyMessageByChannel.set(channelId, messageId);
+  else stickyMessageByChannel.delete(channelId);
+}
+
+/**
+ * Ce message est-il le sticky actuellement affiché dans son salon ?
+ *
+ * La carte mémoire n'est celle que du processus qui a posté. En mode distribué
+ * l'autothread peut tourner ailleurs, d'où le repli sur la configuration
+ * persistée, qui porte `lastMessageId`. Ce repli a du retard le temps que
+ * l'écriture et l'invalidation du cache se propagent : c'est la même course que
+ * celle déjà admise entre l'envoi et l'événement `message:new`.
+ */
+export async function isStickyMessage(
+  guildId: string,
+  channelId: string,
+  messageId: string,
+): Promise<boolean> {
+  if (stickyMessageByChannel.get(channelId) === messageId) return true;
+
+  const stickies = await getGuildStickies(guildId);
+  return stickies.some((sticky) => sticky.channelId === channelId && sticky.lastMessageId === messageId);
+}
 
 function cacheKey(guildId: string): string {
   return `guild:${guildId}:sticky`;
@@ -127,6 +161,7 @@ export async function repostSticky(
       return null;
     });
     if (!sent) return null;
+    trackStickyMessage(sticky.channelId, sent.id);
 
     await prisma.stickyMessage.update({
       where: { id: sticky.id },
@@ -173,6 +208,7 @@ export async function handleStickyMessage(
  */
 export async function clearStickyMessage(client: Client, sticky: StickyMessage): Promise<void> {
   resetStickyCounter(sticky.channelId);
+  trackStickyMessage(sticky.channelId, null);
   if (!sticky.lastMessageId) return;
 
   const channel = resolveChannel(client, sticky.channelId);

@@ -59,6 +59,13 @@ const NOW = new Date('2026-07-29T12:00:00.000Z');
 const daysAgo = (days: number) => new Date(NOW.getTime() - days * 86_400_000);
 /** Membre installé de longue date : sort de la période de grâce. */
 const OLD_JOIN = daysAgo(400);
+/**
+ * `recomputeGhostStatuses` lit l'horloge système au lieu de recevoir un `now`.
+ * Ses fixtures récentes se calent donc sur l'heure réelle : ancrées sur `NOW`,
+ * elles vieilliraient jusqu'à sortir de la période de grâce et de la fenêtre
+ * spectateur, et le test finirait par tomber tout seul.
+ */
+const realDaysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
 
 describe('classifyGhostStatus', () => {
   test('classe NEW un membre encore en période de grâce, même sans aucune activité', () => {
@@ -399,10 +406,10 @@ describe('recomputeGhostStatuses', () => {
   test('range chaque membre dans le bon groupe et persiste par lot', async () => {
     mockDb.ghostAnalyzerConfig.findUnique.mockResolvedValueOnce(null);
     mockDb.memberProfile.findMany.mockResolvedValueOnce([
-      { userId: 'actif', guildJoinedAt: OLD_JOIN, lastMessageAt: daysAgo(2) },
-      { userId: 'spectateur', guildJoinedAt: OLD_JOIN, voiceLastLeftAt: daysAgo(5) },
+      { userId: 'actif', guildJoinedAt: OLD_JOIN, lastMessageAt: realDaysAgo(2) },
+      { userId: 'spectateur', guildJoinedAt: OLD_JOIN, voiceLastLeftAt: realDaysAgo(5) },
       { userId: 'inactif', guildJoinedAt: OLD_JOIN },
-      { userId: 'nouveau', guildJoinedAt: daysAgo(3) },
+      { userId: 'nouveau', guildJoinedAt: realDaysAgo(3) },
     ]);
     mockDb.memberProfile.updateMany.mockClear();
 

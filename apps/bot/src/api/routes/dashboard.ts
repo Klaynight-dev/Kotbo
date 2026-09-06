@@ -11,6 +11,7 @@ import {
   dashboardSensitiveRateLimiter,
 } from '../shared.js';
 import { getModuleDefinition, getModuleForApiSegment } from '@kotbo/contracts';
+import { WIZARD_CONFIG_SEGMENTS, isGuildInOnboarding } from '../../services/core/onboardingGate.js';
 import { isGuildActivated } from '../../utils/activation.js';
 import { isModuleEnabled } from '../../services/core/moduleGate.js';
 import { trackDashboardVisit } from '../../services/analytics/ghostActivityTracker.js';
@@ -31,6 +32,9 @@ import { handleEventsRoutes } from './dashboard/events.js';
 import { handleGeneralistModulesRoutes } from './dashboard/generalistModules.js';
 import { handleBackupRoutes } from './dashboard/backups.js';
 import { handleScheduleRoutes } from './dashboard/schedules.js';
+import { handleMigrationRoutes } from './dashboard/migration.js';
+import { handleCampaignRoutes } from './dashboard/campaigns.js';
+import { handleSetupRoutes } from './dashboard/setup.js';
 import { handleMCPKeyRoutes } from './dashboard/mcp.js';
 import { handleCustomBotRoutes } from './dashboard/customBot.js';
 import { handleChannelLinkRoutes } from './dashboard/channelLinks.js';
@@ -50,10 +54,45 @@ import { handleWidgetRoutes } from './dashboard/widget.js';
 import { handleMessageLogRoutes } from './dashboard/messageLogs.js';
 import { handleRaidProtectionRoutes } from './dashboard/raidProtection.js';
 import { handleClansRoutes } from './dashboard/clans.js';
+import { handleDropsRoutes } from './dashboard/drops.js';
 import { handleGhostMembersRoutes } from './dashboard/ghostMembers.js';
 import { handleAuditEventRoutes } from './dashboard/auditEvents.js';
 import { handleWorkflowRoutes } from './dashboard/workflows.js';
 import { handleSimulationRoutes } from './dashboard/simulation.js';
+
+/**
+ * Ce qu'un serveur non activé peut atteindre : sa mise en place, et rien
+ * d'autre.
+ *
+ * La promesse faite à l'installation est « montez votre serveur, payez
+ * ensuite » : la garde d'activation ne peut donc pas fermer les pages qui
+ * servent précisément à le monter. Elle reste fermée sur tout le reste - un
+ * serveur non activé configure, il n'exploite pas. L'essai gratuit ne change
+ * rien à cette frontière : il commence à l'activation, pas avant.
+ *
+ * Ces segments écrivent réellement sur le serveur Discord (salons, rôles,
+ * reprise d'un ancien bot). Ce n'est pas un trou : `resolveDashboardAccess`
+ * a déjà vérifié plus haut que la personne administre ce serveur. Ce qu'on
+ * ouvre ici, c'est le droit de préparer - pas celui d'entrer.
+ *
+ * Toute addition à cette liste ouvre une porte à qui n'a pas payé : n'y
+ * mettre qu'un segment dont la page sert à *arriver* sur Kotbo.
+ */
+const ONBOARDING_SEGMENTS = new Set([
+  // Reprise depuis un autre bot : détection, plan, application.
+  'migration',
+  // Pose de la structure : salons, rôles, catégories.
+  'server-template',
+  // Parcours de prise en main : ce qui est fait, ce qu'il reste.
+  'setup',
+  // Le paiement lui-même. Sans lui, la garde se refermerait sur sa propre
+  // sortie : un serveur non activé n'aurait aucun moyen d'ouvrir la page de
+  // règlement qui l'activerait.
+  'billing',
+  // La clôture du parcours quand il n'y a rien à payer. Même raison : c'est
+  // l'autre sortie, et elle ne donne accès à rien d'autre.
+  'onboarding',
+]);
 
 export async function handleDashboardRoutes(
   req: IncomingMessage,
@@ -109,7 +148,10 @@ export async function handleDashboardRoutes(
     // Check guild activation (bypassed for owner and global admins, and during activation requests)
     const isGlobalAdmin = await resolveAdminAccess(client, user.userId);
     const isActivationRequest = parts.length === 5 && parts[4] === 'activate' && method === 'POST';
-    if (!isGuildActivated(guildId) && !isActivationRequest && !isGlobalAdmin) {
+    const isGuildOnboarding = await isGuildInOnboarding(guildId);
+    const isOnboardingRequest = ONBOARDING_SEGMENTS.has(parts[4] ?? '')
+      || (isGuildOnboarding && WIZARD_CONFIG_SEGMENTS.has(parts[4] ?? ''));
+    if (!isGuildActivated(guildId) && !isActivationRequest && !isOnboardingRequest && !isGlobalAdmin) {
       json(res, 403, { error: 'Activation requise', needsActivation: true });
       return true;
     }
@@ -120,12 +162,31 @@ export async function handleDashboardRoutes(
     // bot n'exécute plus rien derrière.
     const routeModuleKey = getModuleForApiSegment(parts[4]);
     if (routeModuleKey && !(await isModuleEnabled(guildId, routeModuleKey))) {
-      json(res, 403, {
-        error: `Le module « ${getModuleDefinition(routeModuleKey)?.name ?? routeModuleKey} » est désactivé sur ce serveur.`,
-        code: 'module_disabled',
-        moduleKey: routeModuleKey,
-      });
-      return true;
+      /**
+       * Exception : le parcours de configuration.
+       *
+       * Il demande de régler la modération et l'accueil *avant* de payer -
+       * c'est tout l'intérêt, on voit ce qu'on achète. Or ces modules ne
+       * figurent pas dans l'offre FREE : cette garde refusait leurs écritures,
+       * et le parcours butait à l'écran 5 sur un serveur qui n'avait, par
+       * construction, encore rien pris.
+       *
+       * Ouvrir l'écriture n'ouvre pas le service : `moduleGate` continue
+       * d'éteindre ces modules au runtime tant que l'offre ne les comprend
+       * pas. La ligne est écrite, elle ne s'applique pas, et le paiement la
+       * révèle sans qu'aucun traitement n'ait à repasser derrière.
+       */
+      const forWizard = WIZARD_CONFIG_SEGMENTS.has(parts[4] ?? '')
+        && isGuildOnboarding;
+
+      if (!forWizard) {
+        json(res, 403, {
+          error: `Le module « ${getModuleDefinition(routeModuleKey)?.name ?? routeModuleKey} » est désactivé sur ce serveur.`,
+          code: 'module_disabled',
+          moduleKey: routeModuleKey,
+        });
+        return true;
+      }
     }
 
     // Gating check for write actions
@@ -214,6 +275,9 @@ export async function handleDashboardRoutes(
         || (parts[4] === 'daily-algo-weeks' && parts[5] === 'close')
         || (parts[4] === 'tickets' && parts[5] === 'config' && parts[6] === 'setup')
         || (parts[4] === 'leveling' && parts[5] === 'level-up-channel')
+        // Créer un emoji ajoute un asset permanent au serveur Discord :
+        // rien ne le retire ensuite depuis le dashboard.
+        || parts[4] === 'emojis'
         // Le prestige crée un salon d'annonce, et jusqu'à trente rôles d'un
         // coup : même catégorie que les mises en route ci-dessus.
         || (parts[4] === 'ranked' && parts[5] === 'announce-channel')
@@ -292,6 +356,17 @@ export async function handleDashboardRoutes(
     }
     if (await handleScheduleRoutes(req, res, parts, url, client, user)) {
       if (method !== 'GET') await cache.invalidateGuild(guildId);
+      return true;
+    }
+    if (await handleMigrationRoutes(req, res, parts, url, client, user)) {
+      if (method !== 'GET') await cache.invalidateGuild(guildId);
+      return true;
+    }
+    if (await handleCampaignRoutes(req, res, parts, url, client, user)) {
+      if (method !== 'GET') await cache.invalidateGuild(guildId);
+      return true;
+    }
+    if (await handleSetupRoutes(req, res, parts, url, client, user)) {
       return true;
     }
     if (await handleMCPKeyRoutes(req, res, parts, url, client, user, guildId, access)) {
@@ -378,6 +453,12 @@ export async function handleDashboardRoutes(
     }
     if (parts[4] === 'clans') {
       if (await handleClansRoutes(req, res, parts, client, user, guildId, access)) {
+        if (method !== 'GET') await cache.invalidateGuild(guildId);
+        return true;
+      }
+    }
+    if (parts[4] === 'drops') {
+      if (await handleDropsRoutes(req, res, parts, client, user, guildId, access)) {
         if (method !== 'GET') await cache.invalidateGuild(guildId);
         return true;
       }

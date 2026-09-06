@@ -20,6 +20,8 @@ import {
   getCommandUsageAnalytics,
   getStaffPerformanceAnalytics,
 } from '../../../services/analytics/dashboardAnalyticsService.js';
+import { BucketZoner, ZONE_MARGIN_DAYS, shiftKey } from '../../../services/analytics/zonedBuckets.js';
+import { resolveViewTimezone } from '../../../utils/timezone.js';
 
 export async function handleAnalyticsRoutes(
   req: IncomingMessage,
@@ -77,13 +79,14 @@ export async function handleAnalyticsRoutes(
     try {
       // Préfixe `guild:<id>:` obligatoire : c'est ce que cache.invalidateGuild()
       // purge quand la config change (ex. activation des stats de mots).
-      const cacheKey = `guild:${guildId}:analytics:advanced:${section}`;
+      const timezone = await resolveViewTimezone(url.searchParams.get('tz'), guildId);
+      const cacheKey = `guild:${guildId}:analytics:advanced:${section}:${timezone}`;
       const cached = await cache.get<Record<string, unknown>>(cacheKey);
       if (cached) {
         json(res, 200, cached);
         return true;
       }
-      const data = await getAdvancedAnalytics(guildId, section as never);
+      const data = await getAdvancedAnalytics(guildId, section as never, timezone);
       await cache.set(cacheKey, data, 300); // 5 min - calculs lourds
       json(res, 200, data);
     } catch (err) {
@@ -102,14 +105,15 @@ export async function handleAnalyticsRoutes(
     }
     try {
       const days = Math.min(90, Math.max(7, parseInt(url.searchParams.get('days') || '30', 10) || 30));
-      const cacheKey = `guild:${guildId}:analytics:channel:${channelId}:${days}`;
+      const timezone = await resolveViewTimezone(url.searchParams.get('tz'), guildId);
+      const cacheKey = `guild:${guildId}:analytics:channel:${channelId}:${days}:${timezone}`;
       const cached = await cache.get<Record<string, unknown>>(cacheKey);
       if (cached) {
         json(res, 200, cached);
         return true;
       }
       const { getChannelDetail } = await import('../../../services/analytics/channelDetailService.js');
-      const data = await getChannelDetail(client, guildId, channelId, days);
+      const data = await getChannelDetail(client, guildId, channelId, days, timezone);
       await cache.set(cacheKey, data, 120); // 2 min - agrégats + lectures Discord
       json(res, 200, data);
     } catch (err) {
@@ -310,7 +314,8 @@ export async function handleAnalyticsRoutes(
       const days = Math.min(365, Math.max(1, parseInt(url.searchParams.get('days') || '30', 10)));
       const startDate = url.searchParams.get('startDate');
       const endDate = url.searchParams.get('endDate');
-      const heatmapData = await getHourlyHeatmapData(guildId, { days, startDate, endDate });
+      const timezone = await resolveViewTimezone(url.searchParams.get('tz'), guildId);
+      const heatmapData = await getHourlyHeatmapData(guildId, { days, startDate, endDate, timezone });
       json(res, 200, heatmapData);
     } catch (err) {
       logger.error('AnalyticsAPI', 'Error computing heatmap:', err);
@@ -370,7 +375,16 @@ export async function handleAnalyticsRoutes(
       const days = parseInt(url.searchParams.get('period') || '30', 10);
       const startDate = url.searchParams.get('startDate') || undefined;
       const endDate = url.searchParams.get('endDate') || undefined;
+
+      const cacheKey = `guild:${guildId}:analytics:interactions:${days}:${startDate || ''}:${endDate || ''}`;
+      const cached = await cache.get<Record<string, unknown>>(cacheKey);
+      if (cached) {
+        json(res, 200, cached);
+        return true;
+      }
+
       const data = await getGlobalInteractions(client, guildId, { days, startDate, endDate });
+      await cache.set(cacheKey, data, 60); // 1 min - parsing complet des logs d'audit
       json(res, 200, data);
     } catch (err) {
       logger.error('AnalyticsAPI', 'Error getting global interactions:', err);
@@ -401,8 +415,14 @@ export async function handleAnalyticsRoutes(
         startDate.setDate(startDate.getDate() - periodDays);
       }
 
+      // Fuseau de lecture : les creneaux horaires sont stockes en UTC, les
+      // libelles doivent sortir a l'heure murale du lecteur. Il entre dans la
+      // cle de cache, sans quoi deux lecteurs de fuseaux differents se
+      // renvoyaient mutuellement des courbes decalees.
+      const viewTimezone = await resolveViewTimezone(url.searchParams.get('tz'), guildId);
+
       // Check cache (30s TTL - live data stays fresh enough, avoids hammering DB on refreshes)
-      const cacheKey = `analytics:${guildId}:${periodDays}:${queryStartDate || ''}:${queryEndDate || ''}:${url.searchParams.get('granularity') || ''}`;
+      const cacheKey = `analytics:${guildId}:${periodDays}:${queryStartDate || ''}:${queryEndDate || ''}:${url.searchParams.get('granularity') || ''}:${viewTimezone}`;
       const cached = await cache.get<Record<string, unknown>>(cacheKey);
       if (cached) {
         json(res, 200, cached);
@@ -450,16 +470,32 @@ export async function handleAnalyticsRoutes(
         // Daily stats
         use30Min
           ? prismaRead.guildHourlyStat.findMany({
-              where: { guildId, dateKey: { gte: startDateKey, lte: endDateKey } },
+              // Fenetre elargie d'un jour de chaque cote : le fuseau du lecteur
+              // fait entrer dans sa journee locale des creneaux UTC de la veille
+              // ou du lendemain. Le tri sur les cles locales vient apres.
+              where: {
+                guildId,
+                dateKey: {
+                  gte: shiftKey(startDateKey, -ZONE_MARGIN_DAYS),
+                  lte: shiftKey(endDateKey, ZONE_MARGIN_DAYS),
+                },
+              },
               orderBy: [{ dateKey: 'desc' }, { hour: 'desc' }],
-              take: 48,
+              // 48 creneaux utiles, plus la marge des deux jours elargis.
+              take: 48 + 48,
             }).then(hourlyStats => {
               hourlyStats.reverse();
+              const zoner = new BucketZoner(viewTimezone);
+              const inRange = hourlyStats
+                .map(h => ({ stat: h, bucket: zoner.fromKeyHour(h.dateKey, h.hour) }))
+                .filter(({ bucket }) => bucket.dateKey >= startDateKey && bucket.dateKey <= endDateKey)
+                .slice(-48);
+
               const result: any[] = [];
-              for (const h of hourlyStats) {
-                const hourStr = String(h.hour).padStart(2, '0');
+              for (const { stat: h, bucket } of inRange) {
+                const hourStr = String(bucket.hour).padStart(2, '0');
                 result.push({
-                  dateKey: `${h.dateKey} ${hourStr}h00`,
+                  dateKey: `${bucket.dateKey} ${hourStr}h00`,
                   messagesCount: Math.round(h.messagesCount / 2),
                   voiceMinutes: Math.round(h.voiceMinutes / 2),
                   voiceSessionsCount: 0,
@@ -472,7 +508,7 @@ export async function handleAnalyticsRoutes(
                   sanctionsCount: 0,
                 });
                 result.push({
-                  dateKey: `${h.dateKey} ${hourStr}h30`,
+                  dateKey: `${bucket.dateKey} ${hourStr}h30`,
                   messagesCount: Math.floor(h.messagesCount / 2),
                   voiceMinutes: Math.floor(h.voiceMinutes / 2),
                   voiceSessionsCount: 0,
@@ -938,6 +974,10 @@ export async function handleAnalyticsRoutes(
 
       const analyticsPayload = {
         period: periodDays,
+        // Fuseau dans lequel les libelles horaires ont ete calcules : le
+        // dashboard l'affiche, pour qu'un pic annonce a 14h ne laisse aucun
+        // doute sur l'horloge qui le mesure.
+        timezone: viewTimezone,
         clanTag,
         clanTaggedMembersCount,
         live: {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authStore } from '../lib/stores/auth.svelte';
-  import { fetchSecurityAudit, applySecurityFix } from '../lib/api';
+  import { fetchSecurityAudit, applySecurityFix, applyAllSecurityFixes } from '../lib/api';
   import { toast } from '../lib/stores/toast.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
   import SectionCard from '../lib/components/SectionCard.svelte';
@@ -9,6 +9,8 @@
   import Papicon from '../lib/components/Papicon.svelte';
   import LoadingHint from '../lib/components/LoadingHint.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
+  import Modal from '../lib/components/Modal.svelte';
+  import ActionButton from '../lib/components/ActionButton.svelte';
 
   type Severity = 'CRITICAL' | 'WARNING' | 'INFO' | 'OK';
   type Category =
@@ -17,6 +19,8 @@
 
   type AuditEntity = { id: string; name: string; type: string; detail?: string };
   type AuditFix = { action: string; label: string; risky?: boolean };
+  /** Renvoi vers la page qui traite le constat a la main (constats sans correctif). */
+  type AuditLink = { href: string; label: string };
 
   type Finding = {
     id: string;
@@ -28,6 +32,7 @@
     weight: number;
     entities?: AuditEntity[];
     fix?: AuditFix;
+    link?: AuditLink;
   };
 
   type CategoryScore = {
@@ -67,11 +72,42 @@
   let categoryFilter = $state<Category | 'ALL'>('ALL');
   let showResolved = $state(false);
 
+  // Application en lot : la modale recapitule avant d'agir, puis affiche son
+  // resultat a la place du recapitulatif. Un lot partiellement en echec merite
+  // mieux qu'un toast qui disparait sans nommer ce qui a rate.
+  let bulkOpen = $state(false);
+  let bulkRunning = $state(false);
+  let bulkResult = $state<{
+    applied: { title: string }[];
+    failed: { title: string; message: string }[];
+  } | null>(null);
+
   const SEVERITY_META: Record<Severity, { label: string; icon: string; text: string; bg: string; ring: string }> = {
     CRITICAL: { label: 'Critique', icon: 'AlertOctagon', text: 'text-error', bg: 'bg-error/10', ring: 'ring-error/30' },
     WARNING: { label: 'Avertissement', icon: 'AlertTriangle', text: 'text-amber-500', bg: 'bg-amber-500/10', ring: 'ring-amber-500/30' },
     INFO: { label: 'Information', icon: 'Info', text: 'text-sky-500', bg: 'bg-sky-500/10', ring: 'ring-sky-500/30' },
     OK: { label: 'Conforme', icon: 'ShieldCheck', text: 'text-emerald-500', bg: 'bg-emerald-500/10', ring: 'ring-emerald-500/30' },
+  };
+
+  /**
+   * Largeur de la tuile dans la grille Bento. Un constat critique prend deux
+   * colonnes : c'est ce qu'on doit lire en premier, et son detail est le plus
+   * long. La hauteur suit le contenu (`items-start` sur la grille), ce qui
+   * donne le relief attendu sans avoir a la calculer.
+   */
+  const TILE_SPAN: Record<Severity, string> = {
+    CRITICAL: 'sm:col-span-2',
+    WARNING: '',
+    INFO: '',
+    OK: '',
+  };
+
+  /** Entites listees dans la tuile : une grande tuile peut en montrer plus. */
+  const ENTITY_CAP: Record<Severity, number> = {
+    CRITICAL: 12,
+    WARNING: 6,
+    INFO: 6,
+    OK: 0,
   };
 
   const CATEGORY_ICONS: Record<Category, string> = {
@@ -103,10 +139,19 @@
     ok: resolved.length,
   });
 
-  const fixableCount = $derived(problems.filter((f) => f.fix).length);
+  /**
+   * Le bouton « Tout activer » ne porte que sur les correctifs sans risque.
+   * Les `risky` modifient des permissions existantes : ils gardent leur bouton
+   * et leur confirmation, pour qu'un clic global ne retire jamais de droits.
+   */
+  const safeFixes = $derived(problems.filter((f) => f.fix && !f.fix.risky));
+  const riskyFixCount = $derived(problems.filter((f) => f.fix?.risky).length);
 
-  /** Points regagnes si tous les correctifs automatiques etaient appliques. */
-  const fixablePoints = $derived(problems.filter((f) => f.fix).reduce((sum, f) => sum + f.weight, 0));
+  /** Points regagnes si tous les correctifs sans risque etaient appliques. */
+  const safeFixPoints = $derived(safeFixes.reduce((sum, f) => sum + f.weight, 0));
+
+  /** Un correctif a la fois : unitaire ou en lot, jamais les deux. */
+  const busy = $derived(fixingId !== null || bulkRunning);
 
   function scoreColor(value: number): string {
     if (value >= 85) return 'text-emerald-500';
@@ -133,6 +178,15 @@
     return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
   }
 
+  /** Echappe le HTML du detail, puis rend son gras et son code inline. */
+  function renderDetail(detail: string): string {
+    return detail
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/\*\*(.+?)\*\*/g, '<strong class="text-on-surface font-medium">$1</strong>')
+      .replace(/`(.+?)`/g, '<code class="px-1 py-0.5 rounded bg-surface-container text-[12px]">$1</code>');
+  }
+
   async function load(showToast = false) {
     if (!authStore.selectedGuildId) return;
     loading = true;
@@ -150,7 +204,7 @@
   }
 
   async function runFix(finding: Finding) {
-    if (!finding.fix || fixingId) return;
+    if (!finding.fix || busy) return;
     if (finding.fix.risky) {
       const confirmed = window.confirm(
         `${finding.fix.label}\n\nCette action modifie des permissions existantes du serveur. Confirmer ?`
@@ -167,6 +221,36 @@
       toast.error(err instanceof Error ? err.message : 'Le correctif a échoué');
     } finally {
       fixingId = null;
+    }
+  }
+
+  function openBulk() {
+    bulkResult = null;
+    bulkOpen = true;
+  }
+
+  async function runAllFixes() {
+    if (bulkRunning) return;
+    bulkRunning = true;
+    try {
+      const res = await applyAllSecurityFixes(authStore.selectedGuildId);
+      if (res?.report) report = res.report;
+      const applied = res?.applied ?? [];
+      const failed = res?.failed ?? [];
+
+      if (failed.length === 0) {
+        toast.success(`${applied.length} correctif(s) appliqué(s)`);
+        bulkOpen = false;
+      } else {
+        // On garde la modale ouverte pour nommer les echecs : « 3 en echec »
+        // sans dire lesquels n'aide personne a rattraper le coup.
+        bulkResult = { applied, failed };
+        toast.warning(`${applied.length} appliqué(s), ${failed.length} en échec`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "L'application des correctifs a échoué");
+    } finally {
+      bulkRunning = false;
     }
   }
 
@@ -191,6 +275,16 @@
   featureKey="raid_protection"
 >
   {#snippet actions()}
+    {#if safeFixes.length > 0}
+      <ActionButton
+        variant="primary"
+        size="sm"
+        icon="Sparkles"
+        label="Tout activer"
+        disabled={busy}
+        onclick={openBulk}
+      />
+    {/if}
     <RefreshButton onclick={() => load(true)} loading={loading} />
   {/snippet}
 
@@ -243,10 +337,28 @@
             </div>
           </div>
 
-          {#if fixableCount > 0}
-            <p class="text-[12px] text-center text-on-surface-variant leading-relaxed">
-              <span class="font-semibold text-primary">{fixableCount} constat(s)</span> corrigeables en un clic
-              - soit <span class="font-semibold text-primary">+{fixablePoints} points</span> de score.
+          {#if safeFixes.length > 0}
+            <button
+              type="button"
+              class="w-full rounded-xl border border-primary/30 bg-primary/10 px-3 py-2.5 text-center
+              hover:bg-primary/15 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              disabled={busy}
+              onclick={openBulk}
+            >
+              <span class="inline-flex items-center gap-1.5 text-[13px] font-semibold text-primary">
+                <Papicon icon="Sparkles" size={14} />
+                Tout activer
+              </span>
+              <span class="block mt-0.5 text-[11.5px] text-on-surface-variant">
+                {safeFixes.length} correctif(s) sans risque · +{safeFixPoints} points
+              </span>
+            </button>
+          {/if}
+
+          {#if riskyFixCount > 0}
+            <p class="text-[11.5px] text-center text-on-surface-variant/75 leading-relaxed">
+              {riskyFixCount} autre(s) correctif(s) touchent des permissions existantes
+              et se confirment un par un.
             </p>
           {/if}
 
@@ -392,69 +504,78 @@
           description="Élargissez le filtre ou lancez une nouvelle analyse."
         />
       {:else}
-        <div class="space-y-2.5">
+        <!--
+          Grille Bento : une tuile par constat, largeur variable selon la
+          gravite. `items-start` laisse chaque tuile a la hauteur de son propre
+          contenu au lieu d'etirer toute la rangee sur la plus haute, et
+          `grid-auto-flow: dense` rebouche les trous que laissent les tuiles
+          doubles. Le tout tient dans la hauteur d'un ecran la ou la liste en
+          pleine largeur imposait de derouler.
+        -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 items-start [grid-auto-flow:dense]">
           {#each visibleFindings as finding (finding.id)}
             {@const meta = SEVERITY_META[finding.severity]}
+            {@const cap = ENTITY_CAP[finding.severity]}
             <article
-              class="rounded-xl border border-outline-variant/30 bg-surface-container-low/40 p-4 transition-colors hover:border-outline-variant/60"
+              class="rounded-xl border p-4 transition-colors {TILE_SPAN[finding.severity]}
+              {finding.severity === 'CRITICAL'
+                ? 'border-error/30 bg-error/[0.04] hover:border-error/50'
+                : 'border-outline-variant/30 bg-surface-container-low/40 hover:border-outline-variant/60'}"
             >
-              <div class="flex items-start gap-3">
+              <div class="flex items-start gap-2.5">
                 <div class="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center {meta.bg} {meta.text}">
                   <Papicon icon={meta.icon} size={14} />
                 </div>
-
                 <div class="min-w-0 flex-1">
-                  <div class="flex items-start justify-between gap-3">
-                    <h4 class="text-[14px] font-semibold text-on-surface leading-snug">{finding.title}</h4>
-                    <div class="flex items-center gap-2 shrink-0">
-                      {#if finding.weight > 0}
-                        <span class="text-[11px] font-semibold tabular-nums {meta.text}">-{finding.weight} pts</span>
-                      {/if}
-                      <span class="text-[11px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant">
-                        {report.categories.find((c) => c.category === finding.category)?.label}
-                      </span>
-                    </div>
+                  <h4 class="text-[13.5px] font-semibold text-on-surface leading-snug">{finding.title}</h4>
+                  <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                    {#if finding.weight > 0}
+                      <span class="text-[11px] font-semibold tabular-nums {meta.text}">-{finding.weight} pts</span>
+                    {/if}
+                    <span class="text-[10.5px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant">
+                      {report.categories.find((c) => c.category === finding.category)?.label}
+                    </span>
                   </div>
+                </div>
+              </div>
 
-                  <p class="mt-1 text-[13px] text-on-surface-variant leading-relaxed">
-                    {@html finding.detail
-                      .replace(/&/g, '&amp;')
-                      .replace(/</g, '&lt;')
-                      .replace(/\*\*(.+?)\*\*/g, '<strong class="text-on-surface font-medium">$1</strong>')
-                      .replace(/`(.+?)`/g, '<code class="px-1 py-0.5 rounded bg-surface-container text-[12px]">$1</code>')}
-                  </p>
+              <p class="mt-2.5 text-[12.5px] text-on-surface-variant leading-relaxed">
+                {@html renderDetail(finding.detail)}
+              </p>
 
-                  {#if finding.entities && finding.entities.length > 0}
-                    <div class="mt-2 flex flex-wrap gap-1">
-                      {#each finding.entities.slice(0, 12) as entity}
-                        <span
-                          class="text-[11px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant"
-                          title={entity.detail ?? entity.id}
-                        >
-                          {entity.type === 'channel' ? '#' : entity.type === 'role' ? '@' : ''}{entity.name}
-                        </span>
-                      {/each}
-                      {#if finding.entities.length > 12}
-                        <span class="text-[11px] px-1.5 py-0.5 text-on-surface-variant/60">
-                          +{finding.entities.length - 12}
-                        </span>
-                      {/if}
-                    </div>
+              {#if cap > 0 && finding.entities && finding.entities.length > 0}
+                <div class="mt-2 flex flex-wrap gap-1">
+                  {#each finding.entities.slice(0, cap) as entity}
+                    <span
+                      class="text-[11px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant"
+                      title={entity.detail ?? entity.id}
+                    >
+                      {entity.type === 'channel' ? '#' : entity.type === 'role' ? '@' : ''}{entity.name}
+                    </span>
+                  {/each}
+                  {#if finding.entities.length > cap}
+                    <span class="text-[11px] px-1.5 py-0.5 text-on-surface-variant/60">
+                      +{finding.entities.length - cap}
+                    </span>
                   {/if}
+                </div>
+              {/if}
 
-                  {#if finding.recommendation}
-                    <p class="mt-2 text-[12.5px] text-on-surface-variant/85 leading-relaxed pl-2.5 border-l-2 border-primary/40">
-                      {finding.recommendation}
-                    </p>
-                  {/if}
+              {#if finding.recommendation}
+                <p class="mt-2 text-[12px] text-on-surface-variant/85 leading-relaxed pl-2.5 border-l-2 border-primary/40">
+                  {finding.recommendation}
+                </p>
+              {/if}
 
+              {#if finding.fix || finding.link}
+                <div class="mt-3 flex flex-wrap gap-2">
                   {#if finding.fix}
                     <button
                       type="button"
-                      class="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
                       bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25
                       disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      disabled={fixingId !== null}
+                      disabled={busy}
                       onclick={() => runFix(finding)}
                     >
                       {#if fixingId === finding.id}
@@ -469,8 +590,20 @@
                       {/if}
                     </button>
                   {/if}
+
+                  {#if finding.link}
+                    <a
+                      href={finding.link.href}
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium
+                      bg-surface-container text-on-surface border border-outline-variant/40
+                      hover:border-outline-variant transition-colors"
+                    >
+                      <Papicon icon="ArrowRight" size={13} />
+                      {finding.link.label}
+                    </a>
+                  {/if}
                 </div>
-              </div>
+              {/if}
             </article>
           {/each}
         </div>
@@ -478,3 +611,96 @@
     </SectionCard>
   {/if}
 </ModulePage>
+
+<!-- ── Confirmation du lot ────────────────────────────────────────────── -->
+<Modal
+  bind:open={bulkOpen}
+  title="Activer les recommandations"
+  subtitle={bulkResult
+    ? "Resultat de l'application"
+    : `${safeFixes.length} correctif(s) sans risque · +${safeFixPoints} points`}
+  size="lg"
+  closeOnBackdropClick={!bulkRunning}
+  closeOnEscape={!bulkRunning}
+>
+  {#if bulkResult}
+    <div class="space-y-4">
+      {#if bulkResult.applied.length > 0}
+        <div>
+          <p class="text-[13px] font-medium text-emerald-500 mb-1.5">
+            {bulkResult.applied.length} correctif(s) appliqué(s)
+          </p>
+          <ul class="space-y-1">
+            {#each bulkResult.applied as item}
+              <li class="text-[12.5px] text-on-surface-variant flex items-start gap-2">
+                <Papicon icon="CheckCircle" size={13} class="text-emerald-500 mt-0.5 shrink-0" />
+                {item.title}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      {#if bulkResult.failed.length > 0}
+        <div>
+          <p class="text-[13px] font-medium text-error mb-1.5">
+            {bulkResult.failed.length} correctif(s) en échec
+          </p>
+          <ul class="space-y-1">
+            {#each bulkResult.failed as item}
+              <li class="text-[12.5px] text-on-surface-variant flex items-start gap-2">
+                <Papicon icon="AlertOctagon" size={13} class="text-error mt-0.5 shrink-0" />
+                <span><span class="text-on-surface">{item.title}</span> - {item.message}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      <div class="flex justify-end pt-1">
+        <ActionButton variant="neutral" label="Fermer" onclick={() => (bulkOpen = false)} />
+      </div>
+    </div>
+  {:else}
+    <div class="space-y-4">
+      <p class="text-[13px] text-on-surface-variant leading-relaxed">
+        Ces correctifs activent des protections et n'enlèvent aucun droit existant.
+        {#if riskyFixCount > 0}
+          Les {riskyFixCount} correctif(s) qui modifient des permissions restent à confirmer un par un.
+        {/if}
+      </p>
+
+      <ul class="space-y-1.5 max-h-[45vh] overflow-y-auto pr-1">
+        {#each safeFixes as finding (finding.id)}
+          {@const meta = SEVERITY_META[finding.severity]}
+          <li class="flex items-start gap-2.5 rounded-lg border border-outline-variant/30 bg-surface-container-low/40 px-3 py-2">
+            <Papicon icon={meta.icon} size={13} class="{meta.text} mt-0.5 shrink-0" />
+            <div class="min-w-0 flex-1">
+              <p class="text-[12.5px] font-medium text-on-surface leading-snug">{finding.title}</p>
+              <p class="text-[11.5px] text-on-surface-variant mt-0.5">{finding.fix?.label}</p>
+            </div>
+            {#if finding.weight > 0}
+              <span class="text-[11px] font-semibold tabular-nums text-primary shrink-0">+{finding.weight}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+
+      <div class="flex justify-end gap-2 pt-1">
+        <ActionButton
+          variant="neutral"
+          label="Annuler"
+          disabled={bulkRunning}
+          onclick={() => (bulkOpen = false)}
+        />
+        <ActionButton
+          variant="primary"
+          icon={bulkRunning ? 'Loader' : 'Sparkles'}
+          label={bulkRunning ? 'Application…' : `Activer les ${safeFixes.length} recommandations`}
+          disabled={bulkRunning}
+          onclick={runAllFixes}
+        />
+      </div>
+    </div>
+  {/if}
+</Modal>

@@ -82,6 +82,13 @@
   --color-error-container: #fef2f2;
   --color-on-error-container: #991b1b;
 
+  /* Le theme portait l'erreur mais ni l'avertissement ni la reussite, que les
+     pages ecrivaient donc en dur. Un ambre ou un vert vif tiennent sur fond
+     sombre et tombent sous le seuil AA sur fond clair : ces deux jetons ont
+     chacun leur valeur par theme, comme le reste de la palette. */
+  --color-warning: var(--warning-color);
+  --color-success: var(--success-color);
+
   --font-headline: "Outfit", "Inter", system-ui, -apple-system, sans-serif;
   --font-body: "Inter", system-ui, -apple-system, sans-serif;
   --font-label: "Manrope", "Inter", system-ui, -apple-system, sans-serif;
@@ -127,6 +134,11 @@
      Toute nouvelle surcouche se déclare ici plutôt qu'avec un z-index en dur. */
   --layer-modal: 9999;
   --layer-modal-overlay: 10010;
+  /* Un select ouvert dans une modale doit couvrir cette modale (mais rester
+     sous la confirmation d'action). Sans cet echelon, un `SearchableSelect`
+     dans un modale disparaissait derriere son propre parent (issue rappelee
+     sur la page Planifications). */
+  --layer-popover: 15000;
   --layer-confirm: 20000;
 
   --background: #ffffff;
@@ -138,7 +150,12 @@
   --surface-container: #f3f4f6;
   --surface-container-high: #e5e7eb;
   --surface-container-highest: #d1d5db;
-  --on-surface-variant: #6b7280;
+  /* Le texte secondaire s'ecrit presque partout en `text-on-surface-variant`
+     attenue (/50 a /70). Sur fond blanc, l'ancien gris #6b7280 tombait alors
+     entre 2 et 2,8:1, la ou le meme reglage en sombre atteint 4,2:1 : le theme
+     clair etait systematiquement moins lisible. Ce gris plus fonce ramene /70
+     au seuil AA sans changer le mode sombre, qui a son propre jeton. */
+  --on-surface-variant: #374151;
   --outline: #9ca3af;
   --outline-variant: #e5e7eb;
   --surface-hover: rgba(0, 0, 0, 0.03);
@@ -153,6 +170,8 @@
   --tertiary-color: #8b5cf6;
   --tertiary-container-color: #ede9fe;
   --on-tertiary-container-color: #6d28d9;
+  --warning-color: #b45309;
+  --success-color: #15803d;
 }
 
 :root.dark {
@@ -180,10 +199,16 @@
   --tertiary-color: #a78bfa;
   --tertiary-container-color: #2e1065;
   --on-tertiary-container-color: #ddd6fe;
+  --warning-color: #fbbf24;
+  --success-color: #4ade80;
 }
 
 @layer base {
   html {
+    /* Le fond est porte par html autant que par body : sinon la zone de
+       rebond du defilement, et l'instant qui separe la feuille de style du
+       bundle, laissent voir le blanc par defaut du navigateur. */
+    background-color: var(--background);
     min-width: 20rem;
     overflow-x: clip;
     scroll-behavior: smooth;
@@ -712,6 +737,10 @@
 
 .confirm-modal {
   z-index: var(--layer-confirm);
+}
+
+.app-popover {
+  z-index: var(--layer-popover);
 }
 
 .skip-link {

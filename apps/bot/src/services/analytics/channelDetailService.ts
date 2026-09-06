@@ -16,6 +16,7 @@
  */
 
 import { ChannelType, type Client, type GuildBasedChannel } from 'discord.js';
+import { normalizeTimezone } from '@kotbo/contracts';
 import { prismaRead } from '../../utils/db.js';
 import { getDateKey } from './analyticsService.js';
 
@@ -207,7 +208,7 @@ async function buildActivity(guildId: string, channelId: string, days: number) {
 // CONTRIBUTEURS + HEATMAP (MessageLog)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function buildPeople(guildId: string, channelId: string, days: number, loggingEnabled: boolean) {
+async function buildPeople(guildId: string, channelId: string, days: number, loggingEnabled: boolean, timezone: string) {
   if (!loggingEnabled) {
     return {
       contributors: { available: false as const, items: [] as never[], total: 0 },
@@ -229,8 +230,8 @@ async function buildPeople(guildId: string, channelId: string, days: number, log
       LIMIT 25
     `,
     prismaRead.$queryRaw<Array<{ dow: number; hour: number; total: bigint }>>`
-      SELECT EXTRACT(DOW FROM "createdAt")::int AS dow,
-             EXTRACT(HOUR FROM "createdAt")::int AS hour,
+      SELECT EXTRACT(DOW FROM "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone})::int AS dow,
+             EXTRACT(HOUR FROM "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone})::int AS hour,
              COUNT(*) AS total
       FROM "message_logs"
       WHERE "guildId" = ${guildId} AND "channelId" = ${channelId}
@@ -449,13 +450,9 @@ async function buildContent(
     }
   }
 
-  const links = await prismaRead.channelLink.findMany({
-    where: {
-      OR: [
-        { sourceGuildId: guildId, sourceChannelId: channelId },
-        { targetGuildId: guildId, targetChannelId: channelId },
-      ],
-    },
+  const linkGroups = await prismaRead.channelLinkGroup.findMany({
+    where: { members: { some: { guildId, channelId } } },
+    include: { members: true },
     take: 10,
   });
 
@@ -465,19 +462,20 @@ async function buildContent(
     counters: { attachments, botMessages, replies },
     pinned,
     threads,
-    links: links.map((l) => {
-      const isSource = l.sourceGuildId === guildId && l.sourceChannelId === channelId;
-      const otherGuildId = isSource ? l.targetGuildId : l.sourceGuildId;
-      const otherChannelId = isSource ? l.targetChannelId : l.sourceChannelId;
-      return {
-        id: l.id,
-        enabled: l.enabled,
-        direction: l.direction,
-        otherGuildId,
-        otherChannelId,
-        otherGuildName: client.guilds.cache.get(otherGuildId)?.name ?? null,
-        otherChannelName: client.guilds.cache.get(otherGuildId)?.channels.cache.get(otherChannelId)?.name ?? null,
-      };
+    // Un pont relie N salons : ce panneau en liste une ligne par salon d'en face.
+    links: linkGroups.flatMap((group) => {
+      const local = group.members.find((mb) => mb.guildId === guildId && mb.channelId === channelId);
+      return group.members
+        .filter((mb) => mb.id !== local?.id)
+        .map((other) => ({
+          id: group.id,
+          enabled: group.enabled && other.enabled && (local?.enabled ?? false),
+          direction: local?.mode ?? 'BOTH',
+          otherGuildId: other.guildId,
+          otherChannelId: other.channelId,
+          otherGuildName: client.guilds.cache.get(other.guildId)?.name ?? null,
+          otherChannelName: client.guilds.cache.get(other.guildId)?.channels.cache.get(other.channelId)?.name ?? null,
+        }));
     }),
   };
 }
@@ -504,8 +502,12 @@ export async function getChannelDetail(
   guildId: string,
   channelId: string,
   days = 30,
+  timezone?: string,
 ) {
   const period = Math.min(90, Math.max(7, days));
+  // La heatmap est une grille jour x heure : lue en UTC, elle decalait les
+  // creneaux d'autant d'heures que le fuseau du lecteur.
+  const viewTimezone = normalizeTimezone(timezone);
 
   const [{ channel, discordChannel }, guildConfig] = await Promise.all([
     buildChannelMeta(client, guildId, channelId),
@@ -516,7 +518,7 @@ export async function getChannelDetail(
   const activity = await buildActivity(guildId, channelId, period);
 
   const [people, health, moderation, content, auditTrail] = await Promise.all([
-    buildPeople(guildId, channelId, period, loggingEnabled),
+    buildPeople(guildId, channelId, period, loggingEnabled, viewTimezone),
     buildHealth(guildId, channelId, activity.totals, period),
     buildModeration(guildId, channelId, period, loggingEnabled),
     buildContent(client, guildId, channelId, period, loggingEnabled, discordChannel ?? null),
@@ -526,6 +528,7 @@ export async function getChannelDetail(
   return {
     channelId,
     period,
+    timezone: viewTimezone,
     // `channel` est nul quand le salon a été supprimé côté Discord : le
     // dashboard affiche alors l'historique statistique sans les métadonnées.
     channel,

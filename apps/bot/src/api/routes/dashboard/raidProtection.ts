@@ -15,7 +15,7 @@ import {
 } from '../../../services/moderation/raidProtectionService.js';
 import { enableInviteEmergency, disableInviteEmergency, approveInviteRequest, rejectInviteRequest } from '../../../services/moderation/inviteGuardService.js';
 import { handleReportDecision, getReportStats } from '../../../services/moderation/reportService.js';
-import { runSecurityAudit, applyAuditFix } from '../../../services/moderation/securityAuditService.js';
+import { runSecurityAudit, applyAuditFix, applySafeAuditFixes } from '../../../services/moderation/securityAuditService.js';
 import {
   getSpamConfig,
   upsertSpamConfig,
@@ -569,6 +569,45 @@ export async function handleRaidProtectionRoutes(
     } catch (err) {
       logger.error('RaidProtectionAPI', 'Erreur POST audit/fix:', err);
       json(res, 500, { error: 'Erreur lors de l\'application du correctif' });
+    }
+    return true;
+  }
+
+  // POST /raid-protection/audit/fix-all - applique tout ce qui est sans risque
+  //
+  // Les correctifs `risky` sont exclus cote service : ils modifient des
+  // permissions existantes et gardent leur confirmation individuelle.
+  if (sub === 'audit' && parts[6] === 'fix-all' && method === 'POST') {
+    try {
+      const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+      if (!guild) {
+        json(res, 404, { error: 'Serveur introuvable' });
+        return true;
+      }
+
+      const { applied, failed } = await applySafeAuditFixes(
+        guild,
+        `Correctifs d'audit appliques en lot par ${auditUser}`,
+      );
+
+      if (applied.length > 0) {
+        await safePushAudit(guildId, {
+          user: auditUser,
+          action: `Correctifs de securite appliques en lot : ${applied.length}`,
+          context: getGuildName(client, guildId),
+          module: 'SecurityAudit',
+          eventType: 'Manuel',
+          details: applied.map((a) => a.title).join(', '),
+          channelId: null,
+        }, 'RaidProtectionAPI');
+      }
+
+      // Rapport recalcule pour que le score et la liste refletent le lot.
+      const report = await runSecurityAudit(guild, { deep: false });
+      json(res, 200, { success: true, applied, failed, report });
+    } catch (err) {
+      logger.error('RaidProtectionAPI', 'Erreur POST audit/fix-all:', err);
+      json(res, 500, { error: "Erreur lors de l'application des correctifs" });
     }
     return true;
   }

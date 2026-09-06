@@ -11,8 +11,8 @@ import { EmbedBuilder, type Client } from 'discord.js';
 import prisma from '../../../utils/db.js';
 import { logger } from '../../../utils/logger.js';
 import { COLORS } from '../../../utils/embeds.js';
-import { isShopItemAvailable } from '../economyPolicy.js';
-import { getOrCreateEconomyConfig, getOrCreateRpgProfile } from '../economyService.js';
+import { isBlackMarketEligible, isShopItemAvailable } from '../economyPolicy.js';
+import { getOrCreateEconomyConfig, getOrCreateRpgProfile, getShopModuleState } from '../economyService.js';
 import { resolveGuildLocale, type BotLocale } from '../../../utils/i18n.js';
 import * as m from '../../../lib/paraglide/messages.js';
 import {
@@ -114,16 +114,25 @@ export async function getMemberBlackMarketOffers(
   session: BlackMarketSession,
   config: EconomyConfig,
 ): Promise<BlackMarketOfferView[]> {
+  const modules = await getShopModuleState(guildId);
   const existing = await prisma.rpgBlackMarketOffer.findMany({
     where: { sessionId: session.id, userId },
     include: { item: true },
     orderBy: { price: 'asc' },
   });
-  if (existing.length > 0) return existing.map(toOfferView);
+  // Un objet retiré du marché noir - ou dont le module vient d'être éteint - disparaît des
+  // offres déjà tirées. Le test porte sur la liste *avant* filtrage : une vitrine devenue
+  // vide ne doit pas déclencher un second tirage pour ce membre.
+  if (existing.length > 0) {
+    return existing.filter((offer) => isBlackMarketEligible(offer.item, modules)).map(toOfferView);
+  }
 
-  const items = await prisma.rpgItem.findMany({
-    where: { OR: [{ guildId: null }, { guildId }], purchasable: true },
-  });
+  // Un objet dont le module est éteint ne doit pas être tiré : proposé puis refusé à
+  // l'achat, il ferait passer une offre morte pour une bonne affaire. Ceux qu'un serveur
+  // a explicitement retirés du marché noir sortent au même endroit.
+  const items = (await prisma.rpgItem.findMany({
+    where: { OR: [{ guildId: null }, { guildId }], purchasable: true, blackMarketEligible: true },
+  })).filter((item) => isBlackMarketEligible(item, modules));
   if (items.length === 0) return [];
 
   const drawn = drawBlackMarketOffers(items, config);
@@ -203,7 +212,8 @@ export async function buyBlackMarketOffer(guildId: string, userId: string, offer
   if (!offer || offer.userId !== userId || offer.sessionId !== session.id) {
     throw new Error('Cette offre ne vous est pas destinée ou a expiré.');
   }
-  if (!isShopItemAvailable(offer.item, guildId)) {
+  const modules = await getShopModuleState(guildId);
+  if (!isShopItemAvailable(offer.item, guildId, modules) || !isBlackMarketEligible(offer.item, modules)) {
     throw new Error("Cet objet n'est plus disponible à l'achat.");
   }
 

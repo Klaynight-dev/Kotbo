@@ -9,6 +9,7 @@
 import type { Client, TextChannel, NewsChannel } from 'discord.js';
 import { MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { subscribeForModule } from '../services/core/moduleScope.js';
+import { isStickyMessage } from '../services/features/stickyMessageService.js';
 import { getCachedGuild } from '../utils/cache.js';
 import { logger } from '../utils/logger.js';
 
@@ -52,6 +53,13 @@ export function registerAutoThreadBusSubscribers(client: Client): void {
     const message = await channel.messages.fetch(payload.messageId).catch(() => null);
     if (!message) return;
     if (message.interaction || message.interactionMetadata || message.flags.has(MessageFlags.Ephemeral)) return;
+
+    // Nos propres envois restent éligibles (les suggestions relayées par le bot
+    // veulent leur fil), sauf le sticky : il remonte à chaque seuil et
+    // laisserait un fil vide derrière chaque renvoi. Testé après le fetch, qui
+    // laisse le temps à l'envoi du sticky d'être enregistré si l'événement le
+    // devance.
+    if (await isStickyMessage(payload.guildId, payload.channelId, payload.messageId)) return;
 
     let rawName = payload.content ? payload.content.replace(/[\n\r]+/g, ' ').trim() : '';
     let authorName = message.member?.displayName || message.author.displayName || message.author.username;

@@ -4,6 +4,8 @@
   import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import ProfileWidgetPanel from '../lib/components/ProfileWidgetPanel.svelte';
   import { userPrefs } from '../lib/stores/userPreferences.svelte';
+  import { timezoneStore } from '../lib/stores/timezone.svelte';
+  import { listSupportedTimezones } from '@kotbo/contracts';
   import { themeStore, THEME_PRESETS, ACCENT_COLORS, type ThemeId, type CustomThemeColors, type AccentColorId } from '../lib/stores/theme.svelte';
   import { toast } from '../lib/stores/toast.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
@@ -183,6 +185,19 @@
     { id: 'absolute', label: m.us_datefmt_absolute(), example: m.us_datefmt_absolute_ex() },
     { id: 'both',     label: m.us_datefmt_both(), example: m.us_datefmt_both_ex() },
   ];
+
+  /**
+   * Fuseau de lecture des statistiques. `auto` suit le navigateur, ce qui est
+   * deja correct pour la plupart des lecteurs ; le choix explicite sert a qui
+   * pilote un serveur depuis un autre fuseau que celui ou il vit.
+   */
+  const timezoneChoice = $derived(userPrefs.prefs.timezone ?? 'auto');
+  const timezoneZones = $derived(listSupportedTimezones(timezoneStore.displayTimezone));
+
+  function handleTimezone(value: string) {
+    userPrefs.set('timezone', value === 'auto' ? 'auto' : value);
+    showSavedFeedback();
+  }
 
   const sidebarBehaviors: { id: SidebarBehavior; label: string; desc: string }[] = [
     { id: 'auto',         label: m.us_sidebar_auto(), desc: m.us_sidebar_auto_desc() },
@@ -512,6 +527,24 @@
               </button>
             {/each}
           </div>
+        </div>
+
+        <!-- Fuseau horaire des statistiques -->
+        <div class="space-y-3">
+          <p class="text-[10px] font-bold text-on-surface-variant/60 uppercase tracking-widest">{m.us_timezone()}</p>
+          <select
+            value={timezoneChoice}
+            onchange={(e) => handleTimezone((e.currentTarget as HTMLSelectElement).value)}
+            class="w-full bg-surface-container-high/20 border border-outline-variant/20 rounded-xl px-4 py-3 text-sm text-on-surface outline-none focus:border-secondary transition-colors"
+          >
+            <option value="auto">{m.us_timezone_auto({ zone: timezoneStore.browserTimezone })}</option>
+            {#each timezoneZones as zone}
+              <option value={zone}>{zone.replace(/_/g, ' ')}</option>
+            {/each}
+          </select>
+          <p class="text-[10px] text-on-surface-variant/50">
+            {m.us_timezone_desc({ zone: timezoneStore.displayTimezone })}
+          </p>
         </div>
       </section>
     </div>

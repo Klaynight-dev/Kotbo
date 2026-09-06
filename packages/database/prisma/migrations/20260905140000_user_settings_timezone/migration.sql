@@ -1,0 +1,12 @@
+-- Fuseau de lecture des statistiques, par utilisateur.
+--
+-- Les agregats analytics sont indexes sur des cles UTC : c'est le bon choix de
+-- stockage, mais les rendre tels quels annoncait a un lecteur parisien un pic
+-- de frequentation a midi la ou il tombe a 14h, et un pic de 22h la veille au
+-- soir la ou il tombe a minuit.
+--
+-- La colonne reste nullable a dessein : nul veut dire « suivre le fuseau du
+-- navigateur », ce qui est deja correct pour la quasi-totalite des lecteurs.
+-- Seul celui qui consulte un serveur depuis un autre fuseau que le sien a
+-- besoin de fixer une valeur.
+ALTER TABLE "dashboard_user_settings" ADD COLUMN IF NOT EXISTS "timezone" TEXT;

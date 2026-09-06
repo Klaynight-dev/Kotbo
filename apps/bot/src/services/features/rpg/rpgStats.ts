@@ -3,14 +3,22 @@
  *
  * SOURCE DE VÉRITÉ UNIQUE : les colonnes `attack`/`defense`/`speed`/`maxHealth` du profil
  * contiennent les stats de BASE (niveaux + points investis). Tous les bonus - équipement,
- * améliorations de forge, classe - sont recalculés ici à chaque lecture.
+ * améliorations de forge, enchantements, classe - sont recalculés ici à chaque lecture.
  *
  * Ce choix remplace l'ancien modèle où les bonus étaient additionnés dans les colonnes à
  * l'équipement : chaque source de bonus supplémentaire y multipliait les risques de dérive
  * permanente (objet supprimé, reset partiel, double comptage en combat).
+ *
+ * Le niveau de forge et les enchantements sont lus sur l'INSTANCE d'objet portée, pas sur
+ * le profil : la progression appartient à l'objet possédé, et non à l'emplacement.
  */
 
 import { getRpgClass } from './rpgClasses.js';
+import {
+  EFFECT_CAPS,
+  aggregateEnchantEffects,
+  type EnchantStack,
+} from './rpgEnchantments.js';
 
 /** Sous-ensemble de `RpgItem` nécessaire au calcul. */
 export type StatItem = {
@@ -21,6 +29,14 @@ export type StatItem = {
   rarity: string;
 };
 
+/** Objet porté, accompagné de la progression de l'exemplaire réellement possédé. */
+export type EquippedPiece = StatItem & {
+  /** Niveau de forge de l'instance, de 0 à `MAX_UPGRADE_LEVEL`. */
+  upgrade: number;
+  /** Enchantements posés sur l'instance, déjà validés par `parseEnchants`. */
+  enchants: EnchantStack[];
+};
+
 export type StatProfile = {
   level: number;
   attack: number;
@@ -28,15 +44,12 @@ export type StatProfile = {
   speed: number;
   maxHealth: number;
   className: string | null;
-  weaponUpgrade: number;
-  armorUpgrade: number;
-  accessoryUpgrade: number;
 };
 
 export type Equipment = {
-  weapon: StatItem | null;
-  armor: StatItem | null;
-  accessory: StatItem | null;
+  weapon: EquippedPiece | null;
+  armor: EquippedPiece | null;
+  accessory: EquippedPiece | null;
 };
 
 export type EffectiveStats = {
@@ -48,8 +61,12 @@ export type EffectiveStats = {
   critChance: number;
   /** Part de la défense adverse ignorée, de 0 à 1. */
   armorPiercing: number;
-  /** Part des dégâts subis annulée par le passif de classe, de 0 à 1. */
+  /** Part des dégâts subis annulée par le passif de classe et les enchantements, de 0 à 1. */
   damageReduction: number;
+  /** Part des dégâts infligés rendue en PV, de 0 à 1. */
+  lifesteal: number;
+  /** Part des dégâts subis renvoyée à l'attaquant, de 0 à 1. */
+  thorns: number;
 };
 
 export const MAX_UPGRADE_LEVEL = 10;
@@ -73,46 +90,68 @@ export function upgradeBonus(baseValue: number, upgradeLevel: number): number {
   return Math.max(upgradeLevel, Math.round(baseValue * 0.12 * upgradeLevel));
 }
 
-function itemContribution(item: StatItem | null, upgrade: number) {
-  if (!item) return { atk: 0, def: 0, spd: 0, hp: 0 };
+function itemContribution(piece: EquippedPiece | null) {
+  if (!piece) return { atk: 0, def: 0, spd: 0, hp: 0 };
+  const upgrade = piece.upgrade;
   return {
-    atk: item.atkBonus + upgradeBonus(item.atkBonus, upgrade),
-    def: item.defBonus + upgradeBonus(item.defBonus, upgrade),
-    spd: item.spdBonus + upgradeBonus(item.spdBonus, upgrade),
-    hp: item.hpBonus + upgradeBonus(item.hpBonus, upgrade),
+    atk: piece.atkBonus + upgradeBonus(piece.atkBonus, upgrade),
+    def: piece.defBonus + upgradeBonus(piece.defBonus, upgrade),
+    spd: piece.spdBonus + upgradeBonus(piece.spdBonus, upgrade),
+    hp: piece.hpBonus + upgradeBonus(piece.hpBonus, upgrade),
   };
 }
 
+/** Enchantements des trois pièces portées, mis bout à bout. */
+function equippedEnchants(equipment: Equipment): EnchantStack[] {
+  return [
+    ...(equipment.weapon?.enchants ?? []),
+    ...(equipment.armor?.enchants ?? []),
+    ...(equipment.accessory?.enchants ?? []),
+  ];
+}
+
 export function getEffectiveStats(profile: StatProfile, equipment: Equipment): EffectiveStats {
-  const weapon = itemContribution(equipment.weapon, profile.weaponUpgrade);
-  const armor = itemContribution(equipment.armor, profile.armorUpgrade);
-  const accessory = itemContribution(equipment.accessory, profile.accessoryUpgrade);
+  const weapon = itemContribution(equipment.weapon);
+  const armor = itemContribution(equipment.armor);
+  const accessory = itemContribution(equipment.accessory);
 
   const rpgClass = getRpgClass(profile.className);
   const mods = rpgClass?.modifiers ?? { attack: 1, defense: 1, speed: 1, maxHealth: 1 };
 
+  // Les enchantements des trois pièces se cumulent : un même effet posé sur l'arme et
+  // sur l'armure s'additionne, dans la limite des plafonds définis par le catalogue.
+  const enchant = aggregateEnchantEffects(equippedEnchants(equipment));
+
   // Les multiplicateurs de classe portent sur les stats de base uniquement : un Mage ne
   // doit pas voir le bonus brut de son bâton multiplié une seconde fois par 1.35.
-  const attack = Math.round(profile.attack * mods.attack) + weapon.atk + armor.atk + accessory.atk;
-  const defense = Math.round(profile.defense * mods.defense) + weapon.def + armor.def + accessory.def;
-  const speed = Math.round(profile.speed * mods.speed) + weapon.spd + armor.spd + accessory.spd;
-  const maxHealth = Math.round(profile.maxHealth * mods.maxHealth) + weapon.hp + armor.hp + accessory.hp;
+  const attack = Math.round(profile.attack * mods.attack) + weapon.atk + armor.atk + accessory.atk + enchant.attackFlat;
+  const defense = Math.round(profile.defense * mods.defense) + weapon.def + armor.def + accessory.def + enchant.defenseFlat;
+  const speed = Math.round(profile.speed * mods.speed) + weapon.spd + armor.spd + accessory.spd + enchant.speedFlat;
+  const maxHealth = Math.round(profile.maxHealth * mods.maxHealth) + weapon.hp + armor.hp + accessory.hp + enchant.maxHealthFlat;
+
+  // Les pourcentages d'enchantement s'appliquent au total (base + classe + équipement) :
+  // c'est ce que décrit le libellé affiché au joueur (« +12 % de défense »), et la seule
+  // lecture qui reste vraie quand il change d'arme sans changer d'enchantement.
+  const withPercent = (value: number, percent: number) => Math.round(value * (1 + percent));
 
   const critChance = Math.min(
-    0.75,
+    EFFECT_CAPS.critChance,
     BASE_CRIT_CHANCE
       + (RARITY_CRIT_BONUS[equipment.weapon?.rarity ?? 'COMMON'] ?? 0)
-      + (rpgClass?.passive.bonusCritChance ?? 0),
+      + (rpgClass?.passive.bonusCritChance ?? 0)
+      + enchant.critChance,
   );
 
   return {
-    attack: Math.max(1, attack),
-    defense: Math.max(0, defense),
-    speed: Math.max(1, speed),
-    maxHealth: Math.max(1, maxHealth),
+    attack: Math.max(1, withPercent(attack, enchant.attackPercent)),
+    defense: Math.max(0, withPercent(defense, enchant.defensePercent)),
+    speed: Math.max(1, withPercent(speed, enchant.speedPercent)),
+    maxHealth: Math.max(1, withPercent(maxHealth, enchant.maxHealthPercent)),
     critChance,
-    armorPiercing: Math.min(1, rpgClass?.passive.armorPiercing ?? 0),
-    damageReduction: Math.min(0.9, rpgClass?.passive.damageReduction ?? 0),
+    armorPiercing: Math.min(EFFECT_CAPS.armorPiercing, (rpgClass?.passive.armorPiercing ?? 0) + enchant.armorPiercing),
+    damageReduction: Math.min(EFFECT_CAPS.damageReduction, (rpgClass?.passive.damageReduction ?? 0) + enchant.damageReduction),
+    lifesteal: Math.min(EFFECT_CAPS.lifesteal, enchant.lifesteal),
+    thorns: Math.min(EFFECT_CAPS.thorns, enchant.thorns),
   };
 }
 

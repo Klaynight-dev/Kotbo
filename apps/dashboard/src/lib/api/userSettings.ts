@@ -47,6 +47,8 @@ export async function updateUserSettings(settings: {
   accentColor?: string;
   sidebarBehavior?: string;
   compactMode?: boolean;
+  /** `null` = suivre le fuseau du navigateur. */
+  timezone?: string | null;
 }, guildId = authStore.selectedGuildId) {
   const selectedGuildId = getGuildId(guildId);
   const result = await dashboardRequest('/user-settings', {

@@ -13,6 +13,7 @@
   import Skeleton from '../lib/components/Skeleton.svelte';
   import SearchableSelect from '../lib/components/SearchableSelect.svelte';
   import FormSelect from '../lib/components/FormSelect.svelte';
+  import FormTextarea from '../lib/components/FormTextarea.svelte';
   import { m, dateLocale } from '../lib/i18n';
   import {
     fetchSchedules,
@@ -40,6 +41,14 @@
   let formTargetId = $state<string | null>(null);
   let formFrequency = $state('daily');
   let formCron = $state('0 0 * * *');
+  // Type SEND_MESSAGE : texte, embed facultatif, mentions et usage unique.
+  let formMessage = $state('');
+  let formEmbedTitle = $state('');
+  let formEmbedDescription = $state('');
+  let formEmbedColor = $state('');
+  let formEmbedImageUrl = $state('');
+  let formAllowMentions = $state(false);
+  let formRunOnce = $state(false);
 
   const canManageSchedules = $derived(
     !!dashboardStore.state.access?.canManageSettings
@@ -88,6 +97,13 @@
     formTargetId = null;
     formFrequency = 'daily';
     formCron = '0 0 * * *';
+    formMessage = '';
+    formEmbedTitle = '';
+    formEmbedDescription = '';
+    formEmbedColor = '';
+    formEmbedImageUrl = '';
+    formAllowMentions = false;
+    formRunOnce = false;
     showCreateModal = true;
   }
 
@@ -97,7 +113,14 @@
     formName = schedule.name;
     formType = schedule.type;
     formTargetId = schedule.targetId;
-    
+    formMessage = schedule.message || '';
+    formEmbedTitle = schedule.messageEmbed?.title || '';
+    formEmbedDescription = schedule.messageEmbed?.description || '';
+    formEmbedColor = schedule.messageEmbed?.color || '';
+    formEmbedImageUrl = schedule.messageEmbed?.imageUrl || '';
+    formAllowMentions = schedule.allowMentions === true;
+    formRunOnce = schedule.runOnce === true;
+
     // Detect frequency type
     const foundFreq = frequencies.find(f => f.value === schedule.cron);
     if (foundFreq) {
@@ -122,12 +145,35 @@
       return;
     }
 
+    // Un message programme sans texte ni embed n'a rien a poster : le bot
+    // echouerait a l'heure dite, longtemps apres l'enregistrement.
+    const hasEmbed = !!(formEmbedTitle.trim() || formEmbedDescription.trim() || formEmbedImageUrl.trim());
+    if (formType === 'SEND_MESSAGE' && !formMessage.trim() && !hasEmbed) {
+      createAction.setError('Renseignez un texte ou un embed pour ce message programmé.');
+      return;
+    }
+
     const payload = {
       name: formName,
       type: formType,
       cron: formCron,
       targetId: formType === 'SERVER_BACKUP' ? null : formTargetId,
-      enabled: isEditing ? selectedSchedule.enabled : true
+      enabled: isEditing ? selectedSchedule.enabled : true,
+      ...(formType === 'SEND_MESSAGE'
+        ? {
+            message: formMessage,
+            messageEmbed: hasEmbed
+              ? {
+                  title: formEmbedTitle,
+                  description: formEmbedDescription,
+                  color: formEmbedColor,
+                  imageUrl: formEmbedImageUrl,
+                }
+              : null,
+            allowMentions: formAllowMentions,
+            runOnce: formRunOnce,
+          }
+        : {}),
     };
 
     await createAction.run(async () => {
@@ -188,6 +234,7 @@
       case 'CHANNEL_RESET': return m.schedules_type_channel_reset();
       case 'SERVER_BACKUP': return m.schedules_type_server_backup();
       case 'DATA_EXPORT': return m.schedules_type_data_export();
+      case 'SEND_MESSAGE': return 'Message programmé';
       default: return type;
     }
   }
@@ -343,6 +390,7 @@
         <option value="CHANNEL_RESET">{m.schedules_form_type_reset_option()}</option>
         <option value="SERVER_BACKUP">{m.schedules_form_type_backup_option()}</option>
         <option value="DATA_EXPORT">{m.schedules_form_type_export_option()}</option>
+        <option value="SEND_MESSAGE">Message programmé</option>
       </FormSelect>
     </div>
 
@@ -358,6 +406,70 @@
           className="w-full"
         />
       </div>
+    {/if}
+
+    <!-- Message programmé -->
+    {#if formType === 'SEND_MESSAGE'}
+      <div class="space-y-2">
+        <span class="block text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">Message</span>
+        <FormTextarea
+          bind:value={formMessage}
+          placeholder="Le texte posté dans le salon."
+          className="w-full h-24"
+        />
+      </div>
+
+      <details class="rounded-lg border border-outline-variant/10 bg-surface-container-high/20 px-4 py-3">
+        <summary class="text-xs font-semibold text-on-surface cursor-pointer select-none">Embed (facultatif)</summary>
+        <div class="mt-3 space-y-3">
+          <input
+            type="text"
+            bind:value={formEmbedTitle}
+            placeholder="Titre"
+            class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/30 transition-all text-on-surface focus:outline-none"
+          />
+          <FormTextarea bind:value={formEmbedDescription} placeholder="Description" className="w-full h-20" />
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              type="text"
+              bind:value={formEmbedColor}
+              placeholder="#5865F2"
+              class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/30 transition-all text-on-surface focus:outline-none font-mono"
+            />
+            <input
+              type="text"
+              bind:value={formEmbedImageUrl}
+              placeholder="https://… (image)"
+              class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/30 transition-all text-on-surface focus:outline-none"
+            />
+          </div>
+          <p class="text-[10px] text-on-surface-variant/60">
+            L'image doit être servie en HTTPS. Couleur au format hexadécimal.
+          </p>
+        </div>
+      </details>
+
+      <label class="flex items-start gap-3 cursor-pointer px-2 py-2 hover:bg-white/5 rounded-lg transition-colors">
+        <input type="checkbox" bind:checked={formAllowMentions} class="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <div>
+          <span class="text-xs font-bold text-on-surface">Autoriser les mentions</span>
+          <p class="text-[10px] text-on-surface-variant/60">
+            Sans cela, @everyone, @here et les mentions de rôle sont écrits mais ne notifient personne -
+            un message qui se répète ne doit pas pinger tout le serveur par accident.
+          </p>
+        </div>
+      </label>
+
+      <label class="flex items-start gap-3 cursor-pointer px-2 py-2 hover:bg-white/5 rounded-lg transition-colors">
+        <input type="checkbox" bind:checked={formRunOnce} class="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary border-outline-variant/30" />
+        <div>
+          <span class="text-xs font-bold text-on-surface">Envoyer une seule fois</span>
+          <p class="text-[10px] text-on-surface-variant/60">
+            La tâche se désactive juste après l'envoi. À cocher pour un message daté :
+            son expression cron se redéclencherait sinon l'année suivante.
+          </p>
+        </div>
+      </label>
     {/if}
 
     <!-- Fréquence -->

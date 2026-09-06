@@ -158,6 +158,31 @@ export function countSteps(recipe: Recipe): number {
   return walkSteps(recipe.steps).length;
 }
 
+/**
+ * Une liste d'étapes accepte-t-elle une suite ?
+ *
+ * Une condition consomme le reste du parcours dans ses deux branches : une
+ * sortie d'exécution n'accepte qu'un seul fil, et la compilation n'a donc rien
+ * où raccrocher ce qui viendrait après. Une liste qui se termine par un « Si »
+ * est close, et l'éditeur doit le refléter - sans cette garde, les étapes
+ * ajoutées derrière seraient perdues à l'enregistrement, sans message.
+ */
+export function acceptsMoreSteps(steps: RecipeStep[]): boolean {
+  return steps[steps.length - 1]?.kind !== 'condition';
+}
+
+/**
+ * Déplacements autorisés pour l'étape à cette position, l'invariant « une
+ * condition est toujours la dernière de sa liste » devant survivre au
+ * déplacement.
+ */
+export function movableSteps(steps: RecipeStep[], index: number): { up: boolean; down: boolean } {
+  return {
+    up: index > 0 && steps[index]?.kind !== 'condition',
+    down: index < steps.length - 1 && steps[index + 1]?.kind !== 'condition',
+  };
+}
+
 /** Applique une transformation à l'étape ciblée, où qu'elle soit dans l'arbre. */
 export function mapStep(
   steps: RecipeStep[],

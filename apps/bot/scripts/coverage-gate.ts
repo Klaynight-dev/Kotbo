@@ -6,8 +6,11 @@ const minFuncs = Number(process.env.KOTBO_COVERAGE_FUNCS ?? '32');
 
 // --isolate : mock.module est global au process et n'est jamais annule, donc
 // un mock partiel pose par un fichier casse les fichiers executes ensuite.
+// --timeout : les tests qui decodent ou composent une image tiennent largement
+// dans les 5 s par defaut seuls, mais pas quand toute la suite tourne en
+// parallele, encore moins sous instrumentation de couverture.
 // Doit rester aligne avec le script test:unit.
-const run = spawnSync('bun', ['test', '--isolate', '--coverage', 'src/tests'], {
+const run = spawnSync('bun', ['test', '--isolate', '--timeout', '30000', '--coverage', 'src/tests'], {
   cwd: process.cwd(),
   encoding: 'utf8',
   stdio: 'pipe',

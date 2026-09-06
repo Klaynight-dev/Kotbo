@@ -4,6 +4,7 @@ import {
   PermissionFlagsBits,
   type Guild,
   type GuildMember,
+  type Message,
   type TextChannel,
 } from 'discord.js';
 import prisma from '../../../utils/db.js';
@@ -14,6 +15,7 @@ import {
   coerceToString,
   isChannel,
   isMember,
+  isMessage,
   isRole,
   type ChannelValue,
   type MemberValue,
@@ -118,6 +120,59 @@ function safeContent(raw: unknown, action: string): string {
   return text.slice(0, 2000);
 }
 
+/**
+ * Retrouve le vrai message Discord derrière la valeur transportée.
+ *
+ * Le moteur ne garde qu'un instantané sérialisable : agir dessus - supprimer,
+ * épingler, réagir - demande de le recharger. Un message effacé entre-temps est
+ * le cas normal, pas une anomalie du workflow, mais l'action ne peut pas
+ * aboutir et le dit.
+ */
+async function resolveMessage(guild: Guild, value: unknown, action: string): Promise<Message> {
+  if (!isMessage(value)) throw new WorkflowActionError(action, 'message absent ou invalide');
+
+  const channel = guild.channels.cache.get(value.channelId)
+    ?? await guild.channels.fetch(value.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    throw new WorkflowActionError(action, 'le salon du message est introuvable');
+  }
+
+  const message = await (channel as TextChannel).messages.fetch(value.id).catch(() => null);
+  if (!message) throw new WorkflowActionError(action, 'le message n\'existe plus');
+  return message;
+}
+
+/**
+ * Identité portée par les sanctions qu'un workflow prononce.
+ *
+ * Elles sont enregistrées au nom du bot : le casier du membre, les statistiques
+ * et les alertes du staff doivent montrer d'où vient la décision.
+ */
+function botActor(guild: Guild): { id: string; tag: string } {
+  const me = guild.members.me;
+  return { id: me?.id ?? guild.client.user?.id ?? '0', tag: me?.user.tag ?? 'Kotbo' };
+}
+
+/** Discord attend `nom:id` pour un émoji du serveur, l'unicode tel quel. */
+function normalizeEmoji(raw: unknown): string {
+  const value = coerceToString(raw).trim();
+  if (!value) throw new WorkflowActionError('Réagir à un message', 'aucun émoji indiqué');
+  const custom = value.match(/^<a?:(\w+):(\d+)>$/);
+  return custom ? `${custom[1]}:${custom[2]}` : value;
+}
+
+/**
+ * Charge le service de sanctions à la demande.
+ *
+ * En import statique, la chaîne `sanctionService` -> `dashboardApi` -> routes
+ * -> `workflowService` reviendrait sur ce fichier. Le projet dénoue ce genre de
+ * boucle par un import dynamique, comme le fait déjà `sanctionService` pour le
+ * service de seuil de vérification.
+ */
+function sanctions() {
+  return import('../../moderation/sanctionService.js');
+}
+
 export function createWorkflowEffects(guild: Guild): WorkflowEffects {
   return {
     async getRole(roleId) {
@@ -131,6 +186,13 @@ export function createWorkflowEffects(guild: Guild): WorkflowEffects {
       const channel = guild.channels.cache.get(channelId)
         ?? await guild.channels.fetch(channelId).catch(() => null);
       return channel && 'name' in channel ? toChannelValue(channel) : null;
+    },
+
+    async getMember(userId) {
+      if (!userId) return null;
+      const member = guild.members.cache.get(userId)
+        ?? await guild.members.fetch(userId).catch(() => null);
+      return member ? toMemberValue(member) : null;
     },
 
     async getGuildInfo() {
@@ -194,13 +256,30 @@ export function createWorkflowEffects(guild: Guild): WorkflowEffects {
           return {};
         }
 
+        /**
+         * Les trois sanctions passent par `sanctionService` plutôt que par
+         * discord.js seul : c'est lui qui tient le casier du membre, les
+         * statistiques de modération, l'alerte du staff et la propagation aux
+         * comptes liés. Agir en direct laissait ces actions sans aucune trace,
+         * invisibles de la fiche membre comme des rapports.
+         */
         case 'TimeoutMember': {
           const member = await resolveMember(guild, inputs.member);
           const minutes = Math.max(1, Math.min(40_320, coerceToNumber(inputs.minutes)));
           if (!member.moderatable) {
             throw new WorkflowActionError('Exclure temporairement', `${member.user.tag} ne peut pas être modéré`);
           }
-          await member.timeout(minutes * 60_000, coerceToString(inputs.reason) || 'Workflow');
+
+          // `registerTimeoutSanction` applique l'exclusion elle-même.
+          await (await sanctions()).registerTimeoutSanction({
+            guildId: guild.id,
+            target: { id: member.id, tag: member.user.tag },
+            moderator: botActor(guild),
+            reason: coerceToString(inputs.reason) || 'Automatisation',
+            durationMs: minutes * 60_000,
+            member,
+            client: guild.client,
+          });
           return {};
         }
 
@@ -209,8 +288,97 @@ export function createWorkflowEffects(guild: Guild): WorkflowEffects {
           if (!member.kickable) {
             throw new WorkflowActionError('Expulser', `${member.user.tag} ne peut pas être expulsé`);
           }
-          await member.kick(coerceToString(inputs.reason) || 'Workflow');
+
+          const reason = coerceToString(inputs.reason) || 'Automatisation';
+          const target = { id: member.id, tag: member.user.tag };
+          await member.kick(reason);
+          await (await sanctions()).registerKickSanction({
+            guildId: guild.id,
+            target,
+            moderator: botActor(guild),
+            reason,
+            client: guild.client,
+          }).catch(() => null);
           return {};
+        }
+
+        case 'BanMember': {
+          const member = await resolveMember(guild, inputs.member);
+          if (!member.bannable) {
+            throw new WorkflowActionError('Bannir', `${member.user.tag} ne peut pas être banni`);
+          }
+
+          const days = Math.max(0, Math.min(3650, coerceToNumber(inputs.days)));
+          const reason = coerceToString(inputs.reason) || 'Automatisation';
+          const target = { id: member.id, tag: member.user.tag };
+
+          await member.ban({ reason, deleteMessageSeconds: 0 });
+          await (await sanctions()).registerBanSanction({
+            guildId: guild.id,
+            target,
+            moderator: botActor(guild),
+            reason,
+            // Zéro jour vaut bannissement définitif : le service choisit
+            // BAN ou TEMP_BAN selon la présence d'une durée.
+            temporaryDurationMs: days > 0 ? days * 86_400_000 : undefined,
+            client: guild.client,
+          }).catch(() => null);
+          return {};
+        }
+
+        case 'DeleteMessage': {
+          const message = await resolveMessage(guild, inputs.message, 'Supprimer un message');
+          if (!message.deletable) {
+            throw new WorkflowActionError('Supprimer un message', 'le bot n\'a pas le droit de le supprimer');
+          }
+          await message.delete();
+          return {};
+        }
+
+        case 'AddReaction': {
+          const message = await resolveMessage(guild, inputs.message, 'Réagir à un message');
+          const emoji = normalizeEmoji(inputs.emoji);
+          try {
+            await message.react(emoji);
+          } catch {
+            // Un émoji d'un autre serveur ou mal orthographié : Discord répond
+            // par une erreur peu lisible, on la reformule.
+            throw new WorkflowActionError('Réagir à un message', `émoji « ${coerceToString(inputs.emoji)} » refusé par Discord`);
+          }
+          return {};
+        }
+
+        case 'PinMessage': {
+          const message = await resolveMessage(guild, inputs.message, 'Épingler un message');
+          if (message.pinned) return {};
+          try {
+            await message.pin();
+          } catch {
+            // Deux causes se ressemblent de l'extérieur : le plafond de
+            // cinquante épingles par salon, et le droit manquant. Les nommer
+            // toutes deux vaut mieux que d'en affirmer une au hasard.
+            throw new WorkflowActionError(
+              'Épingler un message',
+              'refusé par Discord : salon plein (50 épingles) ou permission « Gérer les messages » manquante',
+            );
+          }
+          return {};
+        }
+
+        case 'CreateThread': {
+          const channel = await resolveTextChannel(guild, inputs.channel);
+          const name = coerceToString(inputs.name).trim().slice(0, 100);
+          if (!name) throw new WorkflowActionError('Ouvrir un fil', 'le nom du fil est vide');
+          if (typeof channel.threads?.create !== 'function') {
+            throw new WorkflowActionError('Ouvrir un fil', `${channel.name} n'accepte pas de fil`);
+          }
+
+          const thread = await channel.threads.create({
+            name,
+            autoArchiveDuration: 1440,
+            reason: 'Automatisation',
+          });
+          return { thread: toChannelValue(thread) };
         }
 
         case 'CreateTicket': {

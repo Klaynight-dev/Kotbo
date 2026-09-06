@@ -115,23 +115,32 @@ export async function handleStaffRoutes(
           const roleIds = member ? Array.from(member.roles.cache.keys()) : [];
           const featureAccess = await resolveFeatureAccessMap(client, guildId, access, user.userId, roleIds);
 
+          // La matrice des acces separe « Configurer » de « Supprimer » : une
+          // requete qui efface demande le second droit, les autres le premier.
+          const right = (feature?: { canConfigure: boolean; canDelete: boolean }) =>
+            !!(method === 'DELETE' ? feature?.canDelete : feature?.canConfigure);
+
           if (parts[5] === 'roles') {
-            hasConfigurePermission = !!featureAccess.staff_roles?.canConfigure;
+            hasConfigurePermission = right(featureAccess.staff_roles);
           } else if (parts[5] === 'members') {
-            hasConfigurePermission = !!featureAccess.staff_directory?.canConfigure;
+            hasConfigurePermission = right(featureAccess.staff_directory);
           } else if (parts[5] === 'warnings') {
-            hasConfigurePermission = !!featureAccess.discipline?.canConfigure;
+            hasConfigurePermission = right(featureAccess.discipline);
           } else if (parts[5] === 'blacklist') {
-            hasConfigurePermission = !!featureAccess.discipline?.canConfigure;
+            hasConfigurePermission = right(featureAccess.discipline);
           } else if (parts[5] === 'config') {
-            hasConfigurePermission = !!featureAccess.staff_roles?.canConfigure || !!featureAccess.staff_directory?.canConfigure;
+            hasConfigurePermission = right(featureAccess.staff_roles) || right(featureAccess.staff_directory);
           } else if (parts[5] === 'hierarchies') {
-            hasConfigurePermission = !!featureAccess.staff_roles?.canConfigure;
+            hasConfigurePermission = right(featureAccess.staff_roles);
           }
         }
 
         if (!hasConfigurePermission) {
-          json(res, 403, { error: 'Accès administrateur ou permission de configuration requise' });
+          json(res, 403, {
+            error: method === 'DELETE'
+              ? 'Accès administrateur ou permission de suppression requise'
+              : 'Accès administrateur ou permission de configuration requise',
+          });
           return true;
         }
       }

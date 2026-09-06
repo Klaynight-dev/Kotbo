@@ -26,7 +26,13 @@ export function dashboardCors(): MiddlewareHandler {
       c.req.path.startsWith('/.well-known/oauth-protected-resource/') ||
       c.req.path.startsWith('/.well-known/oauth-authorization-server/');
 
-    if (isMcpPath) {
+    // Les apercus de liens (Open Graph) sont lus par les robots de Discord,
+    // Slack ou X : ils n'envoient pas d'`Origin` et leurs CDN rechargent les
+    // images depuis leurs propres domaines. La whitelist du dashboard n'a donc
+    // aucun sens ici - comme pour MCP, l'acces est public par nature.
+    const isOgPath = c.req.path.startsWith('/api/og/');
+
+    if (isMcpPath || isOgPath) {
       c.header('Access-Control-Allow-Origin', '*');
     } else {
       const dashboardOrigin = getDashboardOrigin();

@@ -933,7 +933,7 @@ describe('Modular Routers Unit Tests', () => {
       );
 
       expect(response.status).toBe(200);
-      expect(mockMcpKeyService.getActiveMcpKeyById).toHaveBeenCalledWith(keyId, '112233445566778899');
+      expect(mockMcpKeyService.getActiveMcpKeyById).toHaveBeenCalledWith(keyId, '112233445566778899', expect.anything());
     });
 
     test('signed direct MCP URL authenticates without OAuth and hides token in logs', async () => {
@@ -978,7 +978,7 @@ describe('Modular Routers Unit Tests', () => {
       );
 
       expect(response.status).toBe(200);
-      expect(mockMcpKeyService.getActiveMcpKeyById).toHaveBeenCalledWith(keyId, '112233445566778899');
+      expect(mockMcpKeyService.getActiveMcpKeyById).toHaveBeenCalledWith(keyId, '112233445566778899', expect.anything());
       expect(mockMcpTools.registerMcpTools).toHaveBeenCalledWith(
         expect.anything(),
         '112233445566778899',

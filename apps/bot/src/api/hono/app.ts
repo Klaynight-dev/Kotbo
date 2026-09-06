@@ -8,10 +8,14 @@ import { configRouter } from './routes/config.js';
 import { eventBusRouter } from './routes/eventBus.js';
 import { authRouter } from './routes/auth.js';
 import { createPublicProfileRouter } from './routes/public/profile.js';
+import { createPublicInviteRouter } from './routes/public/invite.js';
 import { createPublicStatsRouter } from './routes/public/stats.js';
+import { createPublicFunnelRouter } from './routes/public/funnel.js';
 import { createPublicWidgetDataRouter } from './routes/public/widgetData.js';
 import { createVerificationRouter } from './routes/verification.js';
 import { createChangelogRouter } from './routes/public/changelog.js';
+import { createOgRouter } from './routes/public/og.js';
+import { createBillingRouter } from './routes/billing.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -46,10 +50,14 @@ export function createHonoApp(client: Client): OpenAPIHono {
   app.route('/', eventBusRouter);
   app.route('/', authRouter);
   app.route('/', createPublicProfileRouter(client));
+  app.route('/', createPublicInviteRouter());
   app.route('/', createPublicStatsRouter(client));
+  app.route('/', createPublicFunnelRouter());
   app.route('/', createPublicWidgetDataRouter(client));
   app.route('/', createVerificationRouter(client));
   app.route('/', createChangelogRouter());
+  app.route('/', createOgRouter(client));
+  app.route('/', createBillingRouter(client));
 
   // ---------------------------------------------------------------------------
   // OpenAPI / Swagger UI (uniquement en développement)

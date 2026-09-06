@@ -15,7 +15,9 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
       const body = await readJsonBody<{
         discordChannel?: string;
         logChannelId?: string | null;
+        logIgnoredChannelIds?: unknown;
         moderatorRoleId?: string | null;
+        sanctionAlertChannelId?: string | null;
         regulationChannelId?: string | null;
         propagateSanctions?: boolean;
         crossServerSanctionsEnabled?: boolean;
@@ -24,6 +26,7 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
         configChannelId?: string | null;
         publicChannelId?: string | null;
         newsChannelId?: string | null;
+        digestChannelId?: string | null;
         dailyAlgoChannelId?: string | null;
         meetingAnnouncementChannelId?: string | null;
         meetingVoiceChannelId?: string | null;
@@ -65,6 +68,7 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
         regulationRoleId?: string | null;
         regulationLockEnabled?: boolean;
         sanctionReportEnabled?: boolean;
+        sanctionReportSkipBots?: boolean;
       }>(req);
 
       if (!body) {
@@ -90,8 +94,25 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
       if (Object.prototype.hasOwnProperty.call(body, 'logChannelId')) {
         data.logChannelId = extractDiscordSnowflake(body.logChannelId);
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'logIgnoredChannelIds')) {
+        if (!Array.isArray(body.logIgnoredChannelIds)) {
+          json(res, 400, { error: 'logIgnoredChannelIds doit être un tableau de salons.' });
+          return true;
+        }
+        const ids = body.logIgnoredChannelIds
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => extractDiscordSnowflake(id))
+          .filter((id): id is string => !!id);
+        data.logIgnoredChannelIds = [...new Set(ids)];
+      }
       if (Object.prototype.hasOwnProperty.call(body, 'moderatorRoleId')) {
         data.moderatorRoleId = extractDiscordSnowflake(body.moderatorRoleId);
+      }
+      // Le salon ou tombent sanctions, signalements et alertes de raid. La
+      // colonne existait et la liste de prise en main la reclamait deja ; aucune
+      // route ne l'ecrivait, ce qui laissait une case impossible a cocher.
+      if (Object.prototype.hasOwnProperty.call(body, 'sanctionAlertChannelId')) {
+        data.sanctionAlertChannelId = extractDiscordSnowflake(body.sanctionAlertChannelId);
       }
       if (Object.prototype.hasOwnProperty.call(body, 'regulationChannelId')) {
         data.regulationChannelId = extractDiscordSnowflake(body.regulationChannelId);
@@ -119,6 +140,9 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
       if (Object.prototype.hasOwnProperty.call(body, 'sanctionReportEnabled')) {
         data.sanctionReportEnabled = !!body.sanctionReportEnabled;
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'sanctionReportSkipBots')) {
+        data.sanctionReportSkipBots = !!body.sanctionReportSkipBots;
+      }
       if (Object.prototype.hasOwnProperty.call(body, 'analyticsEnabled')) {
         data.analyticsEnabled = !!body.analyticsEnabled;
       }
@@ -130,6 +154,9 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
       }
       if (Object.prototype.hasOwnProperty.call(body, 'newsChannelId')) {
         data.newsChannelId = extractDiscordSnowflake(body.newsChannelId);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'digestChannelId')) {
+        data.digestChannelId = extractDiscordSnowflake(body.digestChannelId);
       }
       if (Object.prototype.hasOwnProperty.call(body, 'dailyAlgoChannelId')) {
         data.dailyAlgoChannelId = extractDiscordSnowflake(body.dailyAlgoChannelId);
@@ -364,7 +391,7 @@ export async function handleSettingsRoutes(ctx: ModuleRouteContext): Promise<boo
       };
 
       await syncFeature('daily_algo', 'Daily Algo', data.dailyAlgoEnabled, data.dailyAlgoChannelId, undefined);
-      await syncFeature('digest', 'Digest', data.digestEnabled, undefined, undefined);
+      await syncFeature('digest', 'Digest', data.digestEnabled, data.digestChannelId, undefined);
       await syncFeature('translation', 'Translation', data.translationEnabled, undefined, undefined);
       await syncFeature('codepolice', 'Code Police', data.codePoliceEnabled, undefined, undefined);
       await syncFeature('logs', 'Logs Discord', undefined, data.logChannelId, undefined);

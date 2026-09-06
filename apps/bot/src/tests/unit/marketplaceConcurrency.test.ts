@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import path from 'node:path';
 
 type MarketplaceState = {
-  listingStatus: 'ACTIVE' | 'SOLD';
+  listingStatus: 'ACTIVE' | 'SOLD' | 'CANCELLED';
   buyerBalance: number;
   sellerBalance: number;
   inventoryQuantity: number;
   transactionCount: number;
+  /** Cumul des mises rendues : c'est lui qui trahit un remboursement versé deux fois. */
+  refunded: number;
 };
 
 let state: MarketplaceState;
@@ -28,17 +30,25 @@ const tx = {
     findFirst: mock(async () => state.listingStatus === 'ACTIVE'
       ? { ...listing, status: state.listingStatus }
       : null),
-    updateMany: mock(async () => {
+    updateMany: mock(async ({ data }: any) => {
       if (state.listingStatus !== 'ACTIVE') return { count: 0 };
-      state.listingStatus = 'SOLD';
+      state.listingStatus = data.status;
       return { count: 1 };
     }),
   },
   rpgProfile: {
-    findUnique: mock(async ({ where }: any) => (
-      where.guildId_userId.userId === 'buyer-1' ? { id: 'buyer-profile' } : null
-    )),
+    findUnique: mock(async ({ where }: any) => {
+      const userId = where.guildId_userId.userId;
+      if (userId === 'buyer-1') return { id: 'buyer-profile' };
+      if (userId === 'seller-1') return { id: 'seller-profile' };
+      return null;
+    }),
     updateMany: mock(async ({ where, data }: any) => {
+      // Remboursement : désigné par son couple serveur/membre, sans condition de solde.
+      if (data.balance?.increment !== undefined) {
+        state.refunded += data.balance.increment;
+        return { count: 1 };
+      }
       if (where.id !== 'buyer-profile' || state.buyerBalance < where.balance.gte) {
         return { count: 0 };
       }
@@ -89,7 +99,7 @@ const dbJsPath = path.resolve(import.meta.dir, '../../utils/db.js');
 mock.module(dbPath, () => ({ default: mockDb, prisma: mockDb, prismaRead: mockDb }));
 mock.module(dbJsPath, () => ({ default: mockDb, prisma: mockDb, prismaRead: mockDb }));
 
-const { buyListing } = await import('../../services/economy/marketplaceService.js');
+const { buyListing, cancelListing } = await import('../../services/economy/marketplaceService.js');
 
 beforeEach(() => {
   state = {
@@ -98,6 +108,7 @@ beforeEach(() => {
     sellerBalance: 0,
     inventoryQuantity: 0,
     transactionCount: 0,
+    refunded: 0,
   };
   transactionQueue = Promise.resolve();
 });
@@ -116,5 +127,30 @@ describe('atomic marketplace purchase', () => {
     expect(state.sellerBalance).toBe(100);
     expect(state.inventoryQuantity).toBe(1);
     expect(state.transactionCount).toBe(1);
+  });
+});
+
+describe('retrait d’une annonce', () => {
+  // L'annonce n'était fermée qu'après le remboursement et la remise de l'objet : deux
+  // clics sur « annuler » rendaient donc l'objet deux fois. Une duplication à portée de
+  // double-clic, sur un module qui brasse de la monnaie.
+  test('deux retraits simultanés ne rendent l’objet qu’une fois', async () => {
+    const results = await Promise.all([
+      cancelListing('guild-1', 'seller-1', 'listing-1'),
+      cancelListing('guild-1', 'seller-1', 'listing-1'),
+    ]);
+
+    expect(results.filter((result) => result.success)).toHaveLength(1);
+    expect(state.listingStatus).toBe('CANCELLED');
+    expect(state.inventoryQuantity).toBe(1);
+  });
+
+  test('un retrait rend l’objet à son vendeur', async () => {
+    const result = await cancelListing('guild-1', 'seller-1', 'listing-1');
+
+    expect(result.success).toBe(true);
+    expect(state.inventoryQuantity).toBe(1);
+    // Aucune enchère sur cette annonce : il n'y a personne à rembourser.
+    expect(state.refunded).toBe(0);
   });
 });

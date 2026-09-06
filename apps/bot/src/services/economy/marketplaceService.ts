@@ -66,39 +66,69 @@ export async function createListing(guildId: string, sellerId: string, data: {
   type: 'FIXED_PRICE' | 'AUCTION';
   durationHours?: number;
 }): Promise<{ success: boolean; error?: string; listing?: any }> {
-  const profile = await prismaRead.rpgProfile.findUnique({
-    where: { guildId_userId: { guildId, userId: sellerId } },
-  });
-  if (!profile) return { success: false, error: 'Profil RPG introuvable.' };
-
-  const inventoryItem = await prismaRead.rpgInventoryItem.findFirst({
-    where: { rpgProfileId: profile.id, itemId: data.itemId, quantity: { gte: data.quantity } },
-  });
-  if (!inventoryItem) return { success: false, error: 'Vous n\'avez pas assez de cet objet.' };
-
+  const quantity = Math.trunc(Number(data.quantity));
+  if (!Number.isFinite(quantity) || quantity < 1) {
+    return { success: false, error: 'La quantité doit être d\'au moins un.' };
+  }
   if (data.price <= 0) return { success: false, error: 'Le prix doit être positif.' };
 
   const durationMs = (data.durationHours ?? 24) * 3600000;
   const expiresAt = new Date(Date.now() + durationMs);
 
-  await prisma.rpgInventoryItem.update({
-    where: { id: inventoryItem.id },
-    data: { quantity: { decrement: data.quantity } },
-  });
+  try {
+    const listing = await prisma.$transaction(async (tx) => {
+      const profile = await tx.rpgProfile.findUnique({
+        where: { guildId_userId: { guildId, userId: sellerId } },
+        select: { id: true },
+      });
+      if (!profile) throw new MarketplacePurchaseError('Profil RPG introuvable.');
 
-  const listing = await prisma.marketplaceListing.create({
-    data: {
-      guildId,
-      sellerId,
-      itemId: data.itemId,
-      quantity: data.quantity,
-      price: data.price,
-      type: data.type,
-      expiresAt,
-    },
-  });
+      // Retrait conditionnel : la ligne lue puis décrémentée sans garde laissait deux
+      // mises en vente simultanées retirer deux fois le même exemplaire, et la quantité
+      // passer sous zéro. C'était une duplication d'objet à portée de double-clic.
+      const removed = await tx.rpgInventoryItem.updateMany({
+        where: { rpgProfileId: profile.id, itemId: data.itemId, quantity: { gte: quantity } },
+        data: { quantity: { decrement: quantity } },
+      });
+      if (removed.count === 0) {
+        throw new MarketplacePurchaseError('Vous n\'avez pas assez de cet objet.');
+      }
 
-  return { success: true, listing };
+      // Une ligne d'inventaire vidée est supprimée, comme après une fabrication : la
+      // laisser à zéro ferait proposer un objet qu'on ne possède plus.
+      const emptied = await tx.rpgInventoryItem.deleteMany({
+        where: { rpgProfileId: profile.id, itemId: data.itemId, quantity: { lte: 0 } },
+      });
+
+      // Mettre en vente son dernier exemplaire emporte sa progression (forge,
+      // enchantements) : l'acheteur reçoit un objet nu, et retirer l'annonce ne restitue
+      // donc pas une amélioration qu'on aurait pu revendre au prix du neuf.
+      if (emptied.count > 0) {
+        await tx.rpgItemInstance.deleteMany({
+          where: { rpgProfileId: profile.id, itemId: data.itemId },
+        });
+      }
+
+      return tx.marketplaceListing.create({
+        data: {
+          guildId,
+          sellerId,
+          itemId: data.itemId,
+          quantity,
+          price: data.price,
+          type: data.type,
+          expiresAt,
+        },
+      });
+    });
+
+    return { success: true, listing };
+  } catch (error) {
+    if (error instanceof MarketplacePurchaseError) {
+      return { success: false, error: error.message };
+    }
+    throw error;
+  }
 }
 
 export async function buyListing(
@@ -183,93 +213,256 @@ export async function buyListing(
   }
 }
 
+/**
+ * Pose une enchère : débite le nouvel enchérisseur et rend sa mise au précédent.
+ *
+ * Tout tient dans une transaction, sur le même patron que l'achat à prix fixe juste
+ * au-dessus. Le remboursement du précédent se faisait auparavant dehors et *avant* le
+ * débit : un incident entre les deux lui rendait sa mise sans lui retirer sa place, et
+ * l'enchère suivante le remboursait une seconde fois.
+ *
+ * La lecture passe par la base primaire et non la réplique : c'est une décision d'écriture,
+ * et une réplique en retard ferait accepter une enchère déjà dépassée.
+ */
 export async function placeBid(
   guildId: string,
   bidderId: string,
   listingId: string,
   amount: number,
 ): Promise<{ success: boolean; error?: string; listing?: { itemId: string } }> {
-  const listing = await prismaRead.marketplaceListing.findFirst({
-    where: { id: listingId, guildId, status: 'ACTIVE', type: 'AUCTION' },
-  });
+  try {
+    const listing = await prisma.$transaction(async (tx) => {
+      const current = await tx.marketplaceListing.findFirst({
+        where: { id: listingId, guildId, status: 'ACTIVE', type: 'AUCTION' },
+      });
 
-  if (!listing) return { success: false, error: 'Enchère introuvable.' };
-  if (listing.sellerId === bidderId) return { success: false, error: 'Vous ne pouvez pas enchérir sur votre propre annonce.' };
-  if (listing.expiresAt < new Date()) return { success: false, error: 'Cette enchère a expiré.' };
+      if (!current) throw new MarketplacePurchaseError('Enchère introuvable.');
+      if (current.sellerId === bidderId) {
+        throw new MarketplacePurchaseError('Vous ne pouvez pas enchérir sur votre propre annonce.');
+      }
+      if (current.expiresAt < new Date()) throw new MarketplacePurchaseError('Cette enchère a expiré.');
 
-  const minBid = (listing.currentBid ?? listing.price) + 1;
-  if (amount < minBid) return { success: false, error: `L'enchère minimum est de ${minBid} coins.` };
+      const minBid = (current.currentBid ?? current.price) + 1;
+      if (amount < minBid) {
+        throw new MarketplacePurchaseError(`L'enchère minimum est de ${minBid} coins.`);
+      }
 
-  const bidderProfile = await prismaRead.rpgProfile.findUnique({
-    where: { guildId_userId: { guildId, userId: bidderId } },
-  });
-  if (!bidderProfile || bidderProfile.balance < amount) {
-    return { success: false, error: 'Fonds insuffisants.' };
-  }
+      // L'annonce doit être restée dans l'état qui a servi à décider. Sans cette
+      // condition, deux enchères simultanées passent le contrôle ensemble, se débitent
+      // toutes les deux, et la seconde écrase la première - dont la mise n'est alors
+      // rendue par personne.
+      const claimed = await tx.marketplaceListing.updateMany({
+        where: {
+          id: listingId,
+          status: 'ACTIVE',
+          currentBid: current.currentBid,
+          bidderId: current.bidderId,
+        },
+        data: { currentBid: amount, bidderId },
+      });
+      if (claimed.count === 0) {
+        throw new MarketplacePurchaseError('Quelqu\'un vient de surenchérir : reprenez au montant affiché.');
+      }
 
-  if (listing.bidderId) {
-    await prisma.rpgProfile.update({
-      where: { guildId_userId: { guildId, userId: listing.bidderId } },
-      data: { balance: { increment: listing.currentBid! } },
+      // Débit conditionnel, comme à l'achat : un solde lu puis décrémenté sans garde peut
+      // passer sous zéro entre les deux.
+      const debited = await tx.rpgProfile.updateMany({
+        where: { guildId, userId: bidderId, balance: { gte: amount } },
+        data: { balance: { decrement: amount } },
+      });
+      if (debited.count === 0) throw new MarketplacePurchaseError('Fonds insuffisants.');
+
+      if (current.bidderId && current.currentBid) {
+        await tx.rpgProfile.updateMany({
+          where: { guildId, userId: current.bidderId },
+          data: { balance: { increment: current.currentBid } },
+        });
+      }
+
+      return { itemId: current.itemId };
     });
+
+    return { success: true, listing };
+  } catch (error) {
+    if (error instanceof MarketplacePurchaseError) {
+      return { success: false, error: error.message };
+    }
+    throw error;
   }
-
-  await prisma.$transaction([
-    prisma.rpgProfile.update({
-      where: { guildId_userId: { guildId, userId: bidderId } },
-      data: { balance: { decrement: amount } },
-    }),
-    prisma.marketplaceListing.update({
-      where: { id: listingId },
-      data: { currentBid: amount, bidderId },
-    }),
-  ]);
-
-  return { success: true, listing: { itemId: listing.itemId } };
 }
 
+/**
+ * Retire une annonce : l'objet revient au vendeur, la mise en cours à l'enchérisseur.
+ *
+ * L'annonce est réclamée avant tout mouvement. Sans ça, deux clics sur « annuler » -
+ * l'annonce n'étant fermée qu'à la fin - rendaient l'objet deux fois et remboursaient
+ * l'enchérisseur deux fois : une duplication d'objet à la portée d'un double-clic.
+ */
 export async function cancelListing(
   guildId: string,
   userId: string,
   listingId: string,
 ): Promise<{ success: boolean; error?: string; listing?: { itemId: string } }> {
-  const listing = await prismaRead.marketplaceListing.findFirst({
-    where: { id: listingId, guildId, sellerId: userId, status: 'ACTIVE' },
-  });
-  if (!listing) return { success: false, error: 'Annonce introuvable.' };
+  try {
+    const cancelled = await prisma.$transaction(async (tx) => {
+      const listing = await tx.marketplaceListing.findFirst({
+        where: { id: listingId, guildId, sellerId: userId, status: 'ACTIVE' },
+      });
+      if (!listing) throw new MarketplacePurchaseError('Annonce introuvable.');
 
-  if (listing.bidderId && listing.currentBid) {
-    await prisma.rpgProfile.update({
-      where: { guildId_userId: { guildId, userId: listing.bidderId } },
+      const claimed = await tx.marketplaceListing.updateMany({
+        where: { id: listingId, status: 'ACTIVE' },
+        data: { status: 'CANCELLED' },
+      });
+      if (claimed.count === 0) throw new MarketplacePurchaseError('Annonce introuvable.');
+
+      if (listing.bidderId && listing.currentBid) {
+        await tx.rpgProfile.updateMany({
+          where: { guildId, userId: listing.bidderId },
+          data: { balance: { increment: listing.currentBid } },
+        });
+      }
+
+      const seller = await tx.rpgProfile.findUnique({
+        where: { guildId_userId: { guildId, userId } },
+        select: { id: true },
+      });
+      if (seller) {
+        await tx.rpgInventoryItem.upsert({
+          where: { rpgProfileId_itemId: { rpgProfileId: seller.id, itemId: listing.itemId } },
+          create: { rpgProfileId: seller.id, itemId: listing.itemId, quantity: listing.quantity },
+          update: { quantity: { increment: listing.quantity } },
+        });
+      }
+
+      return { itemId: listing.itemId };
+    });
+
+    return { success: true, listing: cancelled };
+  } catch (error) {
+    if (error instanceof MarketplacePurchaseError) {
+      return { success: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
+type ExpiredListing = {
+  id: string;
+  guildId: string;
+  sellerId: string;
+  bidderId: string | null;
+  currentBid: number | null;
+  itemId: string;
+  quantity: number;
+};
+
+/**
+ * Solde une enchère remportée : le vendeur touche la mise, l'acheteur reçoit l'objet.
+ *
+ * Le tout dans une transaction, réclamation de l'annonce comprise : un simple `update` du
+ * statut laissait deux passages du cycle payer le vendeur deux fois, et la remise de
+ * l'objet, faite après coup, pouvait échouer sur un acheteur qui avait déjà payé.
+ */
+async function settleAuction(listing: ExpiredListing & { bidderId: string; currentBid: number }): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.marketplaceListing.updateMany({
+      where: { id: listing.id, status: 'ACTIVE' },
+      data: { status: 'SOLD' },
+    });
+    if (claimed.count === 0) return;
+
+    const [seller, buyer] = await Promise.all([
+      tx.rpgProfile.findUnique({
+        where: { guildId_userId: { guildId: listing.guildId, userId: listing.sellerId } },
+        select: { id: true },
+      }),
+      tx.rpgProfile.findUnique({
+        where: { guildId_userId: { guildId: listing.guildId, userId: listing.bidderId } },
+        select: { id: true },
+      }),
+    ]);
+
+    // Vendeur disparu : la vente ne peut pas se conclure. La mise revient à
+    // l'enchérisseur plutôt que de rester gelée, et l'annonce se ferme au lieu d'être
+    // reprise en échec à chaque tour du cycle.
+    if (!seller) {
+      if (buyer) {
+        await tx.rpgProfile.update({
+          where: { id: buyer.id },
+          data: { balance: { increment: listing.currentBid } },
+        });
+      }
+      await tx.marketplaceListing.updateMany({ where: { id: listing.id }, data: { status: 'EXPIRED' } });
+      logger.warn('Marketplace', `Vendeur introuvable pour l'enchère ${listing.id} : mise rendue.`);
+      return;
+    }
+
+    await tx.rpgProfile.update({
+      where: { id: seller.id },
       data: { balance: { increment: listing.currentBid } },
     });
-  }
 
-  const sellerProfile = await prismaRead.rpgProfile.findUnique({
-    where: { guildId_userId: { guildId, userId } },
+    if (buyer) {
+      await tx.rpgInventoryItem.upsert({
+        where: { rpgProfileId_itemId: { rpgProfileId: buyer.id, itemId: listing.itemId } },
+        create: { rpgProfileId: buyer.id, itemId: listing.itemId, quantity: listing.quantity },
+        update: { quantity: { increment: listing.quantity } },
+      });
+    } else {
+      // L'acheteur a payé au moment d'enchérir : sans profil, l'objet n'a nulle part où
+      // aller, mais la vente reste due au vendeur.
+      logger.warn('Marketplace', `Acheteur introuvable pour l'enchère ${listing.id} : objet non remis.`);
+    }
+
+    await tx.marketplaceTransaction.create({
+      data: {
+        guildId: listing.guildId,
+        listingId: listing.id,
+        sellerId: listing.sellerId,
+        buyerId: listing.bidderId,
+        itemId: listing.itemId,
+        quantity: listing.quantity,
+        price: listing.currentBid,
+      },
+    });
   });
+}
 
-  if (sellerProfile) {
-    await prisma.rpgInventoryItem.upsert({
-      where: { rpgProfileId_itemId: { rpgProfileId: sellerProfile.id, itemId: listing.itemId } },
-      create: { rpgProfileId: sellerProfile.id, itemId: listing.itemId, quantity: listing.quantity },
+/** Rend l'objet à son vendeur : annonce non vendue, ou enchère sans le moindre pari. */
+async function returnListingToSeller(listing: ExpiredListing): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.marketplaceListing.updateMany({
+      where: { id: listing.id, status: 'ACTIVE' },
+      data: { status: 'EXPIRED' },
+    });
+    if (claimed.count === 0) return;
+
+    const seller = await tx.rpgProfile.findUnique({
+      where: { guildId_userId: { guildId: listing.guildId, userId: listing.sellerId } },
+      select: { id: true },
+    });
+    if (!seller) {
+      logger.warn('Marketplace', `Vendeur introuvable pour l'annonce ${listing.id} : objet non rendu.`);
+      return;
+    }
+
+    await tx.rpgInventoryItem.upsert({
+      where: { rpgProfileId_itemId: { rpgProfileId: seller.id, itemId: listing.itemId } },
+      create: { rpgProfileId: seller.id, itemId: listing.itemId, quantity: listing.quantity },
       update: { quantity: { increment: listing.quantity } },
     });
-  }
-
-  await prisma.marketplaceListing.update({
-    where: { id: listingId },
-    data: { status: 'CANCELLED' },
   });
-
-  return { success: true, listing: { itemId: listing.itemId } };
 }
 
 export async function processExpiredListings(guildId?: string): Promise<void> {
-  const where: any = { status: 'ACTIVE', expiresAt: { lt: new Date() } };
-  if (guildId) where.guildId = guildId;
-
-  const expired = await prismaRead.marketplaceListing.findMany({ where });
+  const expired = await prisma.marketplaceListing.findMany({
+    where: {
+      status: 'ACTIVE',
+      expiresAt: { lt: new Date() },
+      ...(guildId ? { guildId } : {}),
+    },
+  });
 
   for (const listing of expired) {
     try {
@@ -278,60 +471,9 @@ export async function processExpiredListings(guildId?: string): Promise<void> {
       if (!(await isModuleEnabled(listing.guildId, 'marketplace'))) continue;
 
       if (listing.type === 'AUCTION' && listing.bidderId && listing.currentBid) {
-        const sellerProfile = await prismaRead.rpgProfile.findUnique({
-          where: { guildId_userId: { guildId: listing.guildId, userId: listing.sellerId } },
-        });
-
-        await prisma.$transaction([
-          prisma.rpgProfile.update({
-            where: { guildId_userId: { guildId: listing.guildId, userId: listing.sellerId } },
-            data: { balance: { increment: listing.currentBid } },
-          }),
-          ...(sellerProfile ? [] : []),
-          prisma.marketplaceListing.update({
-            where: { id: listing.id },
-            data: { status: 'SOLD' },
-          }),
-          prisma.marketplaceTransaction.create({
-            data: {
-              guildId: listing.guildId,
-              listingId: listing.id,
-              sellerId: listing.sellerId,
-              buyerId: listing.bidderId,
-              itemId: listing.itemId,
-              quantity: listing.quantity,
-              price: listing.currentBid,
-            },
-          }),
-        ]);
-
-        const buyerProfile = await prismaRead.rpgProfile.findUnique({
-          where: { guildId_userId: { guildId: listing.guildId, userId: listing.bidderId } },
-        });
-        if (buyerProfile) {
-          await prisma.rpgInventoryItem.upsert({
-            where: { rpgProfileId_itemId: { rpgProfileId: buyerProfile.id, itemId: listing.itemId } },
-            create: { rpgProfileId: buyerProfile.id, itemId: listing.itemId, quantity: listing.quantity },
-            update: { quantity: { increment: listing.quantity } },
-          });
-        }
+        await settleAuction({ ...listing, bidderId: listing.bidderId, currentBid: listing.currentBid });
       } else {
-        const sellerProfile = await prismaRead.rpgProfile.findUnique({
-          where: { guildId_userId: { guildId: listing.guildId, userId: listing.sellerId } },
-        });
-
-        if (sellerProfile) {
-          await prisma.rpgInventoryItem.upsert({
-            where: { rpgProfileId_itemId: { rpgProfileId: sellerProfile.id, itemId: listing.itemId } },
-            create: { rpgProfileId: sellerProfile.id, itemId: listing.itemId, quantity: listing.quantity },
-            update: { quantity: { increment: listing.quantity } },
-          });
-        }
-
-        await prisma.marketplaceListing.update({
-          where: { id: listing.id },
-          data: { status: 'EXPIRED' },
-        });
+        await returnListingToSeller(listing);
       }
     } catch (error) {
       logger.error('Marketplace', `Erreur traitement expiration listing ${listing.id}:`, error);

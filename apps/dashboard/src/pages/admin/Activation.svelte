@@ -4,7 +4,7 @@
   import { confirmDialog } from '../../lib/stores/confirmDialog.svelte';
   import { fetchActivationCodes, createActivationCode, deleteActivationCode } from '../../lib/api';
   import Papicon from '../../lib/components/Papicon.svelte';
-  import AdminLayout from '../../lib/components/AdminLayout.svelte';
+  import AdminShell from '../../lib/components/admin/AdminShell.svelte';
 
   interface ActivationCode {
     id: string;
@@ -145,16 +145,8 @@
 
 </script>
 
-<AdminLayout>
+<AdminShell title="Codes d’activation" description="Génération et suivi des codes donnant accès aux fonctions complètes.">
   <div class="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-3 duration-600">
-  <!-- Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container-low/40 p-5 rounded-xl border border-outline-variant/30">
-    <div>
-      <h2 class="text-lg font-semibold text-on-surface tracking-tight">Codes d'activation</h2>
-      <p class="text-sm text-on-surface-variant/50 font-medium">Accordez un accès permanent ou une période limitée à un serveur</p>
-    </div>
-  </div>
-
   {#if loading}
     <div class="space-y-8">
       <div class="premium-card rounded-[2.25rem] p-8">
@@ -380,4 +372,4 @@
     </div>
   {/if}
   </div>
-</AdminLayout>
+</AdminShell>

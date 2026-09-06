@@ -23,7 +23,20 @@ export function isPageWip(page: PageConfig): boolean {
 
 export const generalItems: PageConfig[] = [
   { name: m.nav_home(),           icon: "home",      href: "/",          featureKey: "dashboard", beta: false, wip: false },
-  { name: m.nav_server_template(), icon: "sparkles", href: "/server-template", featureKey: "settings", beta: true, wip: false },
+  // Prise en main juste apres l'accueil : c'est la page qu'on ouvre en
+  // arrivant, et celle vers laquelle on revient pour verifier qu'il ne
+  // manque rien.
+  // « Créer mon serveur » y a été fusionné : monter la structure et vérifier
+  // ce qu'il reste à régler sont le même moment.
+  { name: "Prise en main",        icon: "compass",   href: "/setup",     featureKey: "settings", beta: true, wip: false },
+  // « Reprise » a quitte le menu : la detection des autres bots et la
+  // recuperation de ce qui est lisible du serveur se font desormais dans le
+  // parcours de configuration, imposees des qu'on repond « serveur existant ».
+  // C'est le bon moment - avant que Kotbo ne pose quoi que ce soit - et c'est
+  // aussi le seul ou l'on y pense. La route `/migration` repond toujours, pour
+  // les liens en favori et pour un second passage apres l'arrivee d'un
+  // nouveau bot ; elle n'a simplement plus a occuper une ligne du menu de tous
+  // les serveurs, y compris ceux qui n'ont jamais eu d'autre bot.
   { name: m.nav_pulse(),        icon: "activity",  href: "/pulse",     featureKey: "dashboard", beta: true, wip: false },
   { name: m.nav_inbox(),             icon: "inbox",     href: "/inbox",     featureKey: "inbox", beta: false, wip: false },
   { name: m.nav_analytics(),         icon: "pie-chart", href: "/analytics", featureKey: "analytics", beta: false, wip: false },
@@ -38,7 +51,6 @@ export const moderationItems: PageConfig[] = [
   { name: m.nav_activity_log(),  icon: "history",       href: "/activity",          featureKey: "activity", beta: false, wip: false },
   { name: m.nav_events(),          icon: "zap",           href: "/events",            featureKey: "events", beta: false, wip: false },
   { name: m.nav_forms(),         icon: "clipboard",     href: "/forms",             featureKey: "events", beta: false, wip: false },
-  { name: m.nav_daily_algo(),          icon: "code",          href: "/dailyalgo",         featureKey: "daily_algo", beta: false, wip: false },
 ];
 
 /**
@@ -46,14 +58,20 @@ export const moderationItems: PageConfig[] = [
  * decoupee en onglets. Le decoupage suit le cycle de vie d'une menace
  * (entree -> contenu -> identite -> suite donnee) plutot que l'historique
  * des modules, qui avait disperse une meme fonction sur plusieurs pages.
+ *
+ * Deux sous-pages gardent une entree a elles tant que leur onglet d'accueil
+ * n'existe pas : les pseudos sous Filtres, et les appels de ban sous Sanctions
+ * - sans entree, /security/sanctions/appeals n'etait plus atteignable au clic.
  */
 export const securityItems: PageConfig[] = [
   { name: m.nav_security_overview(),  icon: "shieldcheck",   href: "/security",           featureKey: "raid_protection", beta: false, wip: false },
   { name: m.nav_security_quick_setup(), icon: "sparkles",    href: "/security/quick-setup", featureKey: "automod", beta: false, wip: false },
   { name: m.nav_security_antiraid(),  icon: "shieldwarning", href: "/security/anti-raid", featureKey: "raid_protection", beta: false, wip: false },
   { name: m.nav_security_filters(),   icon: "shield-alert",  href: "/security/filters",   featureKey: "automod", beta: false, wip: false },
+  { name: m.nav_nicknames(),          icon: "user",          href: "/security/filters/nicknames", featureKey: "nickname_moderation", beta: false, wip: false },
   { name: m.nav_security_accounts(),  icon: "shield",        href: "/security/accounts",  featureKey: "double_accounts", beta: false, wip: false },
   { name: m.nav_security_sanctions(), icon: "alert-triangle",href: "/security/sanctions", featureKey: "sanctions", beta: false, wip: false },
+  { name: m.nav_ban_appeals(),        icon: "gavel",         href: "/security/sanctions/appeals", featureKey: "ban_appeals", beta: false, wip: false },
 ];
 
 /**
@@ -94,9 +112,13 @@ export const levelingItems: PageConfig[] = [
   { name: m.nav_seasons(),             icon: "flag",          href: "/seasons",          featureKey: "leveling", beta: false, wip: false },
   { name: m.nav_reputation(),          icon: "star",          href: "/reputation",       featureKey: "leveling", beta: false, wip: false },
   { name: m.nav_clans(),               icon: "shield",        href: "/clans",            featureKey: "leveling", beta: true, wip: false },
+  { name: m.nav_drops(),               icon: "arrow-down-box", href: "/drops",            featureKey: "leveling", beta: true, wip: false },
 ];
 
 export const economyItems: PageConfig[] = [
+  // En tete du groupe : un rythme touche aux gains, au delai du daily et a l'energie a la
+  // fois, il ne releve donc d'aucun onglet de la page, et c'est par la qu'on commence.
+  { name: m.nav_economy_quick_setup(), icon: "sparkles", href: "/economy-setup",    featureKey: "economy",  beta: false, wip: false },
   { name: m.nav_economy(),      icon: "coins",         href: "/economy",          featureKey: "economy",  beta: false, wip: false },
   { name: m.nav_marketplace(),              icon: "shopping-bag",  href: "/marketplace",      featureKey: "economy",  beta: false, wip: false },
   { name: m.nav_quests(),              icon: "compass",       href: "/quests",           featureKey: "economy",  beta: false, wip: false },
@@ -105,9 +127,11 @@ export const economyItems: PageConfig[] = [
 export const communityItems: PageConfig[] = [
   { name: m.nav_giveaways(),           icon: "sparkles",      href: "/giveaways",        featureKey: "giveaways", beta: false, wip: false },
   { name: m.nav_announcements(), icon: "megaphone",    href: "/announcement",     featureKey: "welcome_goodbye", beta: false, wip: false },
+  { name: "Campagnes",           icon: "send",         href: "/campaigns",        featureKey: "settings", beta: true, wip: false },
   { name: m.nav_reaction_roles(),      icon: "mouse-pointer", href: "/reaction-roles",   featureKey: "reaction_roles", beta: false, wip: false },
-  { name: m.nav_triggers(),        icon: "git-branch",    href: "/triggers",         featureKey: "workflows", beta: false, wip: true },
+  { name: m.nav_triggers(),        icon: "git-branch",    href: "/triggers",         featureKey: "workflows", beta: true, wip: false },
   { name: m.nav_suggestions(),         icon: "thumbs-up",     href: "/suggestions",      featureKey: "suggestions", beta: false, wip: false },
+  { name: m.nav_starboard(),           icon: "star",          href: "/starboard",        featureKey: "starboard", beta: true, wip: false },
   { name: m.nav_embeds(),              icon: "file-plus",     href: "/embed-builder",    featureKey: "embed_builder", beta: false, wip: false },
   { name: m.nav_regulation(),           icon: "book",          href: "/regulation",       featureKey: "regulation", beta: false, wip: false },
   { name: m.nav_news(),    icon: "rss",           href: "/news",             featureKey: "news", beta: false, wip: false },
@@ -134,11 +158,11 @@ export const crossServerItems: PageConfig[] = [
 ];
 
 export const configItems: PageConfig[] = [
+  { name: m.nav_management_center(),   icon: "shield",        href: "/management",           featureKey: "centralized_config", beta: false, wip: false },
   { name: m.nav_modules(),             icon: "package",       href: "/modules",              featureKey: "modules", beta: false, wip: false },
   { name: m.nav_channel_health(),        icon: "activity",      href: "/channel-health",       featureKey: "channel_health", beta: true, wip: false },
   { name: m.nav_channels(),              icon: "hash",          href: "/channels-management",  featureKey: "auto_thread", beta: false, wip: false },
   { name: m.nav_commands(),           icon: "terminal",      href: "/command-access",       featureKey: "commands", beta: false, wip: false },
-  { name: m.nav_settings(),          icon: "settings",      href: "/settings",             featureKey: "settings", beta: false, wip: false },
   { name: m.nav_backups(),         icon: "archive",        href: "/backups",              featureKey: "settings", beta: false, wip: false },
   { name: m.nav_schedules(),      icon: "calendar",      href: "/schedules",            featureKey: "settings", beta: false, wip: false },
   { name: m.nav_mcp_api(),             icon: "cpu",           href: "/mcp-settings",         featureKey: "settings", beta: false, wip: false },
@@ -147,6 +171,13 @@ export const configItems: PageConfig[] = [
 
 export const otherPages: PageConfig[] = [
   { name: m.nav_administration(),      icon: "lock",          href: "/admin",                beta: false, wip: false },
+  // Hors des groupes de navigation : la facturation vit en bas de la barre
+  // laterale, au-dessus du profil, comme l'entree Administration. Elle ne
+  // s'affiche pas pour tout le monde (le payeur, l'administrateur, ou tout le
+  // staff quand le serveur l'a autorise), et `featureKey: "settings"` - un
+  // module du coeur - garantit qu'un serveur sans abonnement peut encore
+  // l'atteindre pour souscrire.
+  { name: m.nav_billing(),             icon: "credit-card",   href: "/billing",              featureKey: "settings", beta: false, wip: false },
   { name: m.nav_my_profile(),          icon: "user",          href: "/profile",              beta: false, wip: false },
   { name: m.nav_user_settings(), icon: "settings",   href: "/userSettings",         beta: false, wip: false },
 ];

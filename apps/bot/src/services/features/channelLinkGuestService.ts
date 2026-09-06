@@ -1,7 +1,7 @@
 /**
  * Mode « liaison seule » (serveur invité).
  *
- * Un serveur peut être relié à un salon d'un serveur activé **sans posséder de
+ * Un serveur peut être relié au pont d'un serveur activé **sans posséder de
  * code d'activation**. Il devient alors un « serveur invité » : le bot y est
  * présent uniquement pour faire passer les messages du pont, et rien d'autre.
  *
@@ -30,7 +30,7 @@ const TAG = 'ChannelLinkGuest';
  */
 export const linkRelayBus = new EventEmitter();
 
-// Le pont est bidirectionnel et peut relayer éditions, suppressions, réactions,
+// Le pont peut relayer éditions, suppressions, réactions,
 // frappe, épinglages et threads : ce sont exactement les événements dont il a
 // besoin, et aucun autre ne franchit la garde pour un serveur invité.
 export const RELAY_ONLY_EVENTS = new Set<string | symbol>([
@@ -50,27 +50,27 @@ export const linkGuestGuilds = new Set<string>();
 /**
  * Recalcule l'ensemble des serveurs invités.
  *
- * Un serveur est invité si, et seulement si, il participe à un lien actif dont
- * l'autre extrémité appartient à un serveur activé. Autrement dit la liaison
- * est toujours l'extension d'une licence existante : deux serveurs sans code ne
- * peuvent pas se relier entre eux pour obtenir un pont gratuit.
+ * Un serveur est invité si, et seulement si, il participe à un pont actif dont
+ * au moins un autre membre appartient à un serveur activé. Autrement dit la
+ * liaison est toujours l'extension d'une licence existante : des serveurs sans
+ * code ne peuvent pas se relier entre eux pour obtenir un pont gratuit.
  */
 export async function loadLinkGuestGuilds(): Promise<void> {
   try {
-    const links = await prisma.channelLink.findMany({
+    const groups = await prisma.channelLinkGroup.findMany({
       where: { enabled: true },
-      select: { sourceGuildId: true, targetGuildId: true },
+      select: { members: { where: { enabled: true }, select: { guildId: true } } },
     });
 
     const guests = new Set<string>();
-    for (const link of links) {
-      if (link.sourceGuildId === link.targetGuildId) continue;
+    for (const group of groups) {
+      const guildIds = [...new Set(group.members.map((m) => m.guildId))];
+      if (guildIds.length < 2) continue;
+      if (!guildIds.some((id) => isGuildActivated(id))) continue;
 
-      const sourceActivated = isGuildActivated(link.sourceGuildId);
-      const targetActivated = isGuildActivated(link.targetGuildId);
-
-      if (sourceActivated && !targetActivated) guests.add(link.targetGuildId);
-      if (targetActivated && !sourceActivated) guests.add(link.sourceGuildId);
+      for (const guildId of guildIds) {
+        if (!isGuildActivated(guildId)) guests.add(guildId);
+      }
     }
 
     linkGuestGuilds.clear();
@@ -83,8 +83,9 @@ export async function loadLinkGuestGuilds(): Promise<void> {
 }
 
 /**
- * Recharge le cache et propage le résultat à tous les shards : un lien créé sur
- * le shard qui héberge le serveur A doit ouvrir le pont sur celui qui héberge B.
+ * Recharge le cache et propage le résultat à tous les shards : un serveur ajouté à un
+ * pont depuis le shard qui héberge le serveur A doit ouvrir le pont sur celui
+ * qui héberge B.
  */
 export async function refreshLinkGuestGuilds(): Promise<void> {
   await loadLinkGuestGuilds();

@@ -6,6 +6,7 @@ import {
 import { errorContainer, kotboContainer } from '../../utils/embeds.js';
 import { E, buildProgressBar } from '../../utils/emojis.js';
 import { getAvailableQuests, claimQuestReward } from '../../services/community/questService.js';
+import { getMemberQuests, claimRpgQuest, QuestError } from '../../services/features/rpg/rpgQuestService.js';
 import type { SlashCommandDefinition } from '../../commands.js';
 import { ContainerChild, separator, v2Message } from '@arcscord/components';
 import { ExtractArrayValue } from '../../utils/types.js';
@@ -37,9 +38,12 @@ async function execute(interaction: ChatInputCommandInteraction) {
 
   if (subcommand === 'list') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const quests = await getAvailableQuests(guildId, userId);
+    const [quests, rpgQuests] = await Promise.all([
+      getAvailableQuests(guildId, userId),
+      getMemberQuests(interaction.client, guildId, userId),
+    ]);
 
-    if (quests.length === 0) {
+    if (quests.length === 0 && rpgQuests.length === 0) {
 
       await interaction.editReply(v2Message(
         kotboContainer({
@@ -78,7 +82,26 @@ async function execute(interaction: ChatInputCommandInteraction) {
       return `${statusIcon} **${q.name}**\n${q.description}\n${bar} \`${progress.current}/${progress.target}\` - ${rewards.join(' + ')}`;
     };
 
-    const claimable = quests.filter((q) => q.progress.status === 'COMPLETED');
+    // Une quete d'equipe se paie d'elle-meme : elle n'entre pas dans le compte des quetes
+    // a reclamer, sans quoi le pied de page enverrait le joueur chercher un bouton qui
+    // n'existe pas.
+    const formatRpgQuest = (q: Awaited<ReturnType<typeof getMemberQuests>>[number]) => {
+      const pct = Math.min((q.current / q.target) * 100, 100);
+      const bar = buildProgressBar(pct, 8);
+      const statusIcon = q.status === 'CLAIMED' ? E.success : q.status === 'COMPLETED' ? E.star : E.dot;
+      const rewards = [];
+      if (q.rewardCoins > 0) rewards.push(`${q.rewardCoins} ${E.coins}`);
+      if (q.rewardXp > 0) rewards.push(`${q.rewardXp} ${E.xp}`);
+      const team = q.teamName ? ` - ${q.teamName}` : '';
+      const ends = `<t:${Math.floor(q.endsAt.getTime() / 1000)}:R>`;
+      return `${statusIcon} ${q.emoji} **${q.name}**${team}\n${q.description}\n${bar} \`${q.current}/${q.target}\` - ${rewards.join(' + ')} - ${ends}`;
+    };
+
+    const rpgPersonal = rpgQuests.filter((q) => q.scope === 'MEMBER');
+    const rpgTeam = rpgQuests.filter((q) => q.scope === 'TEAM');
+
+    const claimableCount = quests.filter((q) => q.progress.status === 'COMPLETED').length
+      + rpgPersonal.filter((q) => q.status === 'COMPLETED').length;
 
     const fields: ContainerChild[] = [];
 
@@ -99,19 +122,46 @@ async function execute(interaction: ChatInputCommandInteraction) {
     }
 
 
+    if (rpgPersonal.length > 0) {
+      fields.push(
+        separator({ divider: true, spacing: 'small' }),
+        `**${E.crown} ${m.c4_quests_rpg({}, { locale })}**`,
+        rpgPersonal.map(formatRpgQuest).join('\n\n')
+      );
+    }
+
+    if (rpgTeam.length > 0) {
+      fields.push(
+        separator({ divider: true, spacing: 'small' }),
+        `**${E.shield} ${m.c4_quests_rpg_team({}, { locale })}**`,
+        rpgTeam.map(formatRpgQuest).join('\n\n')
+      );
+    }
+
     await interaction.editReply(v2Message(
       kotboContainer({
         color: 'primary',
         title: `${E.fire} ${m.c4_quests_title({}, { locale })}`,
         fields,
-        footerTitle: claimable.length > 0 ? m.c4_quests_footer_claimable({ count: claimable.length }, { locale }) : m.c4_quests_title({}, { locale })
+        footerTitle: claimableCount > 0 ? m.c4_quests_footer_claimable({ count: claimableCount }, { locale }) : m.c4_quests_title({}, { locale })
       })
     ));
   }
 
   if (subcommand === 'claim') {
     const questId = interaction.options.getString('quete', true);
-    const result = await claimQuestReward(guildId, userId, questId);
+    let result = await claimQuestReward(guildId, userId, questId);
+
+    if (!result.success) {
+      // L'identifiant peut designer une quete RPG : les deux systemes se partagent la meme
+      // commande, et rien ne distingue leurs identifiants a l'oeil.
+      try {
+        const rpg = await claimRpgQuest(interaction.client, guildId, userId, questId);
+        result = { success: true, coins: rpg.coins, xp: rpg.xp };
+      } catch (error) {
+        if (!(error instanceof QuestError)) throw error;
+      }
+    }
 
     if (!result.success) {
       await interaction.reply({

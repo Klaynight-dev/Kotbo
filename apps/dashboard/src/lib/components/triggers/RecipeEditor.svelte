@@ -4,13 +4,18 @@
   import StepCard from './StepCard.svelte';
   import StepPicker from './StepPicker.svelte';
   import TriggerPicker from './TriggerPicker.svelte';
+  import ScheduleField from './ScheduleField.svelte';
   import { dashboardStore } from '../../stores/dashboard.svelte';
   import {
+    DEFAULT_SCHEDULE,
+    acceptsMoreSteps,
     availableConditions,
+    scheduleToCron,
     compileRecipe,
     decompileGraph,
     getAction,
     getTrigger,
+    movableSteps,
     newStepId,
     stepIdOfNode,
     tokensOfType,
@@ -118,8 +123,18 @@
     // écrites y feraient référence à vide, on repart donc d'une page blanche
     // plutôt que de laisser des champs cassés.
     const keep = recipe.trigger.type === type || recipe.steps.length === 0;
-    update({ trigger: { type }, steps: keep ? recipe.steps : [] });
+    // La planification part sur un motif valide : sans lui, choisir le
+    // déclencheur afficherait aussitôt une erreur de validation.
+    const config = type === 'OnSchedule'
+      ? { cron: recipe.trigger.config?.cron ?? scheduleToCron(DEFAULT_SCHEDULE) }
+      : undefined;
+
+    update({ trigger: { type, ...(config ? { config } : {}) }, steps: keep ? recipe.steps : [] });
     changingTrigger = false;
+  }
+
+  function setTriggerConfig(key: string, value: unknown): void {
+    update({ ...recipe, trigger: { ...recipe.trigger, config: { ...recipe.trigger.config, [key]: value } } });
   }
 
   // ── Étapes ────────────────────────────────────────────────────────────────
@@ -136,9 +151,12 @@
     if (!def) return values;
 
     for (const field of def.fields) {
-      if (field.kind === 'member' || field.kind === 'channel') {
-        const [token] = tokensOfType(recipe.trigger.type, field.kind === 'member' ? 'Member' : 'Channel')
-          .filter((candidate) => candidate.root);
+      const ENTITY: Partial<Record<string, 'Member' | 'Channel' | 'Message'>> = {
+        member: 'Member', channel: 'Channel', message: 'Message',
+      };
+      const entity = ENTITY[field.kind];
+      if (entity) {
+        const [token] = tokensOfType(recipe.trigger.type, entity).filter((candidate) => candidate.root);
         if (token) values[field.key] = { from: 'context', path: token.path };
       }
       if (field.kind === 'number' && typeof field.defaultValue === 'number') {
@@ -242,7 +260,7 @@
   <!-- ── Déclencheur ──────────────────────────────────────────────────── -->
   <section class="rounded-2xl bg-surface-container-high/60 border border-outline-variant/15 border-l-[3px] border-l-emerald-400/60 p-4 space-y-3">
     <div class="flex items-center justify-between gap-3">
-      <h3 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/50">{m.wf_when()}</h3>
+      <h3 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/70">{m.wf_when()}</h3>
       {#if trigger && !changingTrigger}
         <button
           type="button"
@@ -254,9 +272,15 @@
 
     {#if trigger && !changingTrigger}
       <p class="flex items-center gap-2 text-sm font-semibold text-on-surface">
-        <Papicon icon={trigger.icon} size={15} class="text-emerald-300" />
+        <Papicon icon={trigger.icon} size={15} class="text-emerald-700 dark:text-emerald-300" />
         {trigger.sentence}
       </p>
+      {#if recipe.trigger.type === 'OnSchedule'}
+        <ScheduleField
+          value={String(recipe.trigger.config?.cron ?? '')}
+          onChange={(cron) => setTriggerConfig('cron', cron)}
+        />
+      {/if}
     {:else}
       <TriggerPicker selected={recipe.trigger.type} onPick={pickTrigger} />
     {/if}
@@ -265,23 +289,24 @@
   <!-- ── Étapes ───────────────────────────────────────────────────────── -->
   {#if trigger && !changingTrigger}
     <section class="space-y-2">
-      <h3 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/50 px-1">{m.wf_then()}</h3>
+      <h3 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/70 px-1">{m.wf_then()}</h3>
 
       {#if recipe.steps.length === 0}
-        <p class="px-4 py-6 rounded-2xl bg-surface-container-high/30 text-center text-xs text-on-surface-variant/50">
+        <p class="px-4 py-6 rounded-2xl bg-surface-container-high/30 text-center text-xs text-on-surface-variant/70">
           {m.wf_no_steps()}
         </p>
       {/if}
 
       {#each recipe.steps as step, index (step.id)}
+        {@const movable = movableSteps(recipe.steps, index)}
         <StepCard
           {step}
           triggerType={recipe.trigger.type}
           {roles}
           {channels}
           problems={problemsByStep.get(step.id) ?? []}
-          canMoveUp={index > 0}
-          canMoveDown={index < recipe.steps.length - 1}
+          canMoveUp={movable.up}
+          canMoveDown={movable.down}
           onChange={replaceRoot}
           onRemove={removeRoot}
           onMove={moveRoot}
@@ -292,7 +317,7 @@
           <button
             type="button"
             onclick={() => addTest(step as ConditionStep)}
-            class="ml-4 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium text-on-surface-variant/50 hover:text-primary transition-colors"
+            class="ml-4 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium text-on-surface-variant/70 hover:text-primary transition-colors"
           >
             <Papicon icon="Plus" size={10} />
             {m.wf_add_test()}
@@ -300,14 +325,21 @@
         {/if}
       {/each}
 
-      <button
-        type="button"
-        onclick={() => (adding = { parentId: null, branch: 'then' })}
-        class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-xs font-semibold text-on-surface-variant/70 border border-dashed border-outline-variant/30 hover:text-on-surface hover:border-primary/40 hover:bg-surface-container-high/40 transition-all"
-      >
-        <Papicon icon="Plus" size={13} />
-        {m.wf_add_step()}
-      </button>
+      {#if acceptsMoreSteps(recipe.steps)}
+        <button
+          type="button"
+          onclick={() => (adding = { parentId: null, branch: 'then' })}
+          class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-xs font-semibold text-on-surface-variant/70 border border-dashed border-outline-variant/30 hover:text-on-surface hover:border-primary/40 hover:bg-surface-container-high/40 transition-all"
+        >
+          <Papicon icon="Plus" size={13} />
+          {m.wf_add_step()}
+        </button>
+      {:else}
+        <p class="flex items-start gap-2 px-4 py-3 rounded-2xl text-[11px] text-on-surface-variant/70 border border-dashed border-outline-variant/20">
+          <Papicon icon="Info" size={12} class="mt-0.5 shrink-0" />
+          <span>{m.wf_condition_closes()}</span>
+        </p>
+      {/if}
     </section>
   {/if}
 </div>

@@ -60,6 +60,7 @@ async function resolveApplied(migration: string) {
 // 1. Check database URL and fetch already applied migrations to skip them
 const connectionString = process.env.DATABASE_URL;
 let appliedMigrations = new Set<string>();
+let failedMigrations: string[] = [];
 let isFreshDatabase = false;
 
 if (connectionString) {
@@ -82,6 +83,20 @@ if (connectionString) {
       );
       appliedMigrations = new Set(res.rows.map((row: any) => row.migration_name));
       isFreshDatabase = appliedMigrations.size === 0;
+
+      // Une migration ni terminee ni annulee est une migration qui a echoue :
+      // Prisma refuse alors d'en appliquer la moindre suivante (P3009), et le
+      // deploiement reste bloque tant que quelqu'un ne passe pas la main
+      // manuellement. Le delai de deux minutes ecarte une migration encore en
+      // cours d'execution dans un deploiement concurrent.
+      const failed = await client.query(`
+        SELECT migration_name FROM _prisma_migrations
+        WHERE finished_at IS NULL
+          AND rolled_back_at IS NULL
+          AND started_at < now() - interval '2 minutes'
+        ORDER BY started_at
+      `);
+      failedMigrations = failed.rows.map((row: any) => row.migration_name);
     } else {
       isFreshDatabase = true;
     }
@@ -118,7 +133,31 @@ if (isFreshDatabase) {
   process.exit(0);
 }
 
-// 2. Filter repairs that haven't been applied yet
+// 2. Debloquer les migrations en echec.
+//
+// Postgres annule la transaction d'une migration qui echoue : la base ne
+// contient donc rien de ce qu'elle voulait faire, et `--rolled-back` ne fait
+// que le dire a Prisma pour qu'il la rejoue au prochain deploiement. Si la
+// cause de l'echec n'a pas ete corrigee entre-temps, elle echouera de nouveau
+// et le deploiement s'arretera - rien n'est masque.
+if (failedMigrations.length > 0) {
+  console.warn(
+    `[MigrationRepair] ${failedMigrations.length} migration(s) en echec : ${failedMigrations.join(", ")}.`
+  );
+  for (const migration of failedMigrations) {
+    console.warn(`[MigrationRepair] ${migration} marquee annulee, elle sera rejouee.`);
+    const code = await run([
+      "bun", "run", "prisma", "migrate", "resolve", "--rolled-back", migration,
+    ]);
+    if (code !== 0) {
+      throw new Error(
+        `Impossible de debloquer ${migration}. Verifiez son SQL avant de relancer le deploiement.`
+      );
+    }
+  }
+}
+
+// 3. Filter repairs that haven't been applied yet
 const repairsToRun = repairs.filter((migration) => !appliedMigrations.has(migration));
 
 if (repairsToRun.length === 0) {

@@ -7,6 +7,22 @@
     <title>Kotbo Dashboard</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#001A33" />
+    <!-- Apercu de lien par defaut.
+         Les robots sociaux reconnus sont aiguilles par nginx vers
+         /api/og/preview de l'API, qui rend les balises reelles de la page
+         demandee (cf. apps/dashboard/nginx.conf). Ces balises-ci sont le filet :
+         elles servent aux clients hors de cette liste, et aux deploiements ou
+         l'aiguillage n'est pas configure. L'icone carree est volontaire - sans
+         connaitre la page, une grande banniere ne promettrait rien de juste. -->
+    <meta name="description" content="Kotbo : gestion de communauté Discord - modération, économie, tickets et analytique dans un seul dashboard." />
+    <meta property="og:site_name" content="Kotbo" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Kotbo Dashboard" />
+    <meta property="og:description" content="Kotbo : gestion de communauté Discord - modération, économie, tickets et analytique dans un seul dashboard." />
+    <meta property="og:image" content="/icons/icon-512.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Kotbo Dashboard" />
+    <meta name="twitter:description" content="Kotbo : gestion de communauté Discord - modération, économie, tickets et analytique dans un seul dashboard." />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="preconnect" href="https://cdn.discordapp.com" crossorigin />
     <link rel="dns-prefetch" href="//cdn.discordapp.com" />
@@ -21,6 +37,30 @@
          nulle part dans src/. -->
   </head>
   <body>
+    <script>
+      /*
+       * Le theme est applique par le store, donc apres le premier rendu : entre
+       * la peinture de la feuille de style et l'execution du bundle, une page
+       * sombre s'affichait en clair. Sur un rechargement - changer de langue en
+       * declenche un - cela donnait un eclair blanc. Ce script est volontairement
+       * en ligne et bloquant : il doit passer avant la premiere peinture.
+       */
+      (function () {
+        try {
+          // Doit rester aligne sur les presets de mode 'light' de
+          // src/lib/stores/theme.svelte.ts : un preset clair oublie ici
+          // reprendrait un eclair sombre au chargement.
+          var LIGHT = { light: 1, lavender: 1, ocean: 1 };
+          var id = localStorage.getItem('kotbo_theme') || 'dark';
+          var light = id === 'custom'
+            ? JSON.parse(localStorage.getItem('kotbo_custom_theme') || '{}').mode === 'light'
+            : LIGHT[id] === 1;
+          if (!light) document.documentElement.classList.add('dark');
+        } catch (err) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

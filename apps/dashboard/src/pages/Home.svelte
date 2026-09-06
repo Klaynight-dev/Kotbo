@@ -4,8 +4,9 @@
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { notificationsStore } from '../lib/stores/notifications.svelte';
   import { staffStore } from '../lib/stores/staff.svelte';
-  import { fetchAnalytics, fetchUserSettings, updateUserSettings, fetchChangelog, fetchStaffServerLinks, fetchGuildLanguage, updateGuildLanguage, fetchHomeWidgets } from '../lib/api';
-  import type { ChangelogCommit, GuildLanguageState, HomeWidgetsData, HomeWidgetSection } from '../lib/api';
+  import { fetchAnalytics, fetchUserSettings, updateUserSettings, fetchChangelog, fetchStaffServerLinks, fetchGuildLanguage, updateGuildLanguage, fetchGuildTimezone, updateGuildTimezone, fetchHomeWidgets } from '../lib/api';
+  import type { ChangelogCommit, GuildLanguageState, GuildTimezoneState, HomeWidgetsData, HomeWidgetSection } from '../lib/api';
+  import { timezoneStore } from '../lib/stores/timezone.svelte';
   import RefreshButton from '../lib/components/RefreshButton.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import MetricCard from '../lib/components/MetricCard.svelte';
@@ -31,6 +32,7 @@
     { id: 'staff', colSpan: 1, rowSpan: 1, visible: true },
     { id: 'audit', colSpan: 1, rowSpan: 1, visible: true },
     { id: 'botLanguage', colSpan: 1, rowSpan: 1, visible: true },
+    { id: 'timezone', colSpan: 1, rowSpan: 1, visible: true },
     { id: 'actions', colSpan: 3, rowSpan: 1, visible: true },
   ];
 
@@ -45,6 +47,7 @@
     { id: 'staff', title: m.home_mod_staff_title(), desc: m.home_mod_staff_desc(), icon: 'users' },
     { id: 'audit', title: m.home_mod_audit_title(), desc: m.home_mod_audit_desc(), icon: 'activity' },
     { id: 'botLanguage', title: m.home_mod_botlanguage_title(), desc: m.home_mod_botlanguage_desc(), icon: 'globe' },
+    { id: 'timezone', title: m.home_mod_timezone_title(), desc: m.home_mod_timezone_desc(), icon: 'clock' },
     { id: 'actions', title: m.home_mod_actions_title(), desc: m.home_mod_actions_desc(), icon: 'plus-circle' },
     { id: 'notes', title: m.home_mod_notes_title(), desc: m.home_mod_notes_desc(), icon: 'edit' },
     { id: 'serverInfo', title: m.home_mod_serverinfo_title(), desc: m.home_mod_serverinfo_desc(), icon: 'server' },
@@ -459,8 +462,13 @@
   let currentTime = $state('');
   let currentDate = $state('');
 
+  // Alimente aussi l'apercu du fuseau : un second intervalle pour la meme
+  // horloge ferait deux reveils par seconde pour rien.
+  let clockTick = $state(Date.now());
+
   function updateDateTime() {
     const now = new Date();
+    clockTick = now.getTime();
     currentTime = now.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     currentDate = now.toLocaleDateString(dateLocale(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   }
@@ -645,6 +653,55 @@
   const botLanguageLabel = (code: 'fr' | 'en') =>
     code === 'fr' ? m.home_botlanguage_fr() : m.home_botlanguage_en();
 
+  let timezone = $state<GuildTimezoneState | null>(null);
+  let timezoneLoading = $state(false);
+  let timezoneGuildId: string | null = null;
+
+  async function loadTimezone(force = false) {
+    const guildId = authStore.selectedGuildId;
+    if (!guildId || timezoneLoading || (!force && timezoneGuildId === guildId)) return;
+    timezoneLoading = true;
+    try {
+      timezone = await fetchGuildTimezone();
+      if (authStore.selectedGuildId === guildId) timezoneGuildId = guildId;
+    } finally {
+      timezoneLoading = false;
+    }
+  }
+
+  async function setTimezone(value: string) {
+    if (timezoneLoading || !timezone || value === timezone.timezone) return;
+    timezoneLoading = true;
+    try {
+      const state = await updateGuildTimezone(value);
+      if (state) {
+        timezone = state;
+        // Home tient son propre etat pour la liste des fuseaux ; le store
+        // partage sert aux formulaires ailleurs. Sans cette synchro, changer
+        // le fuseau depuis l'accueil sans recharger laisserait Meetings et
+        // Planning saisir dans l'ancien.
+        timezoneStore.apply(state.timezone);
+      }
+    } catch {
+      // dashboardRequest a deja notifie l'echec.
+    } finally {
+      timezoneLoading = false;
+    }
+  }
+
+  const timezonePreview = $derived.by(() => {
+    if (!timezone) return '';
+    try {
+      return new Intl.DateTimeFormat(dateLocale(), {
+        timeZone: timezone.timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(clockTick));
+    } catch {
+      return '';
+    }
+  });
+
   const WIDGET_SECTIONS: Record<string, HomeWidgetSection> = {
     leveling: 'leveling',
     invites: 'invites',
@@ -728,6 +785,7 @@
       if (visibleIds.has('news')) void loadChangelog();
       if (visibleIds.has('staffServer')) void loadStaffServerLinks();
       if (visibleIds.has('botLanguage')) void loadBotLanguage();
+      if (visibleIds.has('timezone')) void loadTimezone();
       void loadHomeWidgets(sectionsFor(visibleIds));
     };
 
@@ -1214,6 +1272,44 @@
             {:else}
               <div class="h-full flex items-center justify-center text-on-surface-variant/40 text-xs">
                 {botLanguageLoading ? m.common_loading() : m.home_no_data()}
+              </div>
+            {/if}
+          </div>
+        {:else if item.id === 'timezone'}
+          <div class="flex flex-col gap-4 h-full">
+            <div class="flex items-center gap-2.5 shrink-0">
+              <div class="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-on-surface-variant">
+                <Papicon icon="clock" size={16} />
+              </div>
+              <h3 class="font-medium text-on-surface">{m.home_timezone()}</h3>
+            </div>
+
+            {#if timezone}
+              <div class="flex flex-col gap-3 grow">
+                <div>
+                  <p class="text-2xl font-semibold text-on-surface">{timezonePreview}</p>
+                  <p class="text-xs text-on-surface-variant mt-0.5">{timezone.timezone}</p>
+                </div>
+
+                <label class="flex flex-col gap-1 mt-auto">
+                  <span class="text-[10px] uppercase font-medium text-on-surface-variant">{m.home_timezone_label()}</span>
+                  <select
+                    disabled={timezoneLoading}
+                    value={timezone.timezone}
+                    onchange={(e) => setTimezone((e.target as HTMLSelectElement).value)}
+                    class="w-full bg-surface-container border border-outline-variant/20 rounded-lg px-2 py-1.5 text-xs text-on-surface outline-none focus:border-primary disabled:opacity-50 cursor-pointer"
+                  >
+                    {#each timezone.available as zone}
+                      <option value={zone}>{zone.replace(/_/g, ' ')}</option>
+                    {/each}
+                  </select>
+                </label>
+
+                <p class="text-[10px] text-on-surface-variant/70">{m.home_timezone_hint()}</p>
+              </div>
+            {:else}
+              <div class="h-full flex items-center justify-center text-on-surface-variant/40 text-xs">
+                {timezoneLoading ? m.common_loading() : m.home_no_data()}
               </div>
             {/if}
           </div>

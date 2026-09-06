@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { authStore } from '../lib/stores/auth.svelte';
   import { API_BASE_URL } from '../lib/api';
+  import { consumeLoginReturn } from '../lib/loginReturn';
   import { router } from 'tinro';
   import Papicon from '../lib/components/Papicon.svelte';
   import { brandingStore } from '../lib/stores/branding.svelte';
@@ -9,7 +10,24 @@
   import { m } from '../lib/i18n';
 
   let errorMessage = $state(null);
-  const oauthLoginUrl = `${API_BASE_URL || ''}/api/auth/discord/login`;
+
+  /**
+   * Ou revenir apres le va-et-vient Discord.
+   *
+   * L'API sait deja reposer quelqu'un ou il allait - `?returnTo=`, garde en
+   * cookie pendant l'echange et relu au retour. Sans ce parametre, tout le
+   * monde atterrit sur `/` : le visiteur venu de « Ajouter le bot » se
+   * retrouvait sur le tableau de bord d'un serveur quelconque, au lieu de la
+   * liste ou il devait choisir celui a equiper.
+   *
+   * L'adresse est consommee a la construction du lien, pas au clic : la page
+   * de connexion ne se traverse qu'une fois par tentative, et une intention
+   * qui survivrait a un retour en arriere detournerait la connexion suivante.
+   */
+  const returnTo = consumeLoginReturn();
+  const oauthLoginUrl = `${API_BASE_URL || ''}/api/auth/discord/login${
+    returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ''
+  }`;
 
   async function hydrateOAuthConfig() {
     try {

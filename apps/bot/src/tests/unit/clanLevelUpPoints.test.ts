@@ -25,6 +25,40 @@ describe('mode forfaitaire', () => {
   });
 });
 
+describe('passage sans XP franchie', () => {
+  // Le seuil du niveau 1 vaut 0 quelle que soit la courbe : les deux termes de
+  // `xpForLevel` sont multiplies par le niveau. Le passage 0 -> 1, declenche par
+  // le tout premier gain d'XP d'un membre, ne franchit donc rien.
+  test('le niveau 1 n est paye par aucun des deux modes', () => {
+    expect(computeClanLevelUpPoints(0, 1, FLAT, DEFAULT_LEVEL_CURVE)).toBe(0);
+    expect(computeClanLevelUpPoints(0, 1, PROP, DEFAULT_LEVEL_CURVE)).toBe(0);
+  });
+
+  test('aucune courbe ne rend le niveau 1 payant', () => {
+    const courbes = [
+      normalizeLevelCurve({ baseXp: 10_000, linearXp: 10_000, exponent: 4 }),
+      normalizeLevelCurve({ baseXp: 1, linearXp: 0, exponent: 1 }),
+      normalizeLevelCurve({ baseXp: 5_000, linearXp: 0, exponent: 3 }),
+    ];
+    for (const curve of courbes) {
+      expect(xpForLevel(0, curve)).toBe(0);
+      expect(computeClanLevelUpPoints(0, 1, FLAT, curve)).toBe(0);
+      expect(computeClanLevelUpPoints(0, 1, PROP, curve)).toBe(0);
+    }
+  });
+
+  test('le premier vrai palier reste paye', () => {
+    expect(computeClanLevelUpPoints(1, 2, FLAT, DEFAULT_LEVEL_CURVE)).toBe(50);
+    expect(computeClanLevelUpPoints(1, 2, PROP, DEFAULT_LEVEL_CURVE)).toBeGreaterThan(0);
+  });
+
+  test('un saut qui part de zero paye les paliers reellement franchis', () => {
+    // 0 -> 3 franchit les seuils des niveaux 2 et 3, pas celui du niveau 1.
+    expect(computeClanLevelUpPoints(0, 3, PROP, DEFAULT_LEVEL_CURVE))
+      .toBe(computeClanLevelUpPoints(1, 3, PROP, DEFAULT_LEVEL_CURVE));
+  });
+});
+
 describe('mode proportionnel', () => {
   test('verse exactement le forfait au niveau de reference', () => {
     expect(computeClanLevelUpPoints(24, 25, PROP, DEFAULT_LEVEL_CURVE)).toBe(50);

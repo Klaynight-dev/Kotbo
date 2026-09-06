@@ -118,3 +118,44 @@ export async function renderPanelTarget(
     flags: payload.flags ?? [MessageFlags.Ephemeral],
   });
 }
+
+/**
+ * Ouvre un panneau sans jamais ecraser le message qui l'a declenche.
+ *
+ * `renderPanelTarget` repond a un composant par un `update` : c'est ce qu'il
+ * faut dans un panneau ephemere, qui se remplace d'un bloc a chaque navigation.
+ * Mais le meme bouton est aussi pose sur des messages publics - un log, une
+ * carte de sanction - et l'`update` remplace alors ce message par le panneau :
+ * le log disparait, definitivement, pour tout le serveur.
+ *
+ * D'ou la regle : on ne remplace que ce qui est deja ephemere. Sur un message
+ * public, le panneau s'ouvre a cote, en reponse ephemere, et le message reste
+ * intact.
+ */
+export async function renderPanelBeside(
+  interaction: BaseInteraction,
+  payload: InteractionReplyOptions,
+): Promise<void> {
+  if (!interaction.isRepliable()) return;
+
+  const sourceMessage = interaction.isMessageComponent() ? interaction.message : null;
+  const sourceIsEphemeral = !!sourceMessage?.flags?.has(MessageFlags.Ephemeral);
+
+  if (sourceMessage && !sourceIsEphemeral) {
+    // `embeds: []` n'existe que pour vider les embeds d'un panneau existant :
+    // sur un message neuf il n'y a rien a vider, et Discord refuse le champ
+    // quand les composants V2 sont demandes.
+    const { embeds, ...rest } = payload;
+    const fresh: InteractionReplyOptions =
+      embeds && embeds.length > 0 ? payload : (rest as InteractionReplyOptions);
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(fresh);
+      return;
+    }
+    await interaction.reply(fresh);
+    return;
+  }
+
+  await renderPanelTarget(interaction, payload);
+}

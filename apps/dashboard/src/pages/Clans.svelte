@@ -5,6 +5,7 @@
   import { authStore } from '../lib/stores/auth.svelte';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import Papicon from '../lib/components/Papicon.svelte';
   import InlineFeedback from '../lib/components/InlineFeedback.svelte';
   import SearchableSelect from '../lib/components/SearchableSelect.svelte';
@@ -27,10 +28,14 @@
     resetClanSeason,
     resetAllClans,
     rollbackClanSeason,
-    addClanPoints,
+    adjustClanPoints,
     updateGlobalSettings,
+    fetchClanBets,
+    clearClanPointDebt,
     type ClanEntry,
-    type ClansDataResult
+    type ClansDataResult,
+    type ClanBetEntry,
+    type ClanPointDebtEntry
   } from '../lib/api';
 
   import {
@@ -38,6 +43,19 @@
     normalizeLevelCurve,
     DEFAULT_LEVEL_CURVE,
     MIN_CLAN_REFERENCE_LEVEL,
+    DEFAULT_CLAN_BET_SETTINGS,
+    BET_ACCEPT_WINDOW_HOURS_MAX,
+    BET_ACCEPT_WINDOW_HOURS_MIN,
+    BET_DEBT_CEILING,
+    BET_OPEN_PER_MEMBER_CEILING,
+    BET_PARTICIPANTS_CEILING,
+    BET_PARTICIPANTS_MIN,
+    BET_SEASON_REWARD_CEILING,
+    BET_SIDES_CEILING,
+    BET_SIDES_MIN,
+    BET_STAKE_CEILING,
+    BET_STAKE_FLOOR,
+    type ClanBetSettings,
     type LevelCurve,
   } from '@kotbo/shared';
 
@@ -49,6 +67,7 @@
   // States
   let clansEnabled = $state(false);
   let clanAutoAssignOnJoin = $state(false);
+  let clanWeeklyDigest = $state(false);
   let currentClanSeason = $state(1);
   let clanXpFromLevelUp = $state(false);
   let clanXpPerLevelUp = $state(50);
@@ -95,6 +114,12 @@
   // Saved states (for dirty checking)
   let savedClansEnabled = $state(false);
   let savedClanAutoAssignOnJoin = $state(false);
+  let savedClanWeeklyDigest = $state(false);
+
+  /** Clans sans QG : le bilan hebdomadaire n'a nulle part où être publié pour eux. */
+  const clansWithoutHq = $derived(
+    clans.filter((clan) => !clan.generalChannelId).map((clan) => clan.name),
+  );
   let savedClanXpFromLevelUp = $state(false);
   let savedClanXpPerLevelUp = $state(50);
   let savedClanXpLevelUpProportional = $state(false);
@@ -108,12 +133,12 @@
   let savedClanSeasonEndsAt = $state<string | null>(null);
 
   // Tab routing
-  let activeTab = $state<'clans' | 'seasons' | 'points' | 'admin'>('clans');
+  let activeTab = $state<'clans' | 'seasons' | 'points' | 'bets' | 'admin'>('clans');
 
   let copySuccess = $state(false);
   const publicClanUrl = $derived(
     authStore.selectedGuildId
-      ? `${window.location.origin}/${authStore.selectedGuildId}/clan`
+      ? `${window.location.origin}/${authStore.selectedGuildId}/dev`
       : ''
   );
 
@@ -133,6 +158,9 @@
 
   let availableChannels = $state<any[]>([]);
 
+  // Part d'un ajout manuel partie en remboursement de dette, affichée après coup.
+  let lastDebtRepaid = $state(0);
+
   // Points Management tab states & handlers
   // Même borne que l'API : au-delà, c'est une faute de frappe.
   const MAX_MANUAL_POINTS = 1_000_000;
@@ -141,17 +169,17 @@
   let manualPointsMemberUserId = $state('');
   let manualPointsAmountMember = $state(100);
 
-  // Les points sont des entiers positifs en base : on valide ici plutôt que de
-  // laisser l'API refuser la saisie.
+  // La saisie reste un montant positif : c'est le bouton choisi qui donne le
+  // sens, un champ signé se prête trop facilement à un retrait involontaire.
   function isValidPointsAmount(amount: number): boolean {
     return Number.isFinite(amount) && Math.round(amount) >= 1;
   }
 
-  function sanitizePoints(amount: number): number {
-    return Math.max(1, Math.min(MAX_MANUAL_POINTS, Math.round(amount)));
+  function sanitizePoints(amount: number, direction: 1 | -1): number {
+    return direction * Math.max(1, Math.min(MAX_MANUAL_POINTS, Math.round(amount)));
   }
 
-  async function handleAddClanPoints() {
+  async function handleClanPoints(direction: 1 | -1) {
     if (!canManageSettings || !selectedClanIdForPoints) return;
     // Un bouton qui ne fait rien passe pour une panne : on dit ce qui manque.
     if (!isValidPointsAmount(manualPointsAmountClan)) {
@@ -159,35 +187,166 @@
       return;
     }
     await actionState.run(async () => {
-      const res = await addClanPoints({
+      const res = await adjustClanPoints({
         clanId: selectedClanIdForPoints,
-        amount: sanitizePoints(manualPointsAmountClan),
+        amount: sanitizePoints(manualPointsAmountClan, direction),
       });
-      if (!res) throw new Error(m.clan_err_add_clan_points());
+      if (!res) throw new Error(direction < 0 ? m.clan_err_remove_clan_points() : m.clan_err_add_clan_points());
       await refreshData(true);
       manualPointsAmountClan = 100;
       return true;
     }, { successMessage: m.clan_success_points_adjusted() });
   }
 
-  async function handleAddMemberPoints() {
+  async function handleMemberPoints(direction: 1 | -1) {
     if (!canManageSettings || !manualPointsMemberUserId) return;
     if (!isValidPointsAmount(manualPointsAmountMember)) {
       actionState.setError(m.clan_err_invalid_amount());
       return;
     }
-    await actionState.run(async () => {
-      const res = await addClanPoints({
+    // Remis à zéro avant chaque ajustement : la valeur survit d'un appel à
+    // l'autre, et un échec ferait réafficher le remboursement du précédent.
+    lastDebtRepaid = 0;
+
+    const adjusted = await actionState.run(async () => {
+      const res = await adjustClanPoints({
         clanId: null,
         userId: manualPointsMemberUserId,
-        amount: sanitizePoints(manualPointsAmountMember),
+        amount: sanitizePoints(manualPointsAmountMember, direction),
       });
-      if (!res) throw new Error(m.clan_err_add_member_points());
+      if (!res) throw new Error(direction < 0 ? m.clan_err_remove_member_points() : m.clan_err_add_member_points());
       await refreshData(true);
       manualPointsMemberUserId = '';
       manualPointsAmountMember = 100;
+      // Un ajout qui rembourse une dette n'arrive pas entier au classement :
+      // sans ce message, la page annoncerait un succès muet et l'écart passerait
+      // pour un bug.
+      lastDebtRepaid = res.debtRepaid ?? 0;
       return true;
     }, { successMessage: m.clan_success_member_points_adjusted() });
+
+    // Seulement après un succès : `setMessage` efface l'erreur posée par un
+    // échec, et l'admin lirait un remboursement à la place de ce qui a raté.
+    if (adjusted && lastDebtRepaid > 0) {
+      actionState.setMessage(m.clan_points_debt_repaid({ amount: lastDebtRepaid.toLocaleString(dateLocale()) }));
+    }
+  }
+
+  // ── Onglet Paris ────────────────────────────────────────────────────────────
+  // Les réglages voyagent en bloc : ils sont validés ensemble côté API (les
+  // mises mini et maxi sont réordonnées l'une par rapport à l'autre), les
+  // suivre champ par champ ferait diverger le formulaire de ce qui est réellement
+  // enregistré.
+  let betSettings = $state<ClanBetSettings>({ ...DEFAULT_CLAN_BET_SETTINGS });
+  let savedBetSettings = $state<ClanBetSettings>({ ...DEFAULT_CLAN_BET_SETTINGS });
+
+  // Sélecteur d'ajout de rôle : le composant n'expose pas de callback de
+  // changement, on réagit donc à la valeur puis on la vide pour qu'il redevienne
+  // un bouton « ajouter » plutôt que d'afficher le dernier rôle choisi.
+  let roleToAdd = $state<string | null>('');
+  $effect(() => {
+    const roleId = roleToAdd;
+    if (!roleId) return;
+    untrack(() => {
+      if (!betSettings.betResolverRoleIds.includes(roleId)) {
+        betSettings.betResolverRoleIds = [...betSettings.betResolverRoleIds, roleId];
+      }
+      roleToAdd = '';
+    });
+  });
+
+  const betManagerRoles = $derived(
+    betSettings.betResolverRoleIds
+      .map((id) => availableRoles.find((role: { id: string }) => role.id === id) ?? { id, name: id })
+  );
+
+  function removeBetManagerRole(roleId: string) {
+    betSettings.betResolverRoleIds = betSettings.betResolverRoleIds.filter((id) => id !== roleId);
+  }
+
+  let bets = $state<ClanBetEntry[]>([]);
+  let debts = $state<ClanPointDebtEntry[]>([]);
+  // Totaux en base : les deux listes s'arrêtent aux 50 premières lignes, et sans
+  // eux rien ne dirait qu'il en existe d'autres.
+  let betCount = $state(0);
+  let debtCount = $state(0);
+  let betsLoading = $state(false);
+  const betsAction = createAsyncActionState();
+
+  // Dérivé plutôt que constant : les libellés suivent la langue choisie, qui
+  // peut changer sans rechargement de la page.
+  const betStatusLabels = $derived<Record<string, string>>({
+    PENDING: m.clan_bet_status_pending(),
+    LOCKED: m.clan_bet_status_locked(),
+    ACTIVE: m.clan_bet_status_active(),
+    RESOLVED: m.clan_bet_status_resolved(),
+    REFUNDED: m.clan_bet_status_refunded(),
+    DECLINED: m.clan_bet_status_declined(),
+    CANCELLED: m.clan_bet_status_cancelled(),
+    EXPIRED: m.clan_bet_status_expired(),
+  });
+
+  function betStatusClass(status: string): string {
+    if (status === 'ACTIVE') return 'bg-primary/15 text-primary';
+    if (status === 'RESOLVED') return 'bg-emerald-500/15 text-emerald-500';
+    if (status === 'PENDING' || status === 'LOCKED') return 'bg-amber-500/15 text-amber-600';
+    return 'bg-surface-container-high/60 text-on-surface-variant/70';
+  }
+
+  // `silent` : un rafraîchissement déclenché par le serveur ne doit pas
+  // remplacer la liste par un squelette sous les yeux de qui la lit.
+  async function refreshBets(silent = false) {
+    if (!silent) betsLoading = true;
+    try {
+      const res = await fetchClanBets();
+      bets = res?.bets ?? [];
+      debts = res?.debts ?? [];
+      betCount = res?.betCount ?? bets.length;
+      debtCount = res?.debtCount ?? debts.length;
+    } finally {
+      betsLoading = false;
+    }
+  }
+
+  // Les paris ne sont chargés qu'à l'ouverture de l'onglet : la page est déjà
+  // lourde, et la plupart des visites n'y passent jamais.
+  $effect(() => {
+    if (activeTab === 'bets') {
+      untrack(() => { void refreshBets(); });
+    }
+  });
+
+  // Effacement d'une dette : la part ferme part toujours, le crédit engagé dans
+  // des paris en cours seulement si on le demande. Un pari toujours en jeu a été
+  // misé en connaissance de cause, l'effacer le rendrait gratuit.
+  let debtToClear = $state<ClanPointDebtEntry | null>(null);
+  let clearEngagedDebt = $state(false);
+
+  function openDebtClear(debt: ClanPointDebtEntry) {
+    if (!canManageSettings) return;
+    debtToClear = debt;
+    clearEngagedDebt = false;
+  }
+
+  async function handleClearDebt() {
+    if (!canManageSettings || !debtToClear) return;
+    const target = debtToClear;
+    const includeEngaged = clearEngagedDebt;
+    debtToClear = null;
+    let left = 0;
+    const done = await betsAction.run(async () => {
+      const ok = await clearClanPointDebt(target.userId, includeEngaged);
+      if (!ok) return false;
+      await refreshBets(true);
+      // Ce qui reste dû est relu sur le serveur plutôt que repris du chiffre
+      // affiché avant le clic : un pari réglé entre-temps l'aurait démenti.
+      left = debts.find((debt) => debt.userId === target.userId)?.amount ?? 0;
+      return true;
+    }, { successMessage: m.clan_bets_debt_cleared() });
+
+    if (done && left > 0) {
+      betsAction.setMessage(m.clan_bets_debt_cleared_partial({ amount: left.toLocaleString(dateLocale()) }));
+    }
   }
 
   // Confirmation state for reset/clear/distribute/reset-all/rollback
@@ -287,6 +446,7 @@
   $effect(() => {
     const dirty = clansEnabled !== savedClansEnabled
       || clanAutoAssignOnJoin !== savedClanAutoAssignOnJoin
+      || clanWeeklyDigest !== savedClanWeeklyDigest
       || clanXpFromLevelUp !== savedClanXpFromLevelUp
       || clanXpPerLevelUp !== savedClanXpPerLevelUp
       || clanXpLevelUpProportional !== savedClanXpLevelUpProportional
@@ -295,7 +455,8 @@
       || clanXpPerBoost !== savedClanXpPerBoost
       || clanAnnouncementChannelId !== savedClanAnnouncementChannelId
       || clanRewardGiveaway !== savedClanRewardGiveaway
-      || clanRewardLeaderRole !== savedClanRewardLeaderRole;
+      || clanRewardLeaderRole !== savedClanRewardLeaderRole
+      || JSON.stringify(betSettings) !== JSON.stringify(savedBetSettings);
 
     if (dirty && canManageSettings) {
       untrack(() => {
@@ -306,6 +467,7 @@
           onReset: () => {
             clansEnabled = savedClansEnabled;
             clanAutoAssignOnJoin = savedClanAutoAssignOnJoin;
+            clanWeeklyDigest = savedClanWeeklyDigest;
             clanXpFromLevelUp = savedClanXpFromLevelUp;
             clanXpPerLevelUp = savedClanXpPerLevelUp;
             clanXpLevelUpProportional = savedClanXpLevelUpProportional;
@@ -315,6 +477,7 @@
             clanAnnouncementChannelId = savedClanAnnouncementChannelId;
             clanRewardGiveaway = savedClanRewardGiveaway;
             clanRewardLeaderRole = savedClanRewardLeaderRole;
+            betSettings = { ...savedBetSettings, betResolverRoleIds: [...savedBetSettings.betResolverRoleIds] };
           }
         });
       });
@@ -325,16 +488,7 @@
     }
   });
 
-  function handleWsMessage(e: Event) {
-    const detail = (e as CustomEvent).detail;
-    if (
-      detail?.type === 'dashboard_state_changed' &&
-      detail?.guildId === authStore.selectedGuildId &&
-      detail?.reason === 'clans_updated'
-    ) {
-      void refreshData(true);
-    }
-  }
+  let unsubscribeRealtime: (() => void) | null = null;
 
   // Polling mechanism while a background operation is active (kept as fallback)
   let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -359,7 +513,7 @@
   });
 
   onDestroy(() => {
-    window.removeEventListener('kotbo-ws-message', handleWsMessage);
+    unsubscribeRealtime?.();
     unsavedChanges.release('clans');
     if (pollInterval) {
       clearInterval(pollInterval);
@@ -397,6 +551,7 @@
       if (res) {
         clansEnabled = res.clansEnabled;
         clanAutoAssignOnJoin = res.clanAutoAssignOnJoin;
+        clanWeeklyDigest = res.clanWeeklyDigest ?? false;
         currentClanSeason = res.currentClanSeason;
         clanXpFromLevelUp = res.clanXpFromLevelUp;
         clanXpPerLevelUp = res.clanXpPerLevelUp;
@@ -419,6 +574,7 @@
         
         savedClansEnabled = res.clansEnabled;
         savedClanAutoAssignOnJoin = res.clanAutoAssignOnJoin;
+        savedClanWeeklyDigest = res.clanWeeklyDigest ?? false;
         savedClanXpFromLevelUp = res.clanXpFromLevelUp;
         savedClanXpPerLevelUp = res.clanXpPerLevelUp;
         savedClanXpLevelUpProportional = res.clanXpLevelUpProportional ?? false;
@@ -430,6 +586,32 @@
         savedClanRewardLeaderRole = res.clanRewardLeaderRole;
         savedClanSeasonStartsAt = res.clanSeasonStartsAt;
         savedClanSeasonEndsAt = res.clanSeasonEndsAt;
+        const loadedBets: ClanBetSettings = {
+          betsEnabled: res.betsEnabled ?? false,
+          betChannelId: res.betChannelId ?? null,
+          betAnnouncementChannelId: res.betAnnouncementChannelId ?? null,
+          betMinStake: res.betMinStake ?? DEFAULT_CLAN_BET_SETTINGS.betMinStake,
+          betMaxStake: res.betMaxStake ?? DEFAULT_CLAN_BET_SETTINGS.betMaxStake,
+          betMaxOpenPerMember: res.betMaxOpenPerMember ?? DEFAULT_CLAN_BET_SETTINGS.betMaxOpenPerMember,
+          betAcceptWindowHours: res.betAcceptWindowHours ?? DEFAULT_CLAN_BET_SETTINGS.betAcceptWindowHours,
+          betAllowDebt: res.betAllowDebt ?? false,
+          betMaxDebt: res.betMaxDebt ?? DEFAULT_CLAN_BET_SETTINGS.betMaxDebt,
+          betDebtResetOnSeason: res.betDebtResetOnSeason ?? false,
+          betResolverRoleIds: res.betResolverRoleIds ?? [],
+          betAllowPool: res.betAllowPool ?? false,
+          betAllowTeams: res.betAllowTeams ?? false,
+          betAllowOpen: res.betAllowOpen ?? false,
+          betStakeMode: res.betStakeMode ?? DEFAULT_CLAN_BET_SETTINGS.betStakeMode,
+          betMaxParticipants: res.betMaxParticipants ?? DEFAULT_CLAN_BET_SETTINGS.betMaxParticipants,
+          betMaxSides: res.betMaxSides ?? DEFAULT_CLAN_BET_SETTINGS.betMaxSides,
+          betSeasonRewardEnabled: res.betSeasonRewardEnabled ?? false,
+          betSeasonRewardRoleId: res.betSeasonRewardRoleId ?? null,
+          betRewardTop1: res.betRewardTop1 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop1,
+          betRewardTop2: res.betRewardTop2 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop2,
+          betRewardTop3: res.betRewardTop3 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop3,
+        };
+        betSettings = { ...loadedBets, betResolverRoleIds: [...loadedBets.betResolverRoleIds] };
+        savedBetSettings = { ...loadedBets, betResolverRoleIds: [...loadedBets.betResolverRoleIds] };
       }
     } catch (err) {
       console.error(err);
@@ -439,7 +621,24 @@
   }
 
   onMount(async () => {
-    window.addEventListener('kotbo-ws-message', handleWsMessage);
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: ['clans_updated', 'clan_bets_updated'],
+      onUpdate: (event) => {
+        const reason = event?.reason;
+        if (!reason || reason === 'clans_updated') {
+          void refreshData(true);
+        }
+        // Les paris et les dettes vivent sur leur propre annonce : ils bougent à
+        // chaque clic sur Discord, bien plus souvent que les clans, et ne sont
+        // rechargés que si l'onglet qui les montre est ouvert.
+        if (
+          (!reason || reason === 'clan_bets_updated' || reason === 'clans_updated')
+          && activeTab === 'bets'
+        ) {
+          void refreshBets(true);
+        }
+      },
+    });
     await dashboardStore.refresh();
     syncBridgeFromStore();
     await refreshData();
@@ -475,6 +674,7 @@
       const res = await updateClanSettings({
         clansEnabled,
         clanAutoAssignOnJoin,
+        clanWeeklyDigest,
         clanXpFromLevelUp,
         clanXpPerLevelUp,
         clanXpLevelUpProportional,
@@ -485,19 +685,50 @@
         clanRewardGiveaway,
         clanRewardLeaderRole,
         clanRewardXpBoost,
-        clanRewardXpBoostRate
+        clanRewardXpBoostRate,
+        ...betSettings,
+        betChannelId: betSettings.betChannelId || null,
+        betAnnouncementChannelId: betSettings.betAnnouncementChannelId || null
       });
       if (!res) throw new Error(m.clan_err_save());
 
       savedClansEnabled = res.clansEnabled;
       savedClanAutoAssignOnJoin = res.clanAutoAssignOnJoin;
+      savedClanWeeklyDigest = res.clanWeeklyDigest ?? false;
       savedClanXpFromLevelUp = res.clanXpFromLevelUp;
       savedClanXpPerLevelUp = res.clanXpPerLevelUp;
       savedClanXpLevelUpProportional = res.clanXpLevelUpProportional ?? false;
       savedClanXpReferenceLevel = res.clanXpReferenceLevel ?? 25;
       savedClanXpFromBoost = res.clanXpFromBoost;
       savedClanXpPerBoost = res.clanXpPerBoost;
-      savedClanAnnouncementChannelId = res.clanAnnouncementChannelId;
+savedBetSettings = {
+        betsEnabled: res.betsEnabled ?? false,
+        betChannelId: res.betChannelId ?? null,
+        betAnnouncementChannelId: res.betAnnouncementChannelId ?? null,
+        betMinStake: res.betMinStake ?? DEFAULT_CLAN_BET_SETTINGS.betMinStake,
+        betMaxStake: res.betMaxStake ?? DEFAULT_CLAN_BET_SETTINGS.betMaxStake,
+        betMaxOpenPerMember: res.betMaxOpenPerMember ?? DEFAULT_CLAN_BET_SETTINGS.betMaxOpenPerMember,
+        betAcceptWindowHours: res.betAcceptWindowHours ?? DEFAULT_CLAN_BET_SETTINGS.betAcceptWindowHours,
+        betAllowDebt: res.betAllowDebt ?? false,
+        betMaxDebt: res.betMaxDebt ?? DEFAULT_CLAN_BET_SETTINGS.betMaxDebt,
+        betDebtResetOnSeason: res.betDebtResetOnSeason ?? false,
+        betResolverRoleIds: res.betResolverRoleIds ?? [],
+        betAllowPool: res.betAllowPool ?? false,
+        betAllowTeams: res.betAllowTeams ?? false,
+        betAllowOpen: res.betAllowOpen ?? false,
+        betStakeMode: res.betStakeMode ?? DEFAULT_CLAN_BET_SETTINGS.betStakeMode,
+        betMaxParticipants: res.betMaxParticipants ?? DEFAULT_CLAN_BET_SETTINGS.betMaxParticipants,
+        betMaxSides: res.betMaxSides ?? DEFAULT_CLAN_BET_SETTINGS.betMaxSides,
+        betSeasonRewardEnabled: res.betSeasonRewardEnabled ?? false,
+        betSeasonRewardRoleId: res.betSeasonRewardRoleId ?? null,
+        betRewardTop1: res.betRewardTop1 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop1,
+        betRewardTop2: res.betRewardTop2 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop2,
+        betRewardTop3: res.betRewardTop3 ?? DEFAULT_CLAN_BET_SETTINGS.betRewardTop3,
+      };
+      // L'API réordonne les mises mini et maxi : le formulaire doit repartir de
+      // ce qui a réellement été enregistré, sinon il se croit encore modifié.
+      betSettings = { ...savedBetSettings, betResolverRoleIds: [...savedBetSettings.betResolverRoleIds] };
+            savedClanAnnouncementChannelId = res.clanAnnouncementChannelId;
       savedClanRewardGiveaway = res.clanRewardGiveaway;
       savedClanRewardLeaderRole = res.clanRewardLeaderRole;
       success = true;
@@ -768,6 +999,12 @@
       <Papicon icon="Sparkles" size={15} /> {m.clan_tab_points()}
     </button>
     <button
+      class="px-5 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer inline-flex items-center gap-2 {activeTab === 'bets' ? 'border-primary text-primary font-bold bg-primary/5 rounded-t-lg' : 'border-transparent text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-low/30'}"
+      onclick={() => activeTab = 'bets'}
+    >
+      <Papicon icon="Coins" size={15} /> {m.clan_tab_bets()}
+    </button>
+    <button
       class="px-5 py-3 text-sm font-semibold border-b-2 transition-all cursor-pointer inline-flex items-center gap-2 {activeTab === 'admin' ? 'border-primary text-primary font-bold bg-primary/5 rounded-t-lg' : 'border-transparent text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-low/30'}"
       onclick={() => activeTab = 'admin'}
     >
@@ -843,6 +1080,25 @@
               </div>
               <ToggleSwitch checked={clanAutoAssignOnJoin} onToggle={(v) => clanAutoAssignOnJoin = v} disabled={!canManageSettings} />
             </div>
+
+            <div class="flex items-center justify-between pt-4 border-t border-outline-variant/10">
+              <div>
+                <span class="text-sm font-medium text-on-surface">{m.clan_digest_title()}</span>
+                <p class="text-xs text-on-surface-variant/70">{m.clan_digest_desc()}</p>
+              </div>
+              <ToggleSwitch checked={clanWeeklyDigest} onToggle={(v) => clanWeeklyDigest = v} disabled={!canManageSettings} />
+            </div>
+
+            <!-- Le bilan est publie dans le QG : sans salon, un clan n'en recevra jamais,
+                 et rien ne le dirait sans ce rappel. -->
+            {#if clanWeeklyDigest && clansWithoutHq.length > 0}
+              <div class="flex items-start gap-2.5 rounded-xl bg-amber-500/8 border border-amber-500/25 px-4 py-3">
+                <Papicon icon="Warning" size={14} class="text-amber-500 shrink-0 mt-0.5" />
+                <p class="text-xs text-on-surface-variant/80 leading-relaxed">
+                  {m.clan_digest_missing_hq({ clans: clansWithoutHq.join(', ') })}
+                </p>
+              </div>
+            {/if}
           </div>
         </section>
  
@@ -1437,14 +1693,24 @@
               </div>
 
               {#if canManageSettings}
-                <button
-                  type="button"
-                  onclick={handleAddClanPoints}
-                  class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary/80 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-                  disabled={!selectedClanIdForPoints}
-                >
-                  <Papicon icon="Sparkles" size={14} /> {m.clan_adjust_clan_points_btn()}
-                </button>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onclick={() => handleClanPoints(1)}
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary/80 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+                    disabled={!selectedClanIdForPoints}
+                  >
+                    <Papicon icon="Sparkles" size={14} /> {m.clan_adjust_clan_points_btn()}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => handleClanPoints(-1)}
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+                    disabled={!selectedClanIdForPoints}
+                  >
+                    <Papicon icon="Minus" size={14} /> {m.clan_remove_clan_points_btn()}
+                  </button>
+                </div>
               {/if}
             </div>
           </section>
@@ -1482,19 +1748,435 @@
               </div>
 
               {#if canManageSettings}
-                <button
-                  type="button"
-                  onclick={handleAddMemberPoints}
-                  class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary/80 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-                  disabled={!manualPointsMemberUserId}
-                >
-                  <Papicon icon="Sparkles" size={14} /> {m.clan_adjust_member_points_btn()}
-                </button>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onclick={() => handleMemberPoints(1)}
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary/80 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+                    disabled={!manualPointsMemberUserId}
+                  >
+                    <Papicon icon="Sparkles" size={14} /> {m.clan_adjust_member_points_btn()}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => handleMemberPoints(-1)}
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+                    disabled={!manualPointsMemberUserId}
+                  >
+                    <Papicon icon="Minus" size={14} /> {m.clan_remove_member_points_btn()}
+                  </button>
+                </div>
               {/if}
             </div>
           </section>
 
         </div>
+      </div>
+    {:else if activeTab === 'bets'}
+      <div class="space-y-6" transition:fade={{ duration: 150 }}>
+        <InlineFeedback state={betsAction} />
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-6">
+          <div class="flex items-start justify-between gap-4 border-b border-outline-variant/15 pb-3">
+            <div>
+              <h3 class="text-lg font-semibold flex items-center gap-2"><Papicon icon="Coins" size={18} /> {m.clan_bets_heading()}</h3>
+              <p class="text-xs text-on-surface-variant/70 mt-1">{m.clan_bets_desc()}</p>
+            </div>
+            <ToggleSwitch checked={betSettings.betsEnabled} onToggle={(v) => betSettings.betsEnabled = v} disabled={!canManageSettings} />
+          </div>
+
+          {#if !clansEnabled}
+            <p class="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-4 py-3">
+              {m.clan_bets_requires_clans()}
+            </p>
+          {/if}
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-1.5">
+              <label for="bet-channel" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_channel_label()}</label>
+              <SearchableSelect
+                id="bet-channel"
+                bind:value={betSettings.betChannelId}
+                options={[{ id: '', name: m.clan_option_none_disabled() }, ...availableChannels.map(c => ({ id: c.id, name: `#${c.name}` }))]}
+                placeholder={m.clan_select_channel_placeholder()}
+                disabled={!canManageSettings}
+              />
+              <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_channel_desc()}</p>
+            </div>
+
+            <div class="space-y-1.5">
+              <label for="bet-announcement-channel" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_announcement_label()}</label>
+              <SearchableSelect
+                id="bet-announcement-channel"
+                bind:value={betSettings.betAnnouncementChannelId}
+                options={[{ id: '', name: m.clan_option_none_disabled() }, ...availableChannels.map(c => ({ id: c.id, name: `#${c.name}` }))]}
+                placeholder={m.clan_select_channel_placeholder()}
+                disabled={!canManageSettings}
+              />
+              <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_announcement_desc()}</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 pt-2 border-t border-outline-variant/10">
+            <div class="space-y-1.5">
+              <label for="bet-min-stake" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_min_stake_label()}</label>
+              <input
+                id="bet-min-stake"
+                type="number"
+                bind:value={betSettings.betMinStake}
+                min={BET_STAKE_FLOOR}
+                max={BET_STAKE_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label for="bet-max-stake" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_max_stake_label()}</label>
+              <input
+                id="bet-max-stake"
+                type="number"
+                bind:value={betSettings.betMaxStake}
+                min={BET_STAKE_FLOOR}
+                max={BET_STAKE_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label for="bet-max-open" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_max_open_label()}</label>
+              <input
+                id="bet-max-open"
+                type="number"
+                bind:value={betSettings.betMaxOpenPerMember}
+                min="1"
+                max={BET_OPEN_PER_MEMBER_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label for="bet-window" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_window_label()}</label>
+              <input
+                id="bet-window"
+                type="number"
+                bind:value={betSettings.betAcceptWindowHours}
+                min={BET_ACCEPT_WINDOW_HOURS_MIN}
+                max={BET_ACCEPT_WINDOW_HOURS_MAX}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings}
+              />
+            </div>
+          </div>
+
+        </section>
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-5">
+          <div class="border-b border-outline-variant/15 pb-3">
+            <h3 class="text-lg font-semibold flex items-center gap-2"><Papicon icon="Shield" size={18} /> {m.clan_bets_managers_heading()}</h3>
+            <p class="text-xs text-on-surface-variant/70 mt-1">{m.clan_bets_managers_desc()}</p>
+          </div>
+
+          <ul class="text-xs text-on-surface-variant/70 space-y-1 list-disc list-inside">
+            <li>{m.clan_bets_managers_scope_winner()}</li>
+            <li>{m.clan_bets_managers_scope_cancel()}</li>
+          </ul>
+
+          {#if betManagerRoles.length > 0}
+            <div class="flex flex-wrap gap-2">
+              {#each betManagerRoles as role (role.id)}
+                <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-primary/15 border border-primary/40 text-primary">
+                  @{role.name}
+                  <button
+                    type="button"
+                    class="cursor-pointer hover:text-on-surface disabled:opacity-40"
+                    aria-label={m.clan_bets_managers_remove({ role: role.name })}
+                    disabled={!canManageSettings}
+                    onclick={() => removeBetManagerRole(role.id)}
+                  >
+                    ×
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-4 py-3">
+              {m.clan_bets_managers_empty()}
+            </p>
+          {/if}
+
+          <div class="space-y-1.5">
+            <label for="bet-manager-add" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_managers_add_label()}</label>
+            <SearchableSelect
+              id="bet-manager-add"
+              bind:value={roleToAdd}
+              options={availableRoles
+                .filter((role: { id: string }) => !betSettings.betResolverRoleIds.includes(role.id))
+                .map((role: { id: string; name: string }) => ({ id: role.id, name: `@${role.name}` }))}
+              placeholder={m.clan_bets_managers_add_placeholder()}
+              disabled={!canManageSettings}
+            />
+            <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_managers_admin_note()}</p>
+          </div>
+        </section>
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-6">
+          <div class="border-b border-outline-variant/15 pb-3">
+            <h3 class="text-lg font-semibold flex items-center gap-2"><Papicon icon="Users" size={18} /> {m.clan_bets_shapes_heading()}</h3>
+            <p class="text-xs text-on-surface-variant/70 mt-1">{m.clan_bets_shapes_desc()}</p>
+          </div>
+
+          <div class="space-y-4">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <span class="text-sm font-medium text-on-surface">{m.clan_bets_allow_pool_title()}</span>
+                <p class="text-xs text-on-surface-variant/70">{m.clan_bets_allow_pool_desc()}</p>
+              </div>
+              <ToggleSwitch checked={betSettings.betAllowPool} onToggle={(v) => betSettings.betAllowPool = v} disabled={!canManageSettings} />
+            </div>
+
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <span class="text-sm font-medium text-on-surface">{m.clan_bets_allow_teams_title()}</span>
+                <p class="text-xs text-on-surface-variant/70">{m.clan_bets_allow_teams_desc()}</p>
+              </div>
+              <ToggleSwitch checked={betSettings.betAllowTeams} onToggle={(v) => betSettings.betAllowTeams = v} disabled={!canManageSettings} />
+            </div>
+
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <span class="text-sm font-medium text-on-surface">{m.clan_bets_allow_open_title()}</span>
+                <p class="text-xs text-on-surface-variant/70">{m.clan_bets_allow_open_desc()}</p>
+              </div>
+              <ToggleSwitch checked={betSettings.betAllowOpen} onToggle={(v) => betSettings.betAllowOpen = v} disabled={!canManageSettings} />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="bet-stake-mode" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_stake_mode_label()}</label>
+            <select
+              id="bet-stake-mode"
+              bind:value={betSettings.betStakeMode}
+              class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all"
+              disabled={!canManageSettings}
+            >
+              <option value="PER_MEMBER">{m.clan_bets_stake_mode_per_member()}</option>
+              <option value="PER_SIDE">{m.clan_bets_stake_mode_per_side()}</option>
+            </select>
+            <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_stake_mode_desc()}</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-1.5">
+              <label for="bet-max-participants" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_max_participants_label()}</label>
+              <input
+                id="bet-max-participants"
+                type="number"
+                bind:value={betSettings.betMaxParticipants}
+                min={BET_PARTICIPANTS_MIN}
+                max={BET_PARTICIPANTS_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings}
+              />
+              <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_max_participants_desc()}</p>
+            </div>
+
+            <div class="space-y-1.5">
+              <label for="bet-max-sides" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_max_sides_label()}</label>
+              <input
+                id="bet-max-sides"
+                type="number"
+                bind:value={betSettings.betMaxSides}
+                min={BET_SIDES_MIN}
+                max={BET_SIDES_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings || !betSettings.betAllowTeams}
+              />
+              <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_max_sides_desc()}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-6">
+          <div class="flex items-start justify-between gap-4 border-b border-outline-variant/15 pb-3">
+            <div>
+              <h3 class="text-lg font-semibold flex items-center gap-2"><Papicon icon="Trophy" size={18} /> {m.clan_bets_reward_heading()}</h3>
+              <p class="text-xs text-on-surface-variant/70 mt-1">{m.clan_bets_reward_desc()}</p>
+            </div>
+            <ToggleSwitch checked={betSettings.betSeasonRewardEnabled} onToggle={(v) => betSettings.betSeasonRewardEnabled = v} disabled={!canManageSettings} />
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="bet-reward-role" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_reward_role_label()}</label>
+            <SearchableSelect
+              id="bet-reward-role"
+              bind:value={betSettings.betSeasonRewardRoleId}
+              options={availableRoles.map((role: { id: string; name: string }) => ({ id: role.id, name: `@${role.name}` }))}
+              placeholder={m.clan_bets_reward_role_placeholder()}
+              disabled={!canManageSettings || !betSettings.betSeasonRewardEnabled}
+            />
+            <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_reward_role_desc()}</p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="space-y-1.5">
+              <label for="bet-reward-1" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_reward_top1_label()}</label>
+              <input
+                id="bet-reward-1"
+                type="number"
+                bind:value={betSettings.betRewardTop1}
+                min="0"
+                max={BET_SEASON_REWARD_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings || !betSettings.betSeasonRewardEnabled}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label for="bet-reward-2" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_reward_top2_label()}</label>
+              <input
+                id="bet-reward-2"
+                type="number"
+                bind:value={betSettings.betRewardTop2}
+                min="0"
+                max={BET_SEASON_REWARD_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings || !betSettings.betSeasonRewardEnabled}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label for="bet-reward-3" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_reward_top3_label()}</label>
+              <input
+                id="bet-reward-3"
+                type="number"
+                bind:value={betSettings.betRewardTop3}
+                min="0"
+                max={BET_SEASON_REWARD_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings || !betSettings.betSeasonRewardEnabled}
+              />
+            </div>
+          </div>
+          <p class="text-[10px] text-on-surface-variant/60">{m.clan_bets_reward_amounts_desc()}</p>
+        </section>
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-6">
+          <div class="flex items-start justify-between gap-4 border-b border-outline-variant/15 pb-3">
+            <div>
+              <h3 class="text-lg font-semibold flex items-center gap-2"><Papicon icon="AlertTriangle" size={18} class="text-amber-500" /> {m.clan_bets_debt_heading()}</h3>
+              <p class="text-xs text-on-surface-variant/70 mt-1">{m.clan_bets_debt_desc()}</p>
+            </div>
+            <ToggleSwitch checked={betSettings.betAllowDebt} onToggle={(v) => betSettings.betAllowDebt = v} disabled={!canManageSettings} />
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-1.5">
+              <label for="bet-max-debt" class="text-[10px] font-bold text-on-surface-variant/60 ml-1 uppercase tracking-widest">{m.clan_bets_max_debt_label()}</label>
+              <input
+                id="bet-max-debt"
+                type="number"
+                bind:value={betSettings.betMaxDebt}
+                min="0"
+                max={BET_DEBT_CEILING}
+                class="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all font-bold"
+                disabled={!canManageSettings || !betSettings.betAllowDebt}
+              />
+              <p class="text-[10px] text-on-surface-variant/60 mt-1">{m.clan_bets_max_debt_desc()}</p>
+            </div>
+
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <span class="text-sm font-medium text-on-surface">{m.clan_bets_debt_reset_title()}</span>
+                <p class="text-xs text-on-surface-variant/70">{m.clan_bets_debt_reset_desc()}</p>
+              </div>
+              <ToggleSwitch checked={betSettings.betDebtResetOnSeason} onToggle={(v) => betSettings.betDebtResetOnSeason = v} disabled={!canManageSettings || !betSettings.betAllowDebt} />
+            </div>
+          </div>
+
+          {#if debts.length > 0}
+            <div class="space-y-2 pt-2 border-t border-outline-variant/10">
+              <p class="text-[10px] font-bold text-on-surface-variant/60 uppercase tracking-widest">{m.clan_bets_debt_list_label()}</p>
+              {#each debts as debt (debt.userId)}
+                <div class="flex items-center justify-between gap-4 bg-surface-container-high/30 rounded-lg px-4 py-2.5">
+                  <span class="text-sm text-on-surface truncate">{debt.displayName ?? debt.userId}</span>
+                  <div class="flex items-center gap-3 shrink-0">
+                    <span class="text-sm font-bold text-amber-600 text-right">
+                      {debt.amount.toLocaleString(dateLocale())} pts
+                      {#if debt.engaged > 0}
+                        <span class="block text-[10px] font-medium text-on-surface-variant/60">
+                          {m.clan_bets_debt_engaged_hint({ amount: debt.engaged.toLocaleString(dateLocale()) })}
+                        </span>
+                      {/if}
+                    </span>
+                    <button
+                      type="button"
+                      class="text-xs font-semibold text-rose-500 hover:underline cursor-pointer disabled:opacity-40"
+                      disabled={!canManageSettings}
+                      onclick={() => openDebtClear(debt)}
+                    >
+                      {m.clan_bets_debt_clear()}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+              {#if debtCount > debts.length}
+                <p class="text-[11px] text-on-surface-variant/60 italic pt-1">
+                  {m.clan_bets_list_truncated({ shown: debts.length, total: debtCount })}
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <p class="text-xs text-on-surface-variant/60 pt-2 border-t border-outline-variant/10">{m.clan_bets_debt_empty()}</p>
+          {/if}
+        </section>
+
+        <section class="bg-surface-container-low/40 border border-outline-variant/30 p-6 rounded-xl space-y-4">
+          <h3 class="text-lg font-semibold border-b border-outline-variant/15 pb-2 flex items-center gap-2"><Papicon icon="Calendar" size={18} /> {m.clan_bets_history_heading()}</h3>
+
+          {#if betsLoading}
+            <Skeleton height="160px" />
+          {:else if bets.length === 0}
+            <p class="text-xs text-on-surface-variant/60">{m.clan_bets_history_empty()}</p>
+          {:else}
+            <div class="space-y-2">
+              {#each bets as bet (bet.id)}
+                <div class="bg-surface-container-high/30 rounded-lg px-4 py-3 space-y-1.5">
+                  <div class="flex items-start justify-between gap-4">
+                    <span class="text-sm font-medium text-on-surface">{bet.subject}</span>
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 {betStatusClass(bet.status)}">
+                      {betStatusLabels[bet.status] ?? bet.status}
+                    </span>
+                  </div>
+                  <div class="text-xs text-on-surface-variant/70 space-y-0.5">
+                    {#each bet.sides as side (side.id)}
+                      <p class:font-semibold={side.won} class:text-primary={side.won}>
+                        {#if side.won}🏆 {/if}{side.label}{side.capacity ? ` (${side.members.length}/${side.capacity})` : ''} ·
+                        {#if side.members.length === 0}
+                          <span class="opacity-60">-</span>
+                        {:else}
+                          {side.members
+                            .map((entry) => (entry.displayName ?? entry.userId) + (entry.clanName ? ` (${entry.clanName})` : ''))
+                            .join(', ')}
+                        {/if}
+                      </p>
+                    {/each}
+                  </div>
+                  <p class="text-[11px] text-on-surface-variant/60">
+                    {m.clan_bets_history_line({
+                      stake: bet.stake.toLocaleString(dateLocale()),
+                      pot: bet.pot.toLocaleString(dateLocale()),
+                      season: bet.season,
+                    })}
+                    {#if bet.creditUsed > 0}· 💳 {bet.creditUsed.toLocaleString(dateLocale())}{/if}
+                  </p>
+                </div>
+              {/each}
+              {#if betCount > bets.length}
+                <p class="text-[11px] text-on-surface-variant/60 italic pt-1">
+                  {m.clan_bets_list_truncated({ shown: bets.length, total: betCount })}
+                </p>
+              {/if}
+            </div>
+          {/if}
+        </section>
       </div>
     {:else if activeTab === 'admin'}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6" transition:fade={{ duration: 150 }}>
@@ -1653,6 +2335,54 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal: Effacement d'une dette -->
+{#if debtToClear}
+  {@const target = debtToClear}
+  <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" transition:fade={{ duration: 150 }}>
+    <div class="bg-surface-container-low border border-outline-variant/20 max-w-md w-full rounded-xl p-6 space-y-6 shadow-lg" transition:scale={{ start: 0.97, duration: 150 }}>
+      <div>
+        <h3 class="text-lg font-semibold text-on-surface">
+          {m.clan_bets_debt_clear_title()}
+        </h3>
+        <p class="text-sm font-bold text-amber-600 mt-2">
+          {target.displayName ?? target.userId} · {target.amount.toLocaleString(dateLocale())} pts
+        </p>
+        <p class="text-xs text-on-surface-variant/80 mt-2">{m.clan_bets_debt_clear_desc()}</p>
+      </div>
+
+      {#if target.engaged > 0}
+        <div class="space-y-3 bg-surface-container-high/40 rounded-lg p-4">
+          <p class="text-xs text-on-surface-variant/80">
+            {m.clan_bets_debt_clear_engaged_note({ amount: target.engaged.toLocaleString(dateLocale()) })}
+          </p>
+          <label class="flex items-center gap-3 text-sm text-on-surface cursor-pointer">
+            <input type="checkbox" bind:checked={clearEngagedDebt} class="w-4 h-4 accent-rose-500 cursor-pointer" />
+            {m.clan_bets_debt_clear_include_engaged()}
+          </label>
+        </div>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          onclick={() => debtToClear = null}
+          class="px-4 py-2 border border-outline-variant/30 hover:bg-surface-container-high/60 text-on-surface text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+        >
+          {m.clan_cancel_btn()}
+        </button>
+        <button
+          type="button"
+          onclick={handleClearDebt}
+          disabled={target.firm <= 0 && !clearEngagedDebt}
+          class="px-4 py-2 bg-rose-500 text-white text-xs font-semibold rounded-lg hover:bg-rose-600 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {m.clan_bets_debt_clear()}
+        </button>
+      </div>
     </div>
   </div>
 {/if}

@@ -3,6 +3,8 @@ import type { Client } from 'discord.js';
 import type { AuthClaims, DashboardAccess } from '../../../shared.js';
 import { errorMessage, errorStack } from '../../../../utils/errors.js';
 import { logger } from '../../../../utils/logger.js';
+import { formatGuildDateTime, formatInTimezone } from '../../../../utils/timezone.js';
+import { isValidTimezone } from '@kotbo/contracts';
 import {
   json,
   readJsonBody,
@@ -46,6 +48,7 @@ import {
   
   
   
+  MeetingValidationError,
 } from '../../../../services/staff/staffLeadershipService.js';
 
 export async function handleMeetingRoutes(
@@ -108,6 +111,8 @@ export async function handleMeetingRoutes(
             title: string;
             description?: string;
             scheduledAt: string;
+            endedAt?: string;
+            timezone?: string | null;
           }>(req);
 
           if (!body?.title || !body?.scheduledAt) {
@@ -121,13 +126,24 @@ export async function handleMeetingRoutes(
             return true;
           }
 
+          if (body.timezone !== undefined && body.timezone !== null && !isValidTimezone(body.timezone)) {
+            json(res, 400, { error: 'Fuseau horaire invalide' });
+            return true;
+          }
+          const endedAt = body.endedAt ? new Date(body.endedAt) : undefined;
+          if (endedAt && Number.isNaN(endedAt.getTime())) {
+            json(res, 400, { error: 'Date de fin de reunion invalide' });
+            return true;
+          }
           const meeting = await createMeeting(
             client,
             guildId,
             user.userId,
             body.title,
             body.description || '',
-            scheduledAt
+            scheduledAt,
+            endedAt,
+            body.timezone ?? undefined,
           );
 
           await pushAudit(guildId, {
@@ -136,13 +152,13 @@ export async function handleMeetingRoutes(
             context: getGuildName(client, guildId),
             module: 'Staff Management',
             eventType: 'Manuel',
-            details: `Réunion "${body.title}" planifiée pour le ${scheduledAt.toLocaleString('fr-FR')}`,
+            details: `Réunion "${body.title}" planifiée pour le ${body.timezone ? formatInTimezone(scheduledAt, body.timezone) : await formatGuildDateTime(guildId, scheduledAt)}`,
             channelId: null,
           });
 
           json(res, 201, { meeting });
         } catch (err: unknown) {
-          const isValidationError = err instanceof Error && err.message.includes('Configurez');
+          const isValidationError = err instanceof MeetingValidationError;
           if (isValidationError) {
             logger.warn('StaffAPI', `Error creating meeting: ${err.message}`);
           } else {
@@ -163,6 +179,7 @@ export async function handleMeetingRoutes(
             scheduledAt?: string;
             endedAt?: string;
             status?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELED';
+            timezone?: string | null;
           }>(req);
 
           const data: Record<string, unknown> = {};
@@ -171,6 +188,13 @@ export async function handleMeetingRoutes(
           if (body?.scheduledAt) data.scheduledAt = new Date(body.scheduledAt);
           if (body?.endedAt) data.endedAt = new Date(body.endedAt);
           if (body?.status) data.status = body.status;
+          if (body && Object.prototype.hasOwnProperty.call(body, 'timezone')) {
+            if (body.timezone !== null && !isValidTimezone(body.timezone)) {
+              json(res, 400, { error: 'Fuseau horaire invalide' });
+              return true;
+            }
+            data.timezone = body.timezone;
+          }
 
           const meeting = await updateMeeting(client, guildId, meetingId, data);
 

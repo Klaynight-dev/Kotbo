@@ -605,3 +605,251 @@ export async function getStaffSatisfactionReviews(
     hasMore: offset + rows.length < total,
   };
 }
+
+export type SatisfactionLogConfig = {
+  channelId: string | null;
+  anonymous: boolean;
+};
+
+export async function getSatisfactionLogConfig(guildId: string): Promise<SatisfactionLogConfig> {
+  const guild = await prismaRead.guild.findUnique({
+    where: { id: guildId },
+    select: {
+      ticketSatisfactionLogChannelId: true,
+      ticketSatisfactionLogAnonymous: true,
+    },
+  });
+
+  return {
+    channelId: guild?.ticketSatisfactionLogChannelId || null,
+    anonymous: guild?.ticketSatisfactionLogAnonymous ?? false,
+  };
+}
+
+const RATING_COLORS = [COLORS.dark, COLORS.danger, COLORS.danger, COLORS.warning, COLORS.success, COLORS.success];
+
+function ratingStars(rating: number): string {
+  const value = Math.min(Math.max(Math.trunc(rating) || 0, 0), 5);
+  return `${'★'.repeat(value)}${'☆'.repeat(5 - value)}`;
+}
+
+export function buildSatisfactionReviewEmbed(review: {
+  ticketId: string;
+  rating: number;
+  comment: string | null;
+  userId: string;
+  author: SatisfactionPerson | null;
+  staffId: string | null;
+  anonymous: boolean;
+}): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(RATING_COLORS[review.rating] ?? COLORS.primary)
+    .setTitle('Nouvel avis de satisfaction')
+    .setDescription(`${RATING_EMOJIS[review.rating] ?? ''} ${ratingStars(review.rating)} **${review.rating}/5**`)
+    .addFields(
+      {
+        name: 'Auteur',
+        value: review.anonymous ? '*Membre anonyme*' : `<@${review.userId}>`,
+        inline: true,
+      },
+      {
+        name: 'Staff',
+        value: review.staffId ? `<@${review.staffId}>` : '*Non attribué*',
+        inline: true,
+      },
+      {
+        name: 'Commentaire',
+        // Le commentaire est déjà assaini au stockage (mentions neutralisées,
+        // 500 caractères max) : rien à refaire ici.
+        value: review.comment || '*Aucun commentaire*',
+      },
+    )
+    .setFooter({ text: `Kotbo · Ticket #${review.ticketId.slice(-6)}` })
+    .setTimestamp();
+
+  if (!review.anonymous && review.author) {
+    embed.setAuthor({
+      name: review.author.displayName.slice(0, 256),
+      ...(review.author.avatarUrl ? { iconURL: review.author.avatarUrl } : {}),
+    });
+  }
+
+  return embed;
+}
+
+/**
+ * Une publication à la fois par avis : la note et le commentaire peuvent se
+ * suivre de très près, et deux passages concurrents posteraient deux messages
+ * avant que le premier n'ait mémorisé le sien.
+ */
+const publishQueue = new Map<string, Promise<void>>();
+
+/**
+ * Republie l'avis dans le salon configuré. Appelée une première fois dès la note
+ * puis, si un commentaire arrive, une seconde fois : le message déjà publié est
+ * alors édité plutôt que dupliqué. Ne lève jamais : un relais impossible (salon
+ * supprimé, permissions manquantes) ne doit pas perturber le sondage du membre.
+ */
+export async function publishSatisfactionReview(
+  client: Client,
+  guildId: string,
+  ticketId: string,
+  userId: string,
+): Promise<void> {
+  const key = `${guildId}:${ticketId}:${userId}`;
+  const run = (publishQueue.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => publishSatisfactionReviewOnce(client, guildId, ticketId, userId))
+    .finally(() => {
+      if (publishQueue.get(key) === run) publishQueue.delete(key);
+    });
+  publishQueue.set(key, run);
+  return run;
+}
+
+async function publishSatisfactionReviewOnce(
+  client: Client,
+  guildId: string,
+  ticketId: string,
+  userId: string,
+): Promise<void> {
+  try {
+    const config = await getSatisfactionLogConfig(guildId);
+    if (!config.channelId) return;
+
+    // Lecture sur la primaire : le commentaire vient d'être écrit, une réplique
+    // en retard republierait l'avis sans lui.
+    const stored = await prisma.ticketSatisfaction.findUnique({
+      where: { guildId_ticketId_userId: { guildId, ticketId, userId } },
+      select: {
+        rating: true,
+        comment: true,
+        staffId: true,
+        reviewLogChannelId: true,
+        reviewLogMessageId: true,
+      },
+    });
+    if (!stored) return;
+
+    const channel = await client.channels.fetch(config.channelId).catch(() => null);
+    if (!channel?.isTextBased() || !('send' in channel)) return;
+    // Un identifiant de salon arbitraire peut arriver par l'outil MCP : sans ce
+    // contrôle, les avis d'un serveur pourraient être publiés dans un autre.
+    if (!('guildId' in channel) || channel.guildId !== guildId) return;
+
+    const people = await resolveSatisfactionPeople(
+      guildId,
+      config.anonymous ? [] : [userId],
+      client,
+    );
+
+    const embed = buildSatisfactionReviewEmbed({
+      ticketId,
+      rating: stored.rating,
+      comment: stored.comment,
+      userId,
+      author: people.get(userId) ?? null,
+      staffId: stored.staffId,
+      anonymous: config.anonymous,
+    });
+
+    // Le salon a pu changer entre la note et le commentaire : on n'édite que si
+    // le message publié se trouve bien dans le salon actuellement configuré.
+    if (stored.reviewLogMessageId && stored.reviewLogChannelId === channel.id) {
+      const existing = await channel.messages.fetch(stored.reviewLogMessageId).catch(() => null);
+      if (existing) {
+        await existing.edit({ embeds: [embed], allowedMentions: { parse: [] } });
+        return;
+      }
+    }
+
+    const message = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    await prisma.ticketSatisfaction.updateMany({
+      where: { guildId, ticketId, userId },
+      data: { reviewLogChannelId: channel.id, reviewLogMessageId: message.id },
+    });
+  } catch (error) {
+    logger.debug('TicketSatisfaction', `Publication de l'avis ${ticketId} impossible: ${error}`);
+  }
+}
+
+/**
+ * Retire du salon des avis les embeds publiés pour un membre, dans le cadre
+ * d'une demande d'effacement RGPD. À appeler *avant* de supprimer les lignes en
+ * base : l'identifiant du message n'est stocké que là, et une ligne effacée
+ * rendrait l'embed impossible à retrouver.
+ *
+ * La référence n'est vidée que si le message a bien disparu : un échec (droits
+ * retirés, salon indisponible) laisse la ligne intacte pour permettre un
+ * nouvel essai plutôt que d'abandonner l'embed en place.
+ */
+export async function deleteSatisfactionReviewMessages(
+  client: Client,
+  userId: string,
+  guildId?: string,
+): Promise<{ deleted: number; cleared: number; failed: number }> {
+  const rows = await prisma.ticketSatisfaction.findMany({
+    where: {
+      userId,
+      ...(guildId ? { guildId } : {}),
+      reviewLogMessageId: { not: null },
+    },
+    select: {
+      guildId: true,
+      ticketId: true,
+      reviewLogChannelId: true,
+      reviewLogMessageId: true,
+    },
+  });
+
+  let deleted = 0;
+  let cleared = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const channel = row.reviewLogChannelId
+      ? await client.channels.fetch(row.reviewLogChannelId).catch(() => null)
+      : null;
+
+    // Trois issues distinctes : l'embed a été retiré, il avait déjà disparu, ou
+    // il est toujours là. Les deux premières libèrent la référence, mais seule
+    // la première est une suppression - les confondre faisait annoncer des
+    // embeds retirés que personne n'avait touchés.
+    let removed = false;
+    let alreadyGone = false;
+
+    if (!channel?.isTextBased()) {
+      // Salon supprimé ou devenu inaccessible : l'embed n'est plus atteignable,
+      // garder la référence n'apporterait rien.
+      alreadyGone = true;
+    } else {
+      const message = await channel.messages.fetch(row.reviewLogMessageId!).catch(() => null);
+      if (!message) {
+        alreadyGone = true;
+      } else {
+        removed = await message.delete().then(() => true).catch(() => false);
+      }
+    }
+
+    if (!removed && !alreadyGone) {
+      failed += 1;
+      continue;
+    }
+
+    if (removed) deleted += 1;
+    else cleared += 1;
+
+    await prisma.ticketSatisfaction.updateMany({
+      where: { guildId: row.guildId, ticketId: row.ticketId, userId },
+      data: { reviewLogChannelId: null, reviewLogMessageId: null },
+    });
+  }
+
+  if (deleted > 0 || cleared > 0 || failed > 0) {
+    logger.info(
+      'TicketSatisfaction',
+      `Effacement RGPD des avis de ${userId}: ${deleted} embed(s) retiré(s), ${cleared} déjà absent(s), ${failed} en échec`,
+    );
+  }
+  return { deleted, cleared, failed };
+}

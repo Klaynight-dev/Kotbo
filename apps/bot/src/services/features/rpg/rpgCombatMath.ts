@@ -20,6 +20,10 @@ export type AttackInput = {
   targetDefenseMultiplier?: number;
   /** Part des dégâts annulée par le passif de la cible, de 0 à 1. */
   targetDamageReduction?: number;
+  /** Part des dégâts infligés rendue en PV à l'attaquant, de 0 à 1. */
+  lifesteal?: number;
+  /** Part des dégâts subis que la cible renvoie à l'attaquant, de 0 à 1. */
+  targetThorns?: number;
   /** Générateur aléatoire injectable, pour rendre les tests déterministes. */
   random?: () => number;
 };
@@ -27,6 +31,10 @@ export type AttackInput = {
 export type AttackResult = {
   damage: number;
   critical: boolean;
+  /** PV rendus à l'attaquant par le vol de vie. Zéro sans enchantement adéquat. */
+  healed: number;
+  /** Dégâts renvoyés à l'attaquant par les épines de la cible. Zéro par défaut. */
+  reflected: number;
 };
 
 export const CRIT_MULTIPLIER = 1.6;
@@ -35,6 +43,12 @@ export const CRIT_MULTIPLIER = 1.6;
  * Dégâts = (attaque − défense effective / 2) × compétence × critique, moins la réduction
  * du passif adverse. Le résultat est toujours d'au moins 1 : aucun combat ne doit pouvoir
  * se bloquer parce que les deux camps infligent zéro.
+ *
+ * Le vol de vie et les épines sont dérivés ici plutôt que dans chaque moteur de combat :
+ * ils se calculent sur les dégâts RÉELLEMENT infligés, et les recalculer en trois endroits
+ * était la garantie de les voir diverger, comme la formule de dégâts elle-même avant elle.
+ * Appliquer les PV rendus et renvoyés reste à la charge de l'appelant, seul à connaître
+ * l'état de son combat.
  */
 export function computeAttack(input: AttackInput): AttackResult {
   const random = input.random ?? Math.random;
@@ -50,6 +64,15 @@ export function computeAttack(input: AttackInput): AttackResult {
   const withCrit = critical ? withSkill * CRIT_MULTIPLIER : withSkill;
 
   const reduced = withCrit * (1 - Math.min(0.9, Math.max(0, input.targetDamageReduction ?? 0)));
+  const damage = Math.max(1, Math.floor(reduced));
 
-  return { damage: Math.max(1, Math.floor(reduced)), critical };
+  const lifesteal = Math.min(1, Math.max(0, input.lifesteal ?? 0));
+  const thorns = Math.min(1, Math.max(0, input.targetThorns ?? 0));
+
+  return {
+    damage,
+    critical,
+    healed: Math.floor(damage * lifesteal),
+    reflected: Math.floor(damage * thorns),
+  };
 }

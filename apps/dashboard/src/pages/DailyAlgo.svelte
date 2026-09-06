@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import {
     fetchDailyAlgoProblems,
     fetchDailyAlgoSchedule,
@@ -320,54 +321,43 @@
     }
   }
 
-  /**
-   * Temps réel : le bot diffuse déjà ses changements d'état sur la socket du
-   * dashboard (`kotbo-ws-message`). On se contente d'écouter les raisons qui
-   * concernent le Daily Algo et de recharger le strict nécessaire, pour qu'une
-   * soumission postée sur Discord apparaisse sans que le staff clique
-   * « Actualiser ».
-   */
-  let wsReloadTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function handleWsMessage(event: Event) {
-    const detail = (event as CustomEvent).detail;
-    if (detail?.type !== 'dashboard_state_changed') return;
-    if (detail?.guildId !== authStore.selectedGuildId) return;
-
-    const reason = String(detail?.reason ?? '');
-    if (!reason.startsWith('daily_algo')) return;
-
-    // Une rafale de soumissions déclenche une rafale d'évènements : on regroupe
-    // les rechargements pour ne pas marteler l'API.
-    if (wsReloadTimer) clearTimeout(wsReloadTimer);
-    wsReloadTimer = setTimeout(() => {
-      wsReloadTimer = null;
-
-      if (reason === 'daily_algo_week_closed') {
-        void loadWeekData();
-        return;
-      }
-
-      if (reason === 'daily_algo_problems_updated') {
-        void loadDailyAlgoProblems();
-        return;
-      }
-
-      if (reason === 'daily_algo_schedule_updated') {
-        void refreshDailyAlgoScheduleView();
-        void loadTodayDailyAlgoSubmissions();
-        return;
-      }
-
-      // Soumission créée ou notée : le classement de la semaine bouge aussi.
-      void loadTodayDailyAlgoSubmissions();
-      void loadDailyAlgoHistory();
-      void loadWeekData();
-    }, 400);
-  }
+  let unsubscribeRealtime: (() => void) | null = null;
 
   onMount(async () => {
-    window.addEventListener('kotbo-ws-message', handleWsMessage);
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: [
+        'daily_algo_week_closed',
+        'daily_algo_problems_updated',
+        'daily_algo_schedule_updated',
+        'daily_algo_submission_created',
+        'daily_algo_submission_reviewed',
+      ],
+      throttleMs: 400,
+      onUpdate: (event) => {
+        const reason = event?.reason;
+        if (reason === 'daily_algo_week_closed') {
+          void loadWeekData();
+          return;
+        }
+
+        if (reason === 'daily_algo_problems_updated') {
+          void loadDailyAlgoProblems();
+          return;
+        }
+
+        if (reason === 'daily_algo_schedule_updated') {
+          void refreshDailyAlgoScheduleView();
+          void loadTodayDailyAlgoSubmissions();
+          return;
+        }
+
+        // Soumission créée ou notée (ou rattrapage) : le classement de la semaine bouge aussi.
+        void loadTodayDailyAlgoSubmissions();
+        void loadDailyAlgoHistory();
+        void loadWeekData();
+      },
+    });
+
     await dashboardStore.refresh();
     syncWeekSettingsFromStore();
     await Promise.all([
@@ -383,8 +373,7 @@
   });
 
   onDestroy(() => {
-    window.removeEventListener('kotbo-ws-message', handleWsMessage);
-    if (wsReloadTimer) clearTimeout(wsReloadTimer);
+    unsubscribeRealtime?.();
   });
 
   async function loadDailyAlgoProblems() {

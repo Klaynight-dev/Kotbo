@@ -1,6 +1,7 @@
 <script lang="ts">
   import Papicon from '../Papicon.svelte';
   import { m, dateLocale } from '../../i18n';
+  import { timezoneStore } from '../../stores/timezone.svelte';
 
   type HeatmapMetric = 'messages' | 'voice' | 'active' | 'joins' | 'leaves' | 'net';
   type HeatmapCell = { messages: number; voice: number; active: number; joins?: number; leaves?: number; net?: number };
@@ -233,6 +234,10 @@
         <p class="text-base font-semibold text-on-surface flex items-center gap-2">
           <Papicon icon="Lightning" size={14} class="text-amber-400" />
           {bestSlot}
+        </p>
+        <!-- Sans cette mention, « pic a 14h » ne dit pas sur quelle horloge. -->
+        <p class="text-[10px] text-on-surface-variant/40 mt-1">
+          {m.an_timezone_note({ zone: timezoneStore.displayTimezone })}
         </p>
       </div>
     </div>

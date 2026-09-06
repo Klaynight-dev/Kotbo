@@ -184,7 +184,21 @@ export function parseMarkdown(text: string, guild?: Guild): string {
     return placeholder;
   });
 
-  // 3. Auto-link URLs
+  // 3. Masked links `[libelle](url)` / `[libelle](<url>)`. L'ancre produite est
+  // mise de cote : sans ca l'auto-lien de l'etape suivante relierait l'URL
+  // presente dans le href.
+  const maskedLinks: string[] = [];
+  escaped = escaped.replace(
+    /\[((?:[^[\]\\]|\\.)+)\]\((?:&lt;)?(https?:\/\/[^\s)]+?)(?:&gt;)?\)/g,
+    (_full: string, label: string, url: string) => {
+      const cleanLabel = label.replace(/\\([[\]])/g, '$1');
+      const placeholder = `%%MASKED_LINK_PLACEHOLDER_${maskedLinks.length}%%`;
+      maskedLinks.push(`<a href="${url}" target="_blank" class="discord-link">${cleanLabel}</a>`);
+      return placeholder;
+    }
+  );
+
+  // 4. Auto-link URLs
   escaped = escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
     let cleanUrl = url;
     let trailing = '';
@@ -203,17 +217,17 @@ export function parseMarkdown(text: string, guild?: Guild): string {
     return `<a href="${cleanUrl}" target="_blank" class="discord-link">${cleanUrl}</a>${trailing}`;
   });
 
-  // 4. Bold, Italic, Underline, Strikethrough
+  // 5. Bold, Italic, Underline, Strikethrough
   escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   escaped = escaped.replace(/\*(.*?)\*/g, '<em>$1</em>');
   escaped = escaped.replace(/__(.*?)__/g, '<u>$1</u>');
   escaped = escaped.replace(/~~(.*?)~~/g, '<del>$1</del>');
 
-  // 5. Custom emojis: &lt;a:name:id&gt; or &lt;:name:id&gt;
+  // 6. Custom emojis: &lt;a:name:id&gt; or &lt;:name:id&gt;
   escaped = escaped.replace(/&lt;a:([a-zA-Z0-9_]+):(\d+)&gt;/g, '<img class="discord-emoji" src="https://cdn.discordapp.com/emojis/$2.gif" alt=":$1:" title=":$1:" />');
   escaped = escaped.replace(/&lt;:([a-zA-Z0-9_]+):(\d+)&gt;/g, '<img class="discord-emoji" src="https://cdn.discordapp.com/emojis/$2.png" alt=":$1:" title=":$1:" />');
 
-  // 6. User/Channel/Role mentions
+  // 7. User/Channel/Role mentions
   if (guild) {
     escaped = escaped.replace(/&lt;@!?(\d+)&gt;/g, (_, id) => {
       const member = guild.members.cache.get(id);
@@ -235,14 +249,19 @@ export function parseMarkdown(text: string, guild?: Guild): string {
     escaped = escaped.replace(/&lt;@&amp;(\d+)&gt;/g, '<span class="mention">@Rôle</span>');
   }
 
-  // 7. Restore inline code
+  // 8. Restore inline code
   inlineCodes.forEach((html, index) => {
     escaped = escaped.replace(`%%INLINE_CODE_PLACEHOLDER_${index}%%`, html);
   });
 
-  // 8. Restore block code
+  // 9. Restore block code
   blockCodes.forEach((html, index) => {
     escaped = escaped.replace(`%%BLOCK_CODE_PLACEHOLDER_${index}%%`, html);
+  });
+
+  // 10. Restore masked links
+  maskedLinks.forEach((html, index) => {
+    escaped = escaped.replace(`%%MASKED_LINK_PLACEHOLDER_${index}%%`, html);
   });
 
   return escaped;

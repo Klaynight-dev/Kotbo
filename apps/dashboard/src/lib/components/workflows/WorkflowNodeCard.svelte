@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
-  import { PORT_COLORS, getNodeDef, resolveNodeOutputs, type PortDef, type WorkflowGraph } from '@kotbo/shared';
+  import { PORT_COLORS, getNodeDef, resolveNodeInputs, resolveNodeOutputs, type PortDef, type WorkflowGraph } from '@kotbo/shared';
   import Papicon from '../Papicon.svelte';
   import WorkflowMessageModal from './WorkflowMessageModal.svelte';
 
@@ -28,12 +28,16 @@
   let modalTitle = $state('Éditer le message');
 
   const def = $derived(getNodeDef(data.nodeType));
-  const outputs = $derived(
-    def ? resolveNodeOutputs({ id, type: data.nodeType, position: { x: 0, y: 0 }, config: data.config }, data.graph) : [],
-  );
+  /** Le nœud tel qu'il est configuré, seule forme qui porte les ports variables. */
+  const shaped = $derived({ id, type: data.nodeType, position: { x: 0, y: 0 }, config: data.config });
+  const outputs = $derived(def ? resolveNodeOutputs(shaped, data.graph) : []);
+  // Les emplacements d'un « Texte composé » n'existent que dans sa
+  // configuration : sans ce résolveur, la carte ne dessinait aucune poignée
+  // pour eux et ils restaient impossibles à alimenter.
+  const inputs = $derived(def ? resolveNodeInputs(shaped) : []);
 
-  const execInputs = $derived(def?.inputs.filter((p: PortDef) => p.type === 'Exec') ?? []);
-  const dataInputs = $derived(def?.inputs.filter((p: PortDef) => p.type !== 'Exec') ?? []);
+  const execInputs = $derived(inputs.filter((p: PortDef) => p.type === 'Exec'));
+  const dataInputs = $derived(inputs.filter((p: PortDef) => p.type !== 'Exec'));
   const execOutputs = $derived(outputs.filter((p: PortDef) => p.type === 'Exec'));
   const dataOutputs = $derived(outputs.filter((p: PortDef) => p.type !== 'Exec'));
 
@@ -46,6 +50,21 @@
   };
 
   const accent = $derived(CATEGORY_ACCENT[def?.category ?? 'action'] ?? '#64748b');
+
+  /**
+   * Un seul anneau à la fois.
+   *
+   * Empiler `ring-2 ring-red-500` et `ring-2 ring-amber-400` laissait l'ordre
+   * de la feuille de style décider, pas celui des classes : un pas en erreur
+   * finissait cerclé d'ambre, ce qui cachait justement l'erreur. L'échec passe
+   * donc devant le rejeu, qui passe devant la sélection.
+   */
+  const ring = $derived(
+    data.replayStatus === 'ERROR' ? 'ring-2 ring-red-500'
+      : data.replayOrder != null ? 'ring-2 ring-amber-400'
+        : selected ? 'ring-2 ring-primary/30'
+          : '',
+  );
   const maxExecRows = $derived(Math.max(execInputs.length, execOutputs.length));
   const maxDataRows = $derived(Math.max(dataInputs.length, dataOutputs.length));
 
@@ -77,26 +96,38 @@
   // Est-ce un nœud qui manipule du texte/message ?
 </script>
 
+<!-- `transition-colors` et pas `transition-all` : la sélection change la
+     bordure et l'anneau, or Tailwind construit l'anneau avec `box-shadow`.
+     Animer cette propriété interdit toute composition GPU et repeint la zone
+     floutée de chaque carte à chaque image. Pendant un tracé de sélection, des
+     dizaines de cartes basculent en continu : c'est là que le canevas
+     s'effondre. L'ombre passe de `2xl` (flou de 50 px) à `lg` pour la même
+     raison, la surface repeinte étant proportionnelle au rayon. -->
 <div
-  class="rounded-xl border-2 bg-surface-container-high shadow-2xl min-w-64 overflow-visible transition-all relative
-    {selected ? 'border-primary ring-2 ring-primary/30' : data.hasError ? 'border-red-500' : 'border-outline-variant/30'}
-    {data.replayStatus === 'ERROR' ? 'ring-2 ring-red-500' : ''}
-    {data.replayOrder != null ? 'ring-2 ring-amber-400' : ''}"
+  class="rounded-xl border-2 bg-surface-container-high shadow-lg min-w-64 overflow-visible transition-colors relative
+    {data.hasError && !selected ? 'border-red-500' : selected ? 'border-primary' : 'border-outline-variant/30'}
+    {ring}"
   style="--accent: {accent}"
 >
   <!-- En-tête -->
   <div class="px-3.5 py-2.5 rounded-t-[10px] flex items-center gap-2 border-b border-outline-variant/15" style="background: {accent}2b">
     <span class="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style="background: {accent}"></span>
-    <span class="text-xs font-bold text-white tracking-wide truncate">{def?.label ?? data.nodeType}</span>
+    <span class="text-xs font-bold text-on-surface tracking-wide truncate">{def?.label ?? data.nodeType}</span>
     {#if data.replayOrder != null}
-      <span class="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-black shadow-sm">
+      <span
+        class="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm {data.replayStatus === 'ERROR'
+          ? 'bg-red-500 text-white'
+          : data.replayStatus === 'SKIPPED'
+            ? 'bg-surface-container-highest text-on-surface-variant'
+            : 'bg-amber-400 text-black'}"
+      >
         {data.replayOrder + 1}
       </span>
     {/if}
   </div>
 
   <!-- Corps du nœud -->
-  <div class="p-3 space-y-2 text-xs text-slate-200">
+  <div class="p-3 space-y-2 text-xs text-on-surface-variant">
     <!-- Ports d'exécution (Exec) -->
     {#if maxExecRows > 0}
       <div class="space-y-1.5 pb-2 border-b border-outline-variant/15">
@@ -114,7 +145,7 @@
                   title="Entrée de flux (Exec)"
                   style="left: -18px; top: 50%; transform: translateY(-50%); background: {PORT_COLORS.Exec}; width: 10px; height: 10px; border-radius: 2px; border: 1.5px solid rgba(15, 23, 42, 0.8);"
                 />
-                <span class="truncate font-semibold text-white/90 text-xs flex items-center gap-1">
+                <span class="truncate font-semibold text-on-surface text-xs flex items-center gap-1">
                   <span class="text-[9px] opacity-50">►</span>
                   {getExecInputLabel(inPort)}
                 </span>
@@ -124,7 +155,7 @@
             <!-- Port de sortie d'exécution (Droite) -->
             <div class="relative flex items-center justify-end min-w-0 ml-auto h-6">
               {#if outPort}
-                <span class="truncate font-semibold text-white/90 text-xs text-right flex items-center gap-1">
+                <span class="truncate font-semibold text-on-surface text-xs text-right flex items-center gap-1">
                   {getExecOutputLabel(outPort)}
                   <span class="text-[9px] opacity-50">►</span>
                 </span>
@@ -293,7 +324,7 @@
                   <button
                     type="button"
                     onclick={() => openWysiwyg(inputPort.id, `Éditer "${getDataPortLabel(inputPort)}"`)}
-                    class="nodrag w-full px-2 py-1 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] font-semibold text-indigo-300 transition-all flex items-center justify-center gap-1"
+                    class="nodrag w-full px-2 py-1 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 transition-all flex items-center justify-center gap-1"
                   >
                     <Papicon icon="TextBubble" size={11} />
                     <span>✏️ Éditeur WYSIWYG / Aperçu</span>
@@ -330,7 +361,7 @@
       <button
         type="button"
         onclick={() => openWysiwyg('value', 'Éditer le texte fixe')}
-        class="nodrag w-full px-2 py-1 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] font-semibold text-indigo-300 transition-all flex items-center justify-center gap-1"
+        class="nodrag w-full px-2 py-1 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 transition-all flex items-center justify-center gap-1"
       >
         <Papicon icon="TextBubble" size={11} />
         <span>✏️ Éditeur WYSIWYG / Aperçu</span>
@@ -354,14 +385,14 @@
                   title="{getDataPortLabel(inputPort)} (Type: {inputPort.type})"
                   style="left: -18px; top: 50%; transform: translateY(-50%); background: {PORT_COLORS[inputPort.type] ?? '#94a3b8'}; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(15, 23, 42, 0.8);"
                 />
-                <span class="truncate font-medium text-slate-200 text-xs" title="Type: {inputPort.type}">{getDataPortLabel(inputPort)}</span>
+                <span class="truncate font-medium text-on-surface-variant text-xs" title="Type: {inputPort.type}">{getDataPortLabel(inputPort)}</span>
               {/if}
             </div>
 
             <!-- Port de sortie (Droite) -->
             <div class="relative flex items-center justify-end min-w-0 ml-auto h-6">
               {#if outputPort}
-                <span class="truncate text-right font-medium text-slate-200 text-xs" title="Type: {outputPort.type}">{getDataPortLabel(outputPort)}</span>
+                <span class="truncate text-right font-medium text-on-surface-variant text-xs" title="Type: {outputPort.type}">{getDataPortLabel(outputPort)}</span>
                 <Handle
                   type="source"
                   position={Position.Right}

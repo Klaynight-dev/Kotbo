@@ -1,5 +1,6 @@
 import prisma from './db.js';
 import { logger } from './logger.js';
+import { broadcastDashboardStateChange } from '../api/shared/sharding.js';
 
 export interface AuditLogInput {
   guildId: string;
@@ -52,6 +53,11 @@ export async function flushAuditLogs(): Promise<void> {
         dateIso: log.dateIso ?? new Date(),
       })),
     });
+
+    const affectedGuilds = new Set(logsToInsert.map(log => log.guildId).filter(Boolean));
+    for (const guildId of affectedGuilds) {
+      broadcastDashboardStateChange(guildId, 'audit_logs_updated');
+    }
   } catch (error) {
     logger.error('AuditLogger', "Erreur lors du flush des logs d'audit en BDD", error);
   }

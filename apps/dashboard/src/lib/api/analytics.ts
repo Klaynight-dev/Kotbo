@@ -1,6 +1,20 @@
 /** Analytics et profils publics. */
 import { authStore } from '../stores/auth.svelte';
+import { timezoneStore } from '../stores/timezone.svelte';
 import { API_BASE_URL, JSON_HEADERS, getGuildId, dashboardRequest } from './client';
+
+/**
+ * Fuseau de lecture joint a toute requete qui renvoie des creneaux horaires.
+ *
+ * Les agregats sont stockes en UTC : sans ce parametre, l'API repondait avec
+ * des heures UTC et le dashboard affichait a minuit un pic reellement observe
+ * a 14h. Le serveur retombe sur le fuseau du serveur Discord si le parametre
+ * manque ou n'est pas un identifiant IANA connu.
+ */
+function appendViewTimezone(params: URLSearchParams) {
+  params.append('tz', timezoneStore.displayTimezone);
+  return params;
+}
 
 export async function fetchAnalytics(options: { period?: number, startDate?: string, endDate?: string, granularity?: string } = {}, guildId = authStore.selectedGuildId) {
   const params = new URLSearchParams();
@@ -8,6 +22,7 @@ export async function fetchAnalytics(options: { period?: number, startDate?: str
   if (options.startDate) params.append('startDate', options.startDate);
   if (options.endDate) params.append('endDate', options.endDate);
   if (options.granularity) params.append('granularity', options.granularity);
+  appendViewTimezone(params);
 
   return dashboardRequest(`/analytics?${params.toString()}`, {
     method: 'GET',
@@ -27,6 +42,7 @@ export async function fetchInviteAnalytics(guildId = authStore.selectedGuildId) 
 export async function fetchChannelDetails(channelId: string, options: { days?: number } = {}, guildId = authStore.selectedGuildId) {
   const params = new URLSearchParams();
   if (options.days) params.append('days', options.days.toString());
+  appendViewTimezone(params);
   const suffix = params.toString() ? `?${params.toString()}` : '';
   return dashboardRequest(`/analytics/channels/${channelId}${suffix}`, {
     method: 'GET',
@@ -113,6 +129,7 @@ export async function fetchHourlyHeatmap(options: { days?: number, startDate?: s
   if (options.days) params.append('days', options.days.toString());
   if (options.startDate) params.append('startDate', options.startDate);
   if (options.endDate) params.append('endDate', options.endDate);
+  appendViewTimezone(params);
 
   return dashboardRequest(`/analytics/heatmap?${params.toString()}`, {
     method: 'GET',
@@ -125,7 +142,8 @@ export type AdvancedAnalyticsSection =
   | 'retention' | 'activity' | 'churn' | 'channels' | 'social' | 'words' | 'moderation';
 
 export async function fetchAdvancedAnalytics(section: AdvancedAnalyticsSection, guildId = authStore.selectedGuildId) {
-  return dashboardRequest(`/analytics/advanced?section=${section}`, {
+  const params = appendViewTimezone(new URLSearchParams({ section }));
+  return dashboardRequest(`/analytics/advanced?${params.toString()}`, {
     method: 'GET',
     guildId,
     errorContext: `API Error (Advanced Analytics ${section}):`

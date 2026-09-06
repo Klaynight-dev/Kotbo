@@ -83,6 +83,12 @@ model StaffMeeting {
   notificationSentAt DateTime?      // Quand la notification de début a été envoyée
   notificationEndSentAt DateTime?  // Quand la notification de fin a été envoyée
 
+  // Identifiant IANA du fuseau dans lequel l'organisateur a saisi l'heure.
+  // `null` = repli sur le fuseau du serveur : sert a re-afficher l'edition
+  // dans le meme fuseau que la creation et a formater les libelles envoyes
+  // aux participants, meme si l'admin de la guilde a change le defaut entre-temps.
+  timezone String?
+
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
   presences StaffMeetingPresence[]
   reminders StaffReminder[]

@@ -560,7 +560,7 @@ export function makeMcpDirectToken(guildId: string, keyId: string) {
   );
 }
 
-async function verifyMcpDirectToken(token: string, guildId: string) {
+async function verifyMcpDirectToken(token: string, guildId: string, client?: Client) {
   try {
     const claims = jwt.verify(token, oauthJwtSecret(), {
       issuer: 'kotbo-mcp-direct',
@@ -571,7 +571,7 @@ async function verifyMcpDirectToken(token: string, guildId: string) {
       return null;
     }
 
-    return getActiveMcpKeyById(claims.sub, guildId);
+    return getActiveMcpKeyById(claims.sub, guildId, client);
   } catch {
     return null;
   }
@@ -605,14 +605,14 @@ function openRefreshToken(refreshToken: string): RefreshTokenPayload | null {
   }
 }
 
-async function verifyOAuthAccessToken(token: string, guildId: string, audience: string) {
+async function verifyOAuthAccessToken(token: string, guildId: string, audience: string, client?: Client) {
   try {
     const claims = jwt.verify(token, oauthJwtSecret(), {
       audience,
     }) as McpAccessTokenClaims;
 
     if (claims.guildId !== guildId || typeof claims.sub !== 'string') return null;
-    return getActiveMcpKeyById(claims.sub, guildId);
+    return getActiveMcpKeyById(claims.sub, guildId, client);
   } catch {
     return null;
   }
@@ -798,7 +798,7 @@ export async function handleMCPRoutes(
     }
 
     if (directToken) {
-      const mcpKey = await verifyMcpDirectToken(directToken, guildId);
+      const mcpKey = await verifyMcpDirectToken(directToken, guildId, client);
       if (!mcpKey) {
         mcpLog(req, 'direct_authorize_invalid', { guildId, clientId, redirectUri }, 'warn');
         json(res, 401, { error: 'invalid_direct_token' });
@@ -852,7 +852,7 @@ export async function handleMCPRoutes(
     }
 
     const cleanApiKey = api_key.trim();
-    const mcpKey = await verifyMcpKey(cleanApiKey, guildId);
+    const mcpKey = await verifyMcpKey(cleanApiKey, guildId, client);
     if (!mcpKey) {
       mcpLog(req, 'authorize_post_bad_key', { guildId, clientId: client_id, redirectUri: redirect_uri });
       const clientName = oauthClients.get(client_id)?.clientName ?? 'Agent IA';
@@ -935,7 +935,7 @@ export async function handleMCPRoutes(
         return true;
       }
 
-      const mcpKey = await getActiveMcpKeyById(rt.keyId, guildId);
+      const mcpKey = await getActiveMcpKeyById(rt.keyId, guildId, client);
       if (!mcpKey) {
         oauthError(req, res, 400, 'invalid_grant', 'Clé MCP inactive');
         return true;
@@ -959,7 +959,7 @@ export async function handleMCPRoutes(
         return true;
       }
 
-      const mcpKey = await verifyMcpKeyByClientCredentials(clientId, clientSecret, guildId);
+      const mcpKey = await verifyMcpKeyByClientCredentials(clientId, clientSecret, guildId, client);
       if (!mcpKey) {
         oauthError(req, res, 401, 'invalid_client', 'Client ID ou secret invalide');
         return true;
@@ -1073,7 +1073,7 @@ export async function handleMCPRoutes(
     let keyId: string | null = null;
 
     if (directToken) {
-      const mcpKey = await verifyMcpDirectToken(directToken, guildId);
+      const mcpKey = await verifyMcpDirectToken(directToken, guildId, client);
       if (!mcpKey) {
         mcpLog(req, 'mcp_direct_invalid', { guildId }, 'warn');
         json(res, 401, { error: 'URL MCP directe invalide ou expirée' });
@@ -1085,8 +1085,8 @@ export async function handleMCPRoutes(
       mcpLog(req, 'mcp_direct_valid', { guildId, keyId, method: jsonRpcMethod(parsedBody), permissions });
     } else if (rawKey) {
       const mcpKey = rawKey.startsWith('mcp_')
-        ? await verifyMcpKey(rawKey, guildId)
-        : await verifyOAuthAccessToken(rawKey, guildId, base);
+        ? await verifyMcpKey(rawKey, guildId, client)
+        : await verifyOAuthAccessToken(rawKey, guildId, base, client);
       if (!mcpKey) {
         mcpLog(req, 'mcp_bearer_invalid', { guildId });
         res.setHeader('WWW-Authenticate', authChallenge(req, url, guildId, 'invalid_token', 'Clé MCP invalide ou inactive'));
@@ -1098,7 +1098,7 @@ export async function handleMCPRoutes(
       keyId = mcpKey.id;
       mcpLog(req, 'mcp_bearer_valid', { guildId, keyId, tokenKind: rawKey.startsWith('mcp_') ? 'mcp_key' : 'oauth_jwt', method: jsonRpcMethod(parsedBody), permissions });
     } else if (basicCredentials) {
-      const mcpKey = await verifyMcpKeyByClientCredentials(basicCredentials.clientId, basicCredentials.clientSecret, guildId);
+      const mcpKey = await verifyMcpKeyByClientCredentials(basicCredentials.clientId, basicCredentials.clientSecret, guildId, client);
       if (!mcpKey) {
         mcpLog(req, 'mcp_basic_invalid', { guildId, clientId: basicCredentials.clientId });
         res.setHeader('WWW-Authenticate', authChallenge(req, url, guildId, 'invalid_token', 'Client MCP invalide ou inactif'));

@@ -10,6 +10,7 @@
   import { m, getLocale } from '../lib/i18n';
   import { createAsyncActionState } from '../lib/asyncAction.svelte';
   import { authStore } from '../lib/stores/auth.svelte';
+  import { subscribeRealtime } from '../lib/stores/realtime.svelte';
   import { toast } from '../lib/stores/toast.svelte';
   import {
     fetchNicknameModerationConfig,
@@ -21,7 +22,7 @@
     fetchGuildLanguage,
   } from '../lib/api';
 
-  let wsListener: ((e: CustomEvent) => void) | null = null;
+  let unsubscribeRealtime: (() => void) | null = null;
 
   // Le pseudo de remplacement suit la langue du bot sur ce serveur, pas celle du
   // dashboard : afficher la version francaise a qui administre un serveur en
@@ -135,26 +136,16 @@
     const language = await fetchGuildLanguage();
     if (language?.locale) botLocale = language.locale;
 
-    wsListener = (e: CustomEvent) => {
-      const payload = e.detail;
-      const shouldRefresh =
-        payload?.type === 'dashboard_state_changed' &&
-        payload?.guildId === authStore.selectedGuildId &&
-        (payload?.reason === 'nickname_moderation_updated' || payload?.reason === 'banned_words_updated');
-
-      if (shouldRefresh) {
-        console.log('[NicknameWS] state change received, refreshing data');
+    unsubscribeRealtime = subscribeRealtime({
+      reasons: ['nickname_moderation_updated', 'banned_words_updated'],
+      onUpdate: () => {
         void loadData(false);
-      }
-    };
-
-    window.addEventListener('kotbo-ws-message', wsListener as any);
+      },
+    });
   });
 
   onDestroy(() => {
-    if (wsListener) {
-      window.removeEventListener('kotbo-ws-message', wsListener as any);
-    }
+    unsubscribeRealtime?.();
   });
 
   // ---------------------------------------------------------------------------

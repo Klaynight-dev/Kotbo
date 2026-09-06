@@ -3,6 +3,7 @@ import type { Client } from 'discord.js';
 import type { AuthClaims, DashboardAccess } from '../../../shared.js';
 import { errorMessage } from '../../../../utils/errors.js';
 import { logger } from '../../../../utils/logger.js';
+import { formatGuildDateTime } from '../../../../utils/timezone.js';
 import {
   json,
   readJsonBody,
@@ -130,7 +131,7 @@ export async function handleCallRoutes(
             context: getGuildName(client, guildId),
             module: 'Staff Management',
             eventType: 'Manuel',
-            details: `Appel "${body.title}" planifié pour le ${scheduledAt.toLocaleString('fr-FR')}`,
+            details: `Appel "${body.title}" planifié pour le ${await formatGuildDateTime(guildId, scheduledAt)}`,
             channelId: null,
           });
 

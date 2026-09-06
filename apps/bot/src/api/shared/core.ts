@@ -33,7 +33,7 @@ export type {
 } from '@kotbo/contracts';
 import type {
   DashboardSanctionType,
-  
+  PlanKey,
   DashboardRole,
   SanctionItem,
   SanctionReportItem,
@@ -241,6 +241,14 @@ export type ModuleItem = {
   blockedBy?: string[];
   /** Route du dashboard vers la configuration détaillée, si elle existe. */
   settingsPath?: string;
+  /**
+   * Éteint parce que l'offre du serveur ne le comprend pas, et non par choix
+   * d'un administrateur. La page affiche un cadenas et un lien vers l'offre
+   * plutôt qu'un interrupteur qui ne servirait à rien.
+   */
+  lockedByPlan?: boolean;
+  /** Offre la plus basse qui débloque ce module, quand il est verrouillé. */
+  requiredPlan?: string | null;
 };
 
 export type NotificationSettings = {
@@ -401,6 +409,7 @@ export const buildCommandRestrictionsForPreset = (
 
       return {
         commandName,
+        enabled: true,
         allowedChannelIds: [],
         blockedChannelIds: [],
         allowedRoleIds,
@@ -540,8 +549,25 @@ export function resolveDailyAlgoTotalPoints(submission: {
 
 export type DashboardState = {
   guildName: string;
+  /** Offre du serveur, telle que `moduleGate` l'applique. */
+  plan: PlanKey;
+  /**
+   * Le serveur n'a pas fini son parcours : il n'a pas de tableau de bord, il a
+   * un tunnel de configuration. Calcule cote serveur (voir `guildState.ts`), et
+   * sur le seul etat du serveur - ni l'offre, ni le navigateur, ni le statut de
+   * la personne connectee n'y changent quoi que ce soit.
+   */
+  onboardingRequired: boolean;
+  /**
+   * Le dernier ecran du tunnel peut se conclure sans passer par Stripe :
+   * instance sans facturation, ou serveur dont l'acces a deja ete accorde.
+   */
+  onboardingCanFinishWithoutPayment: boolean;
   configChannelId: string;
   logChannelId: string;
+  /** Salons exclus des logs Discord. Renvoye par `getGuildState` et lu par
+   *  la page Logs, mais jamais declare ici : le typecheck echouait. */
+  logIgnoredChannelIds: string[];
   regulationChannelId: string;
   regulationMessageId: string | null;
   regulationVerificationEnabled: boolean;
@@ -551,6 +577,7 @@ export type DashboardState = {
   meetingVoiceChannelId: string;
   publicChannelId: string;
   newsChannelId: string;
+  digestChannelId: string;
   dailyAlgoChannelId: string;
   baseStaffRoleId: string;
   testStaffRoleId: string;
@@ -599,6 +626,11 @@ export type DashboardState = {
   funCountingChannelId: string;
   funOneWordStoryChannelId: string;
   funGuessNumberChannelId: string;
+  funWordChainChannelId: string;
+  funEmojiRiddleChannelId: string;
+  funNeverSayChannelId: string;
+  funEmojiOnlyChannelId: string;
+  funPunitiveMode: boolean;
   recruitmentCategoryId: string;
   recruitmentLogChannelId: string;
   recruitmentAutoRejectEnabled: boolean;
@@ -609,6 +641,8 @@ export type DashboardState = {
   discordVoiceChannels: DashboardChannel[];
   discordCategories: DashboardChannel[];
   discordRoles: DashboardRole[];
+  /** Roles Discord rattaches a la hierarchie staff, role moderateur inclus. */
+  staffRoleIds: string[];
   moderatorRoleId: string;
   commandRestrictions: CommandRestrictionState[];
   sidebarFavorites: string[];
@@ -636,6 +670,7 @@ export type DashboardState = {
     }[];
   }[];
   sanctionReportEnabled: boolean;
+  sanctionReportSkipBots: boolean;
   regulationRules: RegulationRuleItem[];
   messageTemplate: string;
   analytics: AnalyticsData;
@@ -678,7 +713,7 @@ export const MODULE_DESCRIPTIONS: Record<string, string> = {
   auto_thread: 'Gestion des salons : fils automatiques, message sticky, salons statistiques, vocaux temporaires et honeypot.',
   analytics: "Statistiques de croissance et d'engagement du serveur.",
   profile: 'Gestion du profil utilisateur et paramètres personnels.',
-  fun: 'Salons de jeux et divertissement (comptage, one word story, nombre mystère).',
+  fun: 'Salons de jeux et divertissement (comptage, one word story, nombre mystère, chaîne de mots, rébus emoji, ni oui ni non, emoji uniquement).',
   recruitment: 'Suivi des candidatures et intégration du personnel.',
   tickets: "Système complet de tickets d'assistance et de support configurable.",
   youtube: 'Intégration YouTube pour les notifications de nouvelles vidéos.',
@@ -1143,6 +1178,25 @@ export const DASHBOARD_ACCESS_ADMIN: DashboardAccess = {
 };
 
 /**
+ * Ce qu'un admin global voit d'un serveur dont il n'est pas membre.
+ *
+ * `level` reste 'none' volontairement : la quasi-totalite des gardes
+ * d'ecriture testent `level`/`canManageSettings`, pas `canViewDashboard`
+ * (cf. `access.level !== 'admin'` dans server-template.ts, tickets.ts,
+ * sanctions.ts, staff.ts...). Un admin global absent du serveur garde de
+ * quoi diagnostiquer un ticket de support ; il ne peut plus rien poser ni
+ * modifier a la place d'un client qui ne l'a jamais autorise a le faire.
+ */
+export const DASHBOARD_ACCESS_SUPPORT_READONLY: DashboardAccess = {
+  level: 'none',
+  canViewDashboard: true,
+  canModerateContent: false,
+  canModerateDailyAlgo: false,
+  canManageSettings: false,
+  canManageTutoring: false,
+};
+
+/**
  * Duree de vie des droits d'acces en cache.
  *
  * Volontairement courte : un membre retrograde ou exclu conserve ses droits
@@ -1184,9 +1238,23 @@ const computeDashboardAccess = async (
   userId: string,
   knownPermissions?: bigint | null,
 ): Promise<DashboardAccess> => {
-  const isGlobalAdmin = await resolveAdminAccess(client, userId);
-  if (isGlobalAdmin) return DASHBOARD_ACCESS_ADMIN;
+  const memberAccess = await computeMemberDashboardAccess(client, guildId, userId, knownPermissions);
+  if (memberAccess.level !== 'none') return memberAccess;
 
+  // Aucun lien reel avec ce serveur (ni membre, ni role modo, ni fiche
+  // staff) : seul le repli lecture seule reste ouvert a un admin global.
+  // Voir DASHBOARD_ACCESS_SUPPORT_READONLY pour la raison de ce choix.
+  if (await resolveAdminAccess(client, userId)) return DASHBOARD_ACCESS_SUPPORT_READONLY;
+
+  return DASHBOARD_ACCESS_NONE;
+};
+
+const computeMemberDashboardAccess = async (
+  client: Client,
+  guildId: string,
+  userId: string,
+  knownPermissions?: bigint | null,
+): Promise<DashboardAccess> => {
   const guildConfig = await prisma.guild.findUnique({
     where: { id: guildId },
     select: { moderatorRoleId: true }

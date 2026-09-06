@@ -2,6 +2,7 @@ import { type Client } from 'discord.js';
 import prisma from '../../utils/db.js';
 import { buildTwitchEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
+import { allowedMentionsFor } from '../../utils/mentions.js';
 import { resolveFollowMessage, templateHasVariable } from './socialTemplates.js';
 import type { DashboardFeatureConfig, Guild, TwitchChannelFollow } from '@prisma/client';
 
@@ -321,6 +322,9 @@ async function processFollow(
       await channel.send({
         content: follow.mention ? `${follow.mention} ${content}` : content,
         embeds: [embed],
+        // Sans consigne explicite, la conversion V2 des embeds neutralise tous
+        // les pings : la mention configuree doit etre autorisee nommement.
+        allowedMentions: allowedMentionsFor(follow.mention),
       }).catch((e: Error) => logger.error('TwitchService', "Envoi de l'alerte live impossible:", e));
     } else {
       logger.warn('TwitchService', `Salon ${targetChannelId} introuvable ou non textuel (guilde ${follow.guildId}).`);

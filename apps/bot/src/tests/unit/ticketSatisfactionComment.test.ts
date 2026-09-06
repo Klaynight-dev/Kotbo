@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   SATISFACTION_COMMENT_MAX_LENGTH,
+  buildSatisfactionReviewEmbed,
   clampCommentTimeout,
   sanitizeSatisfactionComment,
 } from '../../services/features/ticketSatisfactionService.js';
@@ -58,5 +59,60 @@ describe('clampCommentTimeout', () => {
   test('retombe sur le défaut quand la valeur est inexploitable', () => {
     expect(clampCommentTimeout(undefined)).toBe(120);
     expect(clampCommentTimeout('abc')).toBe(120);
+  });
+});
+
+describe('buildSatisfactionReviewEmbed', () => {
+  const base = {
+    ticketId: 'clx0000000000abcdef',
+    rating: 4,
+    comment: 'Rapide et clair',
+    userId: '111111111111111111',
+    author: {
+      userId: '111111111111111111',
+      username: 'membre',
+      displayName: 'Membre',
+      avatarUrl: 'https://cdn.discordapp.com/avatar.png',
+    },
+    staffId: '222222222222222222',
+    anonymous: false,
+  };
+
+  const field = (embed: ReturnType<typeof buildSatisfactionReviewEmbed>, name: string) =>
+    embed.data.fields?.find((f) => f.name === name)?.value;
+
+  test('affiche l\'auteur, le staff et le commentaire', () => {
+    const embed = buildSatisfactionReviewEmbed(base);
+    expect(field(embed, 'Auteur')).toBe('<@111111111111111111>');
+    expect(field(embed, 'Staff')).toBe('<@222222222222222222>');
+    expect(field(embed, 'Commentaire')).toBe('Rapide et clair');
+    expect(embed.data.author?.name).toBe('Membre');
+  });
+
+  test('signale explicitement l\'absence de commentaire', () => {
+    expect(field(buildSatisfactionReviewEmbed({ ...base, comment: null }), 'Commentaire')).toBe('*Aucun commentaire*');
+    expect(field(buildSatisfactionReviewEmbed({ ...base, comment: '' }), 'Commentaire')).toBe('*Aucun commentaire*');
+  });
+
+  test('masque totalement le membre en mode anonyme', () => {
+    const embed = buildSatisfactionReviewEmbed({ ...base, anonymous: true });
+    expect(field(embed, 'Auteur')).toBe('*Membre anonyme*');
+    expect(embed.data.author).toBeUndefined();
+    expect(JSON.stringify(embed.data)).not.toContain(base.userId);
+  });
+
+  test('supporte un ticket sans staff attribue', () => {
+    expect(field(buildSatisfactionReviewEmbed({ ...base, staffId: null }), 'Staff')).toBe('*Non attribué*');
+  });
+
+  test('rend la note en etoiles', () => {
+    expect(buildSatisfactionReviewEmbed({ ...base, rating: 3 }).data.description).toContain('★★★☆☆ **3/5**');
+    expect(buildSatisfactionReviewEmbed({ ...base, rating: 5 }).data.description).toContain('★★★★★ **5/5**');
+  });
+
+  test('ne casse pas sur une note hors bornes', () => {
+    const embed = buildSatisfactionReviewEmbed({ ...base, rating: 9 });
+    expect(embed.data.description).toContain('★★★★★');
+    expect(embed.data.color).toBeDefined();
   });
 });

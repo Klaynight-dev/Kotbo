@@ -11,6 +11,8 @@ import type { Prisma } from '@prisma/client';
 import prisma from '../../../utils/db.js';
 import { CLASS_UNLOCK_LEVEL, getRpgClass, isRpgClassId, type RpgClassId } from './rpgClasses.js';
 import { MAX_UPGRADE_LEVEL, upgradeCost, upgradeSuccessChance } from './rpgStats.js';
+import { ensureItemInstance } from './rpgItemInstanceService.js';
+import { preferGuildRecipes } from './rpgRecipePolicy.js';
 
 export type EquipmentSlot = 'weapon' | 'armor' | 'accessory';
 export type AllocatableStat = 'attack' | 'defense' | 'speed' | 'maxHealth';
@@ -21,10 +23,10 @@ export const STAT_POINTS_PER_LEVEL = 3;
 /** Un point investi dans les PV vaut plusieurs PV, sinon l'option ne vaut jamais le coup. */
 const MAX_HEALTH_PER_POINT = 8;
 
-const SLOT_FIELDS: Record<EquipmentSlot, { itemId: 'weaponId' | 'armorId' | 'accessoryId'; upgrade: 'weaponUpgrade' | 'armorUpgrade' | 'accessoryUpgrade' }> = {
-  weapon: { itemId: 'weaponId', upgrade: 'weaponUpgrade' },
-  armor: { itemId: 'armorId', upgrade: 'armorUpgrade' },
-  accessory: { itemId: 'accessoryId', upgrade: 'accessoryUpgrade' },
+export const SLOT_ITEM_FIELD: Record<EquipmentSlot, 'weaponId' | 'armorId' | 'accessoryId'> = {
+  weapon: 'weaponId',
+  armor: 'armorId',
+  accessory: 'accessoryId',
 };
 
 /** Emplacement d'équipement correspondant à un type d'objet. */
@@ -153,11 +155,15 @@ export async function listRecipesFor(guildId: string, userId: string): Promise<C
   });
   if (!profile) return [];
 
-  const recipes = await prisma.rpgRecipe.findMany({
+  const allRecipes = await prisma.rpgRecipe.findMany({
     where: { OR: [{ guildId: null }, { guildId }] },
     include: { resultItem: true },
     orderBy: { levelRequired: 'asc' },
   });
+
+  // Une recette écrite par le serveur remplace celle fournie de base pour le même objet :
+  // les deux côte à côte donnaient deux entrées identiques à un prix différent.
+  const recipes = preferGuildRecipes(allRecipes);
 
   const ownedByName = new Map<string, number>();
   for (const entry of profile.inventory) {
@@ -277,20 +283,24 @@ export async function getUpgradeQuotes(guildId: string, userId: string): Promise
   if (!profile) return [];
 
   const ids = [profile.weaponId, profile.armorId, profile.accessoryId].filter((id): id is string => Boolean(id));
-  const items = ids.length > 0
-    ? await prisma.rpgItem.findMany({ where: { id: { in: ids } } })
-    : [];
+  if (ids.length === 0) return [];
+
+  const [items, instances] = await Promise.all([
+    prisma.rpgItem.findMany({ where: { id: { in: ids } } }),
+    prisma.rpgItemInstance.findMany({ where: { rpgProfileId: profile.id, itemId: { in: ids } } }),
+  ]);
   const itemById = new Map(items.map((item) => [item.id, item]));
+  const upgradeByItemId = new Map(instances.map((instance) => [instance.itemId, instance.upgrade]));
 
   const quotes: UpgradeQuote[] = [];
   for (const slot of ['weapon', 'armor', 'accessory'] as EquipmentSlot[]) {
-    const fields = SLOT_FIELDS[slot];
-    const itemId = profile[fields.itemId];
+    const itemId = profile[SLOT_ITEM_FIELD[slot]];
     if (!itemId) continue;
     const item = itemById.get(itemId);
     if (!item) continue;
 
-    const currentLevel = profile[fields.upgrade];
+    // Sans instance, l'objet n'a jamais été amélioré : il part de zéro.
+    const currentLevel = upgradeByItemId.get(itemId) ?? 0;
     quotes.push({
       slot,
       itemName: item.name,
@@ -310,20 +320,22 @@ export async function getUpgradeQuotes(guildId: string, userId: string): Promise
  * Un échec ne détruit ni ne rétrograde l'objet : seules les pièces sont perdues.
  */
 export async function upgradeEquipment(guildId: string, userId: string, slot: EquipmentSlot) {
-  const fields = SLOT_FIELDS[slot];
-
   const profile = await prisma.rpgProfile.findUnique({
     where: { guildId_userId: { guildId, userId } },
   });
   if (!profile) throw new Error('Profil RPG introuvable.');
 
-  const itemId = profile[fields.itemId];
+  const itemId = profile[SLOT_ITEM_FIELD[slot]];
   if (!itemId) throw new Error("Aucun objet équipé dans cet emplacement.");
 
   const item = await prisma.rpgItem.findUnique({ where: { id: itemId } });
   if (!item) throw new Error('Objet équipé introuvable.');
 
-  const currentLevel = profile[fields.upgrade];
+  // L'instance est créée à l'équipement, mais un objet équipé avant cette version - ou
+  // par un chemin d'écriture direct - peut ne pas en avoir : on la matérialise ici.
+  const instance = await ensureItemInstance(profile.id, itemId);
+
+  const currentLevel = instance.upgrade;
   if (currentLevel >= MAX_UPGRADE_LEVEL) {
     throw new Error(`${item.name} est déjà au niveau maximum (+${MAX_UPGRADE_LEVEL}).`);
   }
@@ -333,14 +345,13 @@ export async function upgradeEquipment(guildId: string, userId: string, slot: Eq
     throw new Error(`Cette amélioration coûte ${cost} pièces, vous en avez ${profile.balance}.`);
   }
 
-  // Débit atomique conditionné au solde ET au niveau actuel : deux tentatives simultanées
-  // ne peuvent ni être payées une seule fois, ni faire gagner deux niveaux pour un paiement.
+  // Débit atomique conditionné au solde ET à l'objet toujours porté : deux tentatives
+  // simultanées ne peuvent pas être payées une seule fois.
   const paid = await prisma.rpgProfile.updateMany({
     where: {
       id: profile.id,
       balance: { gte: cost },
-      [fields.upgrade]: currentLevel,
-      [fields.itemId]: itemId,
+      [SLOT_ITEM_FIELD[slot]]: itemId,
     },
     data: { balance: { decrement: cost } },
   });
@@ -349,12 +360,15 @@ export async function upgradeEquipment(guildId: string, userId: string, slot: Eq
     throw new Error("L'amélioration a échoué, réessayez.");
   }
 
-  const success = Math.random() < upgradeSuccessChance(currentLevel);
+  // Garde sur le niveau au moment de l'incrément : deux réussites simultanées ne peuvent
+  // pas faire gagner deux niveaux pour un seul paiement.
+  let success = Math.random() < upgradeSuccessChance(currentLevel);
   if (success) {
-    await prisma.rpgProfile.update({
-      where: { id: profile.id },
-      data: { [fields.upgrade]: { increment: 1 } },
+    const applied = await prisma.rpgItemInstance.updateMany({
+      where: { id: instance.id, upgrade: currentLevel },
+      data: { upgrade: currentLevel + 1 },
     });
+    success = applied.count > 0;
   }
 
   return {

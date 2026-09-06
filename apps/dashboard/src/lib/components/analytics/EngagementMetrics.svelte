@@ -53,6 +53,101 @@
   const totalPages = $derived(Math.max(1, Math.ceil(filteredExpandedData().length / itemsPerPage)));
   const paginatedData = $derived(filteredExpandedData().slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage));
 
+  // Courbe d'activite globale : la serie brute est bruyante (creux du weekend,
+  // pics d'evenement), donc un mode moyenne mobile permet de lire la tendance
+  // de fond -- est-ce que le serveur monte ou descend -- sans le detail.
+  let activityAveraged = $state(false);
+
+  function activityLabel(dateKey: string) {
+    if (!dateKey) return '';
+    const [day, time] = dateKey.split(' ');
+    // Sur 24h le backend renvoie des pas de 30 min : l'heure est plus parlante.
+    return time || day.slice(5);
+  }
+
+  function movingAverage(values: number[], window: number) {
+    return values.map((_: number, i: number) => {
+      const slice = values.slice(Math.max(0, i - window + 1), i + 1);
+      const avg = slice.reduce((sum: number, v: number) => sum + v, 0) / slice.length;
+      return Math.round(avg * 10) / 10;
+    });
+  }
+
+  const activityPoints = $derived((data?.dailyTrend || []).map((d: any) => ({
+    label: activityLabel(d.dateKey),
+    value: mode === 'messages' ? (d.messages || 0) : (d.voiceMinutes || 0)
+  })));
+
+  const activityRawValues = $derived(activityPoints.map((p: any) => p.value));
+  // Fenetre adaptee a la taille de la periode : 7 points sur un mois, moins
+  // sur une periode courte ou la moyenne mangerait toute la courbe.
+  const activityWindow = $derived(activityRawValues.length >= 28 ? 7 : activityRawValues.length >= 12 ? 5 : 3);
+  const activityValues = $derived(activityAveraged ? movingAverage(activityRawValues, activityWindow) : activityRawValues);
+
+  const activityColor = $derived(mode === 'messages' ? '#6366f1' : '#10b981');
+  const activityRgb = $derived(mode === 'messages' ? '99, 102, 241' : '16, 185, 129');
+
+  const activityTotal = $derived(activityRawValues.reduce((sum: number, v: number) => sum + v, 0));
+  const activityAverage = $derived(activityRawValues.length ? Math.round(activityTotal / activityRawValues.length) : 0);
+  const activityPeak = $derived(activityRawValues.length ? Math.max(...activityRawValues) : 0);
+
+  // Tendance : moyenne du dernier tiers comparee a celle du premier tiers.
+  const activityTrend = $derived.by(() => {
+    if (activityRawValues.length < 4) return null;
+    const size = Math.max(1, Math.floor(activityRawValues.length / 3));
+    const mean = (arr: number[]) => arr.reduce((sum, v) => sum + v, 0) / arr.length;
+    const before = mean(activityRawValues.slice(0, size));
+    const after = mean(activityRawValues.slice(-size));
+    if (before === 0) return after > 0 ? { direction: 'up' as const, value: 100 } : { direction: 'stable' as const, value: 0 };
+    const delta = Math.round(((after - before) / before) * 100);
+    if (Math.abs(delta) < 3) return { direction: 'stable' as const, value: 0 };
+    return { direction: delta > 0 ? 'up' as const : 'down' as const, value: delta };
+  });
+
+  const activityChartData = $derived({
+    labels: activityPoints.map((p: any) => p.label),
+    datasets: [{
+      label: mode === 'messages' ? m.an_unit_messages() : m.an_unit_minutes(),
+      data: activityValues,
+      borderColor: activityColor,
+      backgroundColor: `rgba(${activityRgb}, 0.1)`,
+      borderWidth: 2,
+      fill: true,
+      tension: activityAveraged ? 0.45 : 0.3,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointBackgroundColor: activityColor,
+      gradient: {
+        backgroundColor: {
+          axis: 'y',
+          colors: {
+            0: `rgba(${activityRgb}, 0)`,
+            100: `rgba(${activityRgb}, 0.25)`
+          }
+        }
+      }
+    }]
+  });
+
+  const activityOptions = $derived({
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (context: any) => `${context.parsed.y.toLocaleString(dateLocale())} ${mode === 'messages' ? m.an_unit_messages_lc() : m.an_unit_minutes_lc()}`
+        }
+      }
+    }
+  });
+
+  function activityRows() {
+    return activityPoints.map((p: any, i: number) => ({
+      periode: (data?.dailyTrend || [])[i]?.dateKey ?? p.label,
+      ...(mode === 'messages' ? { messages: p.value } : { minutes_vocal: p.value }),
+      moyenne_mobile: movingAverage(activityRawValues, activityWindow)[i]
+    }));
+  }
+
   const membersChartData = $derived({
     labels: topMembers.slice(0, 5).map((m: any) => m.name || m.username),
     datasets: [{
@@ -318,6 +413,90 @@
   </div>
 
 {:else}
+  <div class="space-y-6">
+  <!-- Global Activity Curve -->
+  <div id="chart-global-activity" class="premium-card p-6 md:p-8 rounded-xl space-y-6">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg {mode === 'messages' ? 'bg-primary/10 text-primary' : 'bg-emerald-500/10 text-emerald-500'}">
+          <Papicon icon="ChartLineUp" size={24} />
+        </div>
+        <div>
+          <h3 class="text-xl font-semibold text-on-surface">{mode === 'messages' ? m.an_eng_activity_messages() : m.an_eng_activity_voice()}</h3>
+          <p class="text-xs font-bold text-on-surface-variant/40">
+            {#if activityAveraged}
+              {m.an_eng_activity_desc_avg({ window: activityWindow })}
+            {:else}
+              {mode === 'messages' ? m.an_eng_activity_desc_messages() : m.an_eng_activity_desc_voice()}
+            {/if}
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="flex gap-1 bg-surface-container-high/40 p-1 rounded-lg border border-outline-variant/10">
+          <button
+            onclick={() => activityAveraged = false}
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all {activityAveraged ? 'text-on-surface-variant/60 hover:text-on-surface' : 'bg-on-surface text-surface'}"
+          >
+            {m.an_eng_activity_mode_raw()}
+          </button>
+          <button
+            onclick={() => activityAveraged = true}
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all {activityAveraged ? 'bg-on-surface text-surface' : 'text-on-surface-variant/60 hover:text-on-surface'}"
+          >
+            {m.an_eng_activity_mode_avg()}
+          </button>
+        </div>
+        <ExportDropdown
+          onExportCSV={() => doExportCSV(`activite_globale_${mode}`, activityRows())}
+          onExportXLSX={() => doExportXLSX(`activite_globale_${mode}`, activityRows())}
+          onExportImage={() => doExportImage('#chart-global-activity', `activite_globale_${mode}`)}
+        />
+      </div>
+    </div>
+
+    {#if activityPoints.length > 0}
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="p-3 rounded-lg bg-surface-container-high/20 border border-outline-variant/5">
+          <p class="text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant/40">{m.an_eng_activity_total()}</p>
+          <p class="text-lg font-semibold text-on-surface">{activityTotal.toLocaleString(dateLocale())} <span class="text-xs font-bold text-on-surface-variant/40">{mode === 'messages' ? m.an_unit_msgs() : m.an_unit_min()}</span></p>
+        </div>
+        <div class="p-3 rounded-lg bg-surface-container-high/20 border border-outline-variant/5">
+          <p class="text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant/40">{m.an_eng_activity_per_point()}</p>
+          <p class="text-lg font-semibold text-on-surface">{activityAverage.toLocaleString(dateLocale())} <span class="text-xs font-bold text-on-surface-variant/40">{mode === 'messages' ? m.an_unit_msgs() : m.an_unit_min()}</span></p>
+        </div>
+        <div class="p-3 rounded-lg bg-surface-container-high/20 border border-outline-variant/5">
+          <p class="text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant/40">{m.an_eng_activity_peak()}</p>
+          <p class="text-lg font-semibold text-on-surface">{activityPeak.toLocaleString(dateLocale())} <span class="text-xs font-bold text-on-surface-variant/40">{mode === 'messages' ? m.an_unit_msgs() : m.an_unit_min()}</span></p>
+        </div>
+        <div class="p-3 rounded-lg bg-surface-container-high/20 border border-outline-variant/5">
+          {#if activityTrend}
+            <p class="text-[10px] font-semibold uppercase tracking-widest {activityTrend.direction === 'up' ? 'text-emerald-500/60' : activityTrend.direction === 'down' ? 'text-red-500/60' : 'text-on-surface-variant/40'}">{m.an_eng_activity_trend()}</p>
+            <p class="text-sm font-semibold flex items-center gap-1.5 {activityTrend.direction === 'up' ? 'text-emerald-500' : activityTrend.direction === 'down' ? 'text-red-500' : 'text-on-surface-variant'}">
+              <Papicon icon={activityTrend.direction === 'up' ? 'TrendingUp' : activityTrend.direction === 'down' ? 'TrendingDown' : 'Minus'} size={16} />
+              {#if activityTrend.direction === 'up'}
+                {m.an_eng_activity_trend_up({ value: activityTrend.value })}
+              {:else if activityTrend.direction === 'down'}
+                {m.an_eng_activity_trend_down({ value: activityTrend.value })}
+              {:else}
+                {m.an_eng_activity_trend_stable()}
+              {/if}
+            </p>
+          {:else}
+            <p class="text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant/40">{m.an_eng_activity_trend()}</p>
+            <p class="text-sm font-semibold text-on-surface-variant/40">{m.an_eng_activity_trend_stable()}</p>
+          {/if}
+        </div>
+      </div>
+
+      <div class="h-[280px]">
+        <Chart data={activityChartData} type="line" height={280} options={activityOptions} />
+      </div>
+    {:else}
+      <p class="text-center py-16 text-on-surface-variant/40 font-bold text-sm">{m.an_eng_no_data_period()}</p>
+    {/if}
+  </div>
+
   <!-- Default Grid View -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <!-- Top Members -->
@@ -443,6 +622,7 @@
         </div>
       {/if}
     </div>
+  </div>
   </div>
 {/if}
 

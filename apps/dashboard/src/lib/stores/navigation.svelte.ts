@@ -16,12 +16,17 @@ import {
 } from '../config/pages';
 import { m } from '../i18n';
 import { authStore } from './auth.svelte';
+import {
+  FAVORITES_KEY,
+  RECENTS_KEY,
+  onNavigationStorageCleared,
+  readStoredHrefs,
+  writeStoredHrefs,
+} from './navigationStorage';
 import { dashboardStore } from './dashboard.svelte';
 
 export type NavGroup = { key: string; label: string; items: PageConfig[] };
 
-const FAVORITES_KEY = 'sidebar_favorites';
-const RECENTS_KEY = 'nav_recents';
 const MAX_FAVORITES = 80;
 const MAX_RECENTS = 6;
 
@@ -52,21 +57,7 @@ function sanitizeHrefs(entries: unknown, limit: number): string[] {
 }
 
 function readStored(key: string, limit: number): string[] {
-  try {
-    if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(key);
-    return sanitizeHrefs(raw ? JSON.parse(raw) : [], limit);
-  } catch {
-    return [];
-  }
-}
-
-function writeStored(key: string, value: string[]): void {
-  try {
-    localStorage?.setItem(key, JSON.stringify(value));
-  } catch {
-    /* storage unavailable (private mode, quota): favourites stay in memory */
-  }
+  return sanitizeHrefs(readStoredHrefs(key), limit);
 }
 
 /**
@@ -89,7 +80,29 @@ class NavigationStore {
     (dashboardStore.state.featureAccess ?? {}) as Record<string, { canView?: boolean }>,
   );
 
-  readonly isAdmin = $derived(this.#guild?.accessLevel === 'admin');
+  /**
+   * Deux sources pour la meme question, parce qu'elles ne se trompent pas au
+   * meme endroit : le niveau de la liste des serveurs vient des permissions
+   * rendues par OAuth, qui datent de la connexion, tandis que l'etat de guilde
+   * lit les permissions reelles du membre sur le serveur. Sans la seconde, un
+   * administrateur dont la session a vieilli perdait le groupe Configuration
+   * de sa barre laterale. `canManageSettings` n'est vrai que pour le niveau
+   * `admin` : le croisement n'ouvre rien a un moderateur.
+   */
+  readonly isAdmin = $derived(
+    this.#guild?.accessLevel === 'admin'
+      || !!dashboardStore.state.access?.canManageSettings,
+  );
+  /**
+   * Facturation visible pour ce compte sur ce serveur.
+   *
+   * Calcule par l'API (`/api/user/guilds`) et non ici : la regle melange le
+   * niveau Discord, le payeur enregistre et un reglage du serveur, dont le
+   * navigateur n'a aucune raison de connaitre le detail. La page n'apparait
+   * donc que pour l'administrateur, celui qui paie, ou tout le staff quand le
+   * serveur a choisi de leur ouvrir.
+   */
+  readonly canViewBilling = $derived(Boolean(this.#guild?.billingAccess));
   readonly isModerator = $derived(this.#guild?.accessLevel === 'moderator');
   readonly isStaff = $derived(!!authStore.member);
   readonly isStaffServer = $derived(!!dashboardStore.state.isStaffServer);
@@ -99,10 +112,15 @@ class NavigationStore {
   );
 
   canViewFeature = (featureKey?: string): boolean => {
+    // L'acces a la guilde se verifie avant `featureAccess`, qui vient du store
+    // et decrit toujours la derniere guilde chargee : passe outre, un compte
+    // qui perd ses droits en cours de session continuerait de voir ses pages
+    // tant que le store n'a pas ete relu.
+    if (!authStore.hasGuildAccess) return false;
     if (!featureKey) return true;
     const feature = this.#featureAccess[featureKey];
     if (feature?.canView !== undefined) return feature.canView;
-    return this.#guild?.accessLevel !== 'none';
+    return true;
   };
 
   /**
@@ -142,15 +160,12 @@ class NavigationStore {
   };
 
   /**
-   * « Créer mon serveur » est remonté sous l'accueil, mais sa route reste
-   * reservee aux admins : sans ce filtre un moderateur verrait une entree qui
-   * ne mene nulle part.
+   * « Créer mon serveur » avait ici son propre filtre : sa page etait reservee
+   * aux admins. Elle est devenue un bloc de la prise en main, ouverte a qui
+   * peut configurer le serveur, et c'est la page qui masque desormais le bloc
+   * aux non-admins - le reste du parcours leur restant utile.
    */
-  readonly #visibleGeneral = $derived(
-    generalItems
-      .filter((item) => item.href !== '/server-template' || this.isAdmin)
-      .filter(this.#isReachable),
-  );
+  readonly #visibleGeneral = $derived(generalItems.filter(this.#isReachable));
 
   readonly #visibleModeration = $derived(
     this.isStaff || this.isModerator || this.isAdmin
@@ -290,7 +305,7 @@ class NavigationStore {
     const next = [href, ...this.#recents.filter((entry) => entry !== href)].slice(0, MAX_RECENTS);
     if (JSON.stringify(next) === JSON.stringify(this.#recents)) return;
     this.#recents = next;
-    writeStored(RECENTS_KEY, next);
+    writeStoredHrefs(RECENTS_KEY, next);
   }
 
   /** Case- and accent-insensitive search across every reachable page. */
@@ -304,12 +319,21 @@ class NavigationStore {
       .map((entry) => entry.item);
   }
 
+  /** Fin de session : plus rien de l'utilisateur precedent ne doit rester. */
+  reset(): void {
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    this.#persistTimer = null;
+    this.#favorites = [];
+    this.#recents = [];
+    this.#hydratedGuildId = null;
+  }
+
   async #persist(next: string[]): Promise<void> {
     const guildId = authStore.selectedGuildId;
     if (!guildId) return;
     const sanitized = sanitizeHrefs(next, MAX_FAVORITES);
     (dashboardStore.state as { sidebarFavorites?: string[] }).sidebarFavorites = sanitized;
-    writeStored(FAVORITES_KEY, sanitized);
+    writeStoredHrefs(FAVORITES_KEY, sanitized);
     await updateSidebarFavorites(sanitized, guildId);
   }
 }
@@ -331,6 +355,8 @@ function matchScore(haystack: string, needle: string): number {
 }
 
 export const navigationStore = new NavigationStore();
+
+onNavigationStorageCleared(() => navigationStore.reset());
 
 /** Adresses du menu, sans leur eventuelle requete. Fixes : calculees une fois. */
 const NAV_BASE_PATHS = allPages.map((page) => page.href.split('?')[0]);

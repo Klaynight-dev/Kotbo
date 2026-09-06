@@ -97,7 +97,7 @@ export function tokensOfType(triggerType: string, type: PortDataType): ContextTo
 // DÉCLENCHEURS
 // ============================================================================
 
-export type TriggerGroup = 'members' | 'messages' | 'voice' | 'moderation' | 'support';
+export type TriggerGroup = 'members' | 'messages' | 'voice' | 'moderation' | 'support' | 'schedule' | 'community';
 
 export interface TriggerPresentation {
   type: string;
@@ -117,6 +117,8 @@ export const TRIGGER_GROUP_LABELS: Record<TriggerGroup, string> = {
   voice: 'Vocal',
   moderation: 'Modération',
   support: 'Support',
+  schedule: 'Planification',
+  community: 'Clans et paris',
 };
 
 export const TRIGGER_LIBRARY: TriggerPresentation[] = [
@@ -201,12 +203,52 @@ export const TRIGGER_LIBRARY: TriggerPresentation[] = [
     example: 'Journaliser la sanction et prévenir le membre en privé.',
   },
   {
+    type: 'OnSchedule',
+    sentence: 'À heure fixe',
+    short: 'Planification',
+    group: 'schedule',
+    icon: 'Clock',
+    example: 'Poster le récapitulatif du jour tous les soirs à 20h.',
+  },
+  {
     type: 'OnTicketCreated',
     sentence: 'Quand un ticket est ouvert',
     short: 'Ticket',
     group: 'support',
     icon: 'TextBubble',
     example: 'Poster les consignes d\'accueil dans le ticket.',
+  },
+  {
+    type: 'OnBetResolved',
+    sentence: 'Quand un pari est tranché',
+    short: 'Pari gagné',
+    group: 'community',
+    icon: 'Coins',
+    example: 'Féliciter le vainqueur et annoncer son gain dans le salon des clans.',
+  },
+  {
+    type: 'OnBetRefunded',
+    sentence: 'Quand un pari est annulé',
+    short: 'Pari annulé',
+    group: 'community',
+    icon: 'Coins',
+    example: 'Prévenir le salon des clans que les mises ont été rendues.',
+  },
+  {
+    type: 'OnClanDebtOpened',
+    sentence: "Quand un membre mise des points qu'il n'a pas",
+    short: 'Dette ouverte',
+    group: 'community',
+    icon: 'AlertTriangle',
+    example: 'Alerter le staff quand quelqu\'un s\'endette lourdement.',
+  },
+  {
+    type: 'OnClanDebtCleared',
+    sentence: 'Quand un membre solde sa dette de clan',
+    short: 'Dette soldée',
+    group: 'community',
+    icon: 'Sparkles',
+    example: 'Le féliciter en privé et lui rendre un rôle retiré le temps de la dette.',
   },
 ];
 
@@ -225,7 +267,7 @@ export function getTrigger(type: string): TriggerPresentation | undefined {
  * contexte. Tous les autres sont des choix fermés, ce qui rend une étape
  * invalide impossible à écrire.
  */
-export type FieldKind = 'richtext' | 'number' | 'role' | 'channel' | 'member' | 'color';
+export type FieldKind = 'richtext' | 'number' | 'role' | 'channel' | 'member' | 'message' | 'color';
 
 export interface ActionField {
   key: string;
@@ -360,6 +402,60 @@ export const ACTION_LIBRARY: ActionPresentation[] = [
     ],
   },
   {
+    type: 'DeleteMessage',
+    label: 'Supprimer un message',
+    sentence: 'Supprimer {message}',
+    group: 'moderation',
+    icon: 'Trash',
+    fields: [
+      { key: 'message', label: 'Message', kind: 'message' },
+    ],
+  },
+  {
+    type: 'AddReaction',
+    label: 'Réagir à un message',
+    sentence: 'Réagir à {message} avec {emoji}',
+    group: 'communication',
+    icon: 'Sparkles',
+    fields: [
+      { key: 'message', label: 'Message', kind: 'message' },
+      { key: 'emoji', label: 'Émoji', kind: 'richtext', placeholder: '👍' },
+    ],
+  },
+  {
+    type: 'PinMessage',
+    label: 'Épingler un message',
+    sentence: 'Épingler {message}',
+    group: 'communication',
+    icon: 'Pin',
+    fields: [
+      { key: 'message', label: 'Message', kind: 'message' },
+    ],
+  },
+  {
+    type: 'CreateThread',
+    label: 'Ouvrir un fil',
+    sentence: 'Ouvrir un fil {name} dans {channel}',
+    group: 'communication',
+    icon: 'MessageSquare',
+    fields: [
+      { key: 'name', label: 'Nom du fil', kind: 'richtext', placeholder: 'Discussion du jour' },
+      { key: 'channel', label: 'Salon', kind: 'channel' },
+    ],
+  },
+  {
+    type: 'BanMember',
+    label: 'Bannir',
+    sentence: 'Bannir {member} pendant {days} jours (0 = définitif) pour {reason}',
+    group: 'moderation',
+    icon: 'Shield',
+    fields: [
+      MEMBER_FIELD,
+      { key: 'days', label: 'Jours', kind: 'number', optional: true, defaultValue: 0, min: 0, max: 3650 },
+      { key: 'reason', label: 'Motif', kind: 'richtext', optional: true, placeholder: 'Comportement inacceptable' },
+    ],
+  },
+  {
     type: 'CreateTicket',
     label: 'Ouvrir un ticket',
     sentence: 'Ouvrir un ticket {subject} pour {member}',
@@ -383,13 +479,25 @@ export function getAction(type: string): ActionPresentation | undefined {
  * pas : plutôt que de la laisser choisir puis échouer à la validation, on ne la
  * propose pas. C'est le principal garde-fou de l'éditeur simple.
  */
-export function availableActions(triggerType: string): ActionPresentation[] {
-  const tokens = contextTokens(triggerType);
-  const hasMember = tokens.some((token) => token.type === 'Member' && token.root);
+/**
+ * Entités qu'aucun choix fixe ne peut fournir : elles viennent forcément du
+ * déclencheur. Un rôle ou un salon, eux, se prennent dans une liste du serveur,
+ * donc une action qui n'en demande que cela reste toujours réalisable.
+ */
+const CONTEXT_ONLY_FIELDS: Partial<Record<FieldKind, PortDataType>> = {
+  member: 'Member',
+  message: 'Message',
+};
 
-  return ACTION_LIBRARY.filter((action) => (
-    hasMember || !action.fields.some((field) => field.kind === 'member')
-  ));
+export function availableActions(triggerType: string): ActionPresentation[] {
+  const roots = new Set(
+    contextTokens(triggerType).filter((token) => token.root).map((token) => token.type),
+  );
+
+  return ACTION_LIBRARY.filter((action) => action.fields.every((field) => {
+    const needed = CONTEXT_ONLY_FIELDS[field.kind];
+    return !needed || roots.has(needed);
+  }));
 }
 
 // ============================================================================

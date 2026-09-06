@@ -110,10 +110,23 @@ for (const suffix of ['../../services/analytics/moduleStatsService.ts', '../../s
 
 const { getModuleStates, isModuleEnabled, invalidateModuleStates, filterGuildsWithModule } =
   await import('../../services/core/moduleGate.js');
-const { setDashboardModuleStatus, CoreModuleError } =
+const { setDashboardModuleStatus, CoreModuleError, PlanLockedError } =
   await import('../../services/core/moduleActivationService.js');
 
 const GUILD = 'guild-1';
+
+/**
+ * Serveur de test, sur une offre qui ouvre tout le catalogue.
+ *
+ * La garde applique desormais la grille tarifaire par-dessus la resolution
+ * d etat : sans offre explicite, un faux enregistrement retombe sur `FREE` et
+ * la moitie des modules s eteindraient pour une raison qui n a rien a voir avec
+ * ce que ces cas verifient. `CUSTOM` neutralise cette couche ; elle est testee
+ * pour elle-meme plus bas.
+ */
+function guild(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id: GUILD, plan: 'CUSTOM', ...extra };
+}
 
 /** Dernier `prisma.guild.update()` recu, tel que la bascule l a construit. */
 function lastGuildUpdate(): { data: Record<string, boolean> } {
@@ -122,7 +135,7 @@ function lastGuildUpdate(): { data: Record<string, boolean> } {
 }
 
 beforeEach(() => {
-  guildRow = { id: GUILD };
+  guildRow = guild();
   featureRows = [];
   levelConfigRow = null;
   rankedConfigRow = null;
@@ -138,14 +151,14 @@ describe('isModuleEnabled', () => {
   test('respecte la ligne DashboardFeatureConfig avant tout le reste', async () => {
     // La colonne historique dit « actif », la ligne dit « inactif » : c est la
     // ligne qui gagne, sinon la bascule du dashboard resterait sans effet.
-    guildRow = { id: GUILD, funEnabled: true };
+    guildRow = guild({ funEnabled: true });
     featureRows = [{ guildId: GUILD, featureKey: 'fun', enabled: false }];
 
     expect(await isModuleEnabled(GUILD, 'fun')).toBeFalse();
   });
 
   test('retombe sur la colonne historique quand aucune ligne n existe', async () => {
-    guildRow = { id: GUILD, codePoliceEnabled: true };
+    guildRow = guild({ codePoliceEnabled: true });
 
     // `codepolice` est a `defaultEnabled: false` dans le registre : sans la
     // lecture de la colonne, un serveur qui l utilisait depuis des mois le
@@ -157,14 +170,14 @@ describe('isModuleEnabled', () => {
     // Regression : sans `legacyField`, tous les serveurs qui faisaient tourner
     // des clans les ont vus s eteindre a la livraison de la garde, points
     // toujours en base mais page fermee par le 403 de la route.
-    guildRow = { id: GUILD, clansEnabled: true };
+    guildRow = guild({ clansEnabled: true });
     levelConfigRow = { enabled: true };
 
     expect(await isModuleEnabled(GUILD, 'clans')).toBeTrue();
   });
 
   test('les modules a table dediee suivent leur propre etat', async () => {
-    guildRow = { id: GUILD };
+    guildRow = guild();
     levelConfigRow = { enabled: true };
     rankedConfigRow = { enabled: true };
     banAppealConfigRow = { enabled: true };
@@ -174,7 +187,7 @@ describe('isModuleEnabled', () => {
   });
 
   test('retombe sur le defaut du registre sans ligne ni colonne', async () => {
-    guildRow = { id: GUILD };
+    guildRow = guild();
 
     expect(await isModuleEnabled(GUILD, 'tickets')).toBeTrue();
     expect(await isModuleEnabled(GUILD, 'nickname_moderation')).toBeFalse();
@@ -229,7 +242,7 @@ describe('isModuleEnabled', () => {
 
 describe('filterGuildsWithModule', () => {
   test('ne garde que les serveurs ou le module tourne', async () => {
-    guildRow = { id: GUILD };
+    guildRow = guild();
     featureRows = [{ guildId: GUILD, featureKey: 'tickets', enabled: false }];
     await invalidateModuleStates(GUILD);
 
@@ -308,5 +321,131 @@ describe('setDashboardModuleStatus', () => {
     await setDashboardModuleStatus(GUILD, 'tickets', false);
 
     expect(await isModuleEnabled(GUILD, 'tickets')).toBeFalse();
+  });
+
+  // ── Garde tarifaire a l ecriture ───────────────────────────────────────
+  //
+  // La garde de lecture eteignait deja les modules hors offre, mais l ecriture,
+  // elle, passait : le serveur repondait « c est fait » a une bascule sans
+  // effet, et l interrupteur revenait a sa place au rechargement suivant. Le
+  // clic partait alors en boucle, sans que rien n explique pourquoi.
+
+  test('refuse d allumer un module hors offre', async () => {
+    guildRow = guild({ plan: 'FREE' });
+
+    await expect(setDashboardModuleStatus(GUILD, 'tutoring', true)).rejects.toThrow(PlanLockedError);
+    expect(featureRows.find((row) => row.featureKey === 'tutoring')?.enabled).not.toBeTrue();
+  });
+
+  test('nomme l offre qui debloquerait le module', async () => {
+    guildRow = guild({ plan: 'FREE' });
+
+    const err = await setDashboardModuleStatus(GUILD, 'tutoring', true).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PlanLockedError);
+    expect(err.moduleKey).toBe('tutoring');
+    expect(err.currentPlan).toBe('FREE');
+    expect(err.requiredPlan).toBe('PLUS');
+  });
+
+  test('refuse aussi quand seule une dependance est hors offre', async () => {
+    // `tutoring` exige `staff_directory` : allumer le premier tire le second,
+    // et ecrire la dependance en douce ouvrirait une porte que l offre ferme.
+    guildRow = guild({ plan: 'FREE' });
+
+    const err = await setDashboardModuleStatus(GUILD, 'tutoring', true).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PlanLockedError);
+    expect(featureRows.find((row) => row.featureKey === 'staff_directory')?.enabled).not.toBeTrue();
+  });
+
+  test('laisse eteindre un module hors offre', async () => {
+    // Sans quoi un serveur retrograde ne pourrait plus ranger sa configuration :
+    // on ferme l allumage, pas l extinction.
+    guildRow = guild({ plan: 'FREE' });
+    featureRows = [{ guildId: GUILD, featureKey: 'tutoring', enabled: true }];
+
+    const result = await setDashboardModuleStatus(GUILD, 'tutoring', false);
+
+    expect(result.enabled).toBeFalse();
+  });
+});
+
+/**
+ * Couche tarifaire.
+ *
+ * C est la seule qui peut faire perdre de l argent dans les deux sens : trop
+ * permissive, elle offre les modules payants ; trop stricte, elle ferme le
+ * service a un client qui a paye. Elle merite donc ses propres cas, distincts
+ * de ceux de la resolution d etat.
+ */
+describe('offre commerciale', () => {
+  test('un module hors offre est eteint malgre une ligne qui l active', async () => {
+    // Le serveur a explicitement allume l economie depuis le dashboard, mais
+    // son offre ne la comprend pas : c est l offre qui tranche.
+    guildRow = guild({ plan: 'FREE' });
+    featureRows = [{ guildId: GUILD, featureKey: 'economy', enabled: true }];
+
+    expect(await isModuleEnabled(GUILD, 'economy')).toBeFalse();
+  });
+
+  test('un module compris dans l offre reste pilotable par le serveur', async () => {
+    guildRow = guild({ plan: 'ULTIMATE' });
+    featureRows = [{ guildId: GUILD, featureKey: 'economy', enabled: false }];
+
+    // L offre ouvre le module, l administrateur l a eteint : son choix tient.
+    expect(await isModuleEnabled(GUILD, 'economy')).toBeFalse();
+
+    featureRows = [{ guildId: GUILD, featureKey: 'economy', enabled: true }];
+    await invalidateModuleStates(GUILD);
+    expect(await isModuleEnabled(GUILD, 'economy')).toBeTrue();
+  });
+
+  test('les modules du coeur restent actifs sur l offre gratuite', async () => {
+    // Sinon un serveur non abonne perd la page Modules, donc tout moyen de
+    // s abonner : la garde se refermerait sur elle-meme.
+    guildRow = guild({ plan: 'FREE' });
+
+    expect(await isModuleEnabled(GUILD, 'modules')).toBeTrue();
+    expect(await isModuleEnabled(GUILD, 'settings')).toBeTrue();
+    expect(await isModuleEnabled(GUILD, 'dashboard')).toBeTrue();
+  });
+
+  test('rien d autre que le coeur n est ouvert sur l offre gratuite', async () => {
+    // L offre gratuite n est pas une version reduite du produit : c est l etat
+    // d un serveur qui n a rien achete, et aucun module ne s y execute. Une
+    // ligne de configuration disant le contraire ne suffit pas a rouvrir -
+    // c est precisement le cas qu un import ou une ecriture directe en base
+    // pourrait creer.
+    guildRow = guild({ plan: 'FREE' });
+    featureRows = [
+      { guildId: GUILD, featureKey: 'sanctions', enabled: true },
+      { guildId: GUILD, featureKey: 'logs', enabled: true },
+      { guildId: GUILD, featureKey: 'welcome_goodbye', enabled: true },
+    ];
+
+    expect(await isModuleEnabled(GUILD, 'sanctions')).toBeFalse();
+    expect(await isModuleEnabled(GUILD, 'logs')).toBeFalse();
+    expect(await isModuleEnabled(GUILD, 'welcome_goodbye')).toBeFalse();
+  });
+
+  test('une offre inconnue en base ferme au lieu d ouvrir', async () => {
+    // Donnee corrompue ou migration incomplete : on retombe sur FREE.
+    guildRow = guild({ plan: 'OFFRE_QUI_N_EXISTE_PAS' });
+    featureRows = [{ guildId: GUILD, featureKey: 'economy', enabled: true }];
+
+    expect(await isModuleEnabled(GUILD, 'economy')).toBeFalse();
+  });
+
+  test('les dependants d un module verrouille s eteignent en cascade', async () => {
+    // `marketplace` depend d `economy` : verrouiller la seconde doit fermer la
+    // premiere, meme si l offre la contenait.
+    guildRow = guild({ plan: 'FREE' });
+    featureRows = [
+      { guildId: GUILD, featureKey: 'economy', enabled: true },
+      { guildId: GUILD, featureKey: 'marketplace', enabled: true },
+    ];
+
+    expect(await isModuleEnabled(GUILD, 'marketplace')).toBeFalse();
   });
 });

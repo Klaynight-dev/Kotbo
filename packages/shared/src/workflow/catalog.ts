@@ -144,6 +144,24 @@ const TRIGGERS: NodeDef[] = [
     ],
   },
   {
+    /**
+     * Seul déclencheur qui ne vient pas du bus : un balayage passe chaque
+     * minute et lance les workflows planifiés dont le motif tombe. Le nom
+     * d'événement ci-dessous ne sert donc qu'à indexer la table, il n'est
+     * jamais publié - s'y abonner ne recevrait rien.
+     */
+    type: 'OnSchedule',
+    label: 'Planification',
+    category: 'trigger',
+    description: 'Se déclenche à heure fixe, selon une planification récurrente.',
+    event: 'schedule:fired',
+    inputs: [],
+    outputs: [EXEC_OUT],
+    config: [
+      { key: 'cron', label: 'Planification', type: 'text', defaultValue: '0 9 * * *', placeholder: '0 9 * * *' },
+    ],
+  },
+  {
     type: 'OnLevelUp',
     label: 'Passage de niveau',
     category: 'trigger',
@@ -154,6 +172,70 @@ const TRIGGERS: NodeDef[] = [
       EXEC_OUT,
       { id: 'member', label: 'Membre', type: 'Member' },
       { id: 'level', label: 'Niveau', type: 'Number' },
+    ],
+  },
+  {
+    /**
+     * Le port `member` porte le premier vainqueur, pas le camp entier : les
+     * actions du catalogue s'adressent à un membre, et un port `List` ne
+     * saurait pas les alimenter. Le décompte reste disponible à côté pour les
+     * paris à plusieurs.
+     */
+    type: 'OnBetResolved',
+    label: 'Pari tranché',
+    category: 'trigger',
+    description: 'Se déclenche quand un arbitre désigne le camp gagnant d\'un pari en points de clan.',
+    event: 'bet:resolved',
+    inputs: [],
+    outputs: [
+      EXEC_OUT,
+      { id: 'member', label: 'Vainqueur', type: 'Member' },
+      { id: 'subject', label: 'Sujet', type: 'String' },
+      { id: 'side', label: 'Camp gagnant', type: 'String' },
+      { id: 'netGain', label: 'Gain net', type: 'Number' },
+      { id: 'pot', label: 'Pot', type: 'Number' },
+      { id: 'winnerCount', label: 'Nombre de vainqueurs', type: 'Number' },
+    ],
+  },
+  {
+    type: 'OnBetRefunded',
+    label: 'Pari annulé',
+    category: 'trigger',
+    description: 'Se déclenche quand un pari se clôt sans vainqueur et que les mises sont rendues.',
+    event: 'bet:refunded',
+    inputs: [],
+    outputs: [
+      EXEC_OUT,
+      { id: 'subject', label: 'Sujet', type: 'String' },
+      { id: 'reason', label: 'Motif', type: 'String' },
+      { id: 'refunded', label: 'Points rendus', type: 'Number' },
+    ],
+  },
+  {
+    type: 'OnClanDebtOpened',
+    label: 'Dette de clan creusée',
+    category: 'trigger',
+    description: 'Se déclenche quand un membre mise des points de clan qu\'il ne possède pas.',
+    event: 'clan:debt-opened',
+    inputs: [],
+    outputs: [
+      EXEC_OUT,
+      { id: 'member', label: 'Membre', type: 'Member' },
+      { id: 'amount', label: 'Montant emprunté', type: 'Number' },
+      { id: 'total', label: 'Dette totale', type: 'Number' },
+    ],
+  },
+  {
+    type: 'OnClanDebtCleared',
+    label: 'Dette de clan soldée',
+    category: 'trigger',
+    description: 'Se déclenche quand un membre finit de rembourser sa dette de points de clan.',
+    event: 'clan:debt-cleared',
+    inputs: [],
+    outputs: [
+      EXEC_OUT,
+      { id: 'member', label: 'Membre', type: 'Member' },
+      { id: 'repaid', label: 'Dernier remboursement', type: 'Number' },
     ],
   },
 ];
@@ -315,6 +397,65 @@ const ACTIONS: NodeDef[] = [
     inputs: [
       EXEC_IN,
       { id: 'member', label: 'Membre', type: 'Member' },
+      { id: 'reason', label: 'Motif', type: 'String', optional: true },
+    ],
+    outputs: [EXEC_OUT],
+  },
+  {
+    type: 'DeleteMessage',
+    label: 'Supprimer un message',
+    category: 'action',
+    description: 'Supprime un message existant.',
+    inputs: [
+      EXEC_IN,
+      { id: 'message', label: 'Message', type: 'Message' },
+    ],
+    outputs: [EXEC_OUT],
+  },
+  {
+    type: 'AddReaction',
+    label: 'Réagir à un message',
+    category: 'action',
+    description: 'Ajoute une réaction à un message.',
+    inputs: [
+      EXEC_IN,
+      { id: 'message', label: 'Message', type: 'Message' },
+      { id: 'emoji', label: 'Émoji', type: 'String' },
+    ],
+    outputs: [EXEC_OUT],
+  },
+  {
+    type: 'PinMessage',
+    label: 'Épingler un message',
+    category: 'action',
+    description: 'Épingle un message dans son salon.',
+    inputs: [
+      EXEC_IN,
+      { id: 'message', label: 'Message', type: 'Message' },
+    ],
+    outputs: [EXEC_OUT],
+  },
+  {
+    type: 'CreateThread',
+    label: 'Ouvrir un fil',
+    category: 'action',
+    description: 'Ouvre un fil de discussion dans un salon.',
+    inputs: [
+      EXEC_IN,
+      { id: 'channel', label: 'Salon', type: 'Channel' },
+      { id: 'name', label: 'Nom du fil', type: 'String' },
+    ],
+    outputs: [EXEC_OUT, { id: 'thread', label: 'Fil créé', type: 'Channel' }],
+  },
+  {
+    type: 'BanMember',
+    label: 'Bannir',
+    category: 'action',
+    description: 'Bannit un membre du serveur, définitivement ou pour une durée donnée.',
+    inputs: [
+      EXEC_IN,
+      { id: 'member', label: 'Membre', type: 'Member' },
+      { id: 'days', label: 'Jours', type: 'Number', optional: true },
       { id: 'reason', label: 'Motif', type: 'String', optional: true },
     ],
     outputs: [EXEC_OUT],

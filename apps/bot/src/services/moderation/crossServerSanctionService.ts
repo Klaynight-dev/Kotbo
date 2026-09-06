@@ -95,22 +95,26 @@ export async function getCrossServerSanctionSummary(
   }
 }
 
-async function computeSummary(
-  client: Client,
-  guildId: string,
-  targetIds: string[],
-): Promise<CrossServerSanctionSummary> {
+/**
+ * Serveurs avec lesquels `guildId` partage ses donnees de moderation.
+ *
+ * Meme instance white-label, partage active des deux cotes, serveur courant exclu.
+ * Retourne `null` si le serveur courant ne participe pas au partage : la
+ * reciprocite veut qu'il ne voie alors rien non plus. Un tableau vide signifie
+ * qu'il participe mais n'a aucun serveur frere.
+ *
+ * Partage par le casier cross-serveur et par la detection de double comptes, qui
+ * doivent obeir exactement aux memes regles de confidentialite.
+ */
+export async function getSharingSiblingGuildIds(guildId: string): Promise<string[] | null> {
   const self = await prisma.guild.findUnique({
     where: { id: guildId },
     select: { instanceId: true, crossServerSanctionsEnabled: true },
   });
 
   // Le serveur courant doit exister et participer au partage.
-  if (!self || !self.crossServerSanctionsEnabled) {
-    return disabledSummary();
-  }
+  if (!self || !self.crossServerSanctionsEnabled) return null;
 
-  // Serveurs frères : même instance white-label, partage activé, hors serveur courant.
   const siblings = await prisma.guild.findMany({
     where: {
       instanceId: self.instanceId ?? null,
@@ -121,7 +125,20 @@ async function computeSummary(
     take: MAX_SIBLING_GUILDS,
   });
 
-  const siblingIds = siblings.map((g) => g.id);
+  return siblings.map((g) => g.id);
+}
+
+async function computeSummary(
+  client: Client,
+  guildId: string,
+  targetIds: string[],
+): Promise<CrossServerSanctionSummary> {
+  const siblingIds = await getSharingSiblingGuildIds(guildId);
+
+  if (siblingIds === null) {
+    return disabledSummary();
+  }
+
   if (siblingIds.length === 0) {
     return { ...disabledSummary(), enabled: true };
   }

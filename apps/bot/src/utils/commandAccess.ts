@@ -2,6 +2,8 @@ import { PermissionFlagsBits, type ChatInputCommandInteraction } from 'discord.j
 
 export type CommandRestrictionRule = {
   commandName: string;
+  /** Commande desactivee pour tout le serveur (administrateurs compris). */
+  enabled: boolean;
   allowedChannelIds: string[];
   blockedChannelIds: string[];
   allowedRoleIds: string[];
@@ -54,8 +56,11 @@ export const normalizeCommandRestrictions = (value: unknown): CommandRestriction
       const commandName = (entry as Record<string, unknown>).commandName;
       if (typeof commandName !== 'string' || !commandName.trim()) return null;
 
+      const enabled = (entry as Record<string, unknown>).enabled;
+
       return {
         commandName: commandName.trim(),
+        enabled: enabled !== false,
         allowedChannelIds: normalizeIdList((entry as Record<string, unknown>).allowedChannelIds),
         blockedChannelIds: normalizeIdList((entry as Record<string, unknown>).blockedChannelIds),
         allowedRoleIds: normalizeIdList((entry as Record<string, unknown>).allowedRoleIds),
@@ -82,6 +87,12 @@ export function evaluateCommandRestriction(
 ): { allowed: boolean; reason?: string } {
   const rule = rules.find((entry) => entry.commandName === commandName);
   if (!rule) return { allowed: true };
+
+  // Une commande coupee l'est pour tout le monde : le garde-fou reste le
+  // dashboard, qui peut toujours la rallumer.
+  if (!rule.enabled) {
+    return { allowed: false, reason: 'Cette commande est desactivee sur ce serveur.' };
+  }
 
   if (isPrivileged) return { allowed: true };
 

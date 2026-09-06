@@ -43,7 +43,7 @@
     <div class="sticky top-0 p-4 bg-surface-container border-b border-outline-variant/15 space-y-3">
       <div class="flex items-center justify-between">
         <h3 class="text-sm font-bold text-on-surface">{m.wf_step_picker_title()}</h3>
-        <button type="button" onclick={onClose} class="p-1.5 rounded-lg text-on-surface-variant/50 hover:text-on-surface" aria-label={m.wf_close()}>
+        <button type="button" onclick={onClose} class="p-1.5 rounded-lg text-on-surface-variant/70 hover:text-on-surface" aria-label={m.wf_close()}>
           <Papicon icon="Cross" size={14} />
         </button>
       </div>
@@ -58,7 +58,7 @@
     <div class="p-4 space-y-5">
       {#each groups as group (group)}
         <section class="space-y-2">
-          <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/50">
+          <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/70">
             {ACTION_GROUP_LABELS[group]}
           </h4>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -79,17 +79,17 @@
       {/each}
 
       <section class="space-y-2 pt-2 border-t border-outline-variant/15">
-        <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/50">{m.wf_group_organize()}</h4>
+        <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/70">{m.wf_group_organize()}</h4>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button
             type="button"
             onclick={() => onPick({ kind: 'condition' })}
             class="flex items-center gap-2.5 p-3 rounded-2xl text-left bg-surface-container-high/60 border border-outline-variant/15 hover:border-amber-400/40 transition-all"
           >
-            <span class="p-2 rounded-xl bg-amber-500/10 text-amber-300 shrink-0"><Papicon icon="GitBranch" size={14} /></span>
+            <span class="p-2 rounded-xl bg-amber-500/10 text-amber-700 dark:text-amber-300 shrink-0"><Papicon icon="GitBranch" size={14} /></span>
             <span class="min-w-0">
               <span class="block text-xs font-medium text-on-surface">{m.wf_add_condition()}</span>
-              <span class="block text-[10px] text-on-surface-variant/50">{m.wf_add_condition_desc()}</span>
+              <span class="block text-[10px] text-on-surface-variant/70">{m.wf_add_condition_desc()}</span>
             </span>
           </button>
           <button
@@ -97,10 +97,10 @@
             onclick={() => onPick({ kind: 'wait' })}
             class="flex items-center gap-2.5 p-3 rounded-2xl text-left bg-surface-container-high/60 border border-outline-variant/15 hover:border-sky-400/40 transition-all"
           >
-            <span class="p-2 rounded-xl bg-sky-500/10 text-sky-300 shrink-0"><Papicon icon="Clock" size={14} /></span>
+            <span class="p-2 rounded-xl bg-sky-500/10 text-sky-700 dark:text-sky-300 shrink-0"><Papicon icon="Clock" size={14} /></span>
             <span class="min-w-0">
               <span class="block text-xs font-medium text-on-surface">{m.wf_add_wait()}</span>
-              <span class="block text-[10px] text-on-surface-variant/50">{m.wf_add_wait_desc()}</span>
+              <span class="block text-[10px] text-on-surface-variant/70">{m.wf_add_wait_desc()}</span>
             </span>
           </button>
         </div>

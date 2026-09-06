@@ -22,6 +22,11 @@ model TicketSatisfaction {
   commentPromptMessageId String?
   commentPromptExpiresAt DateTime?
 
+  // Message publié dans le salon des avis. Conservé pour pouvoir l'éditer quand
+  // le commentaire arrive après la note, et pour ne jamais publier deux fois.
+  reviewLogChannelId String?
+  reviewLogMessageId String?
+
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())

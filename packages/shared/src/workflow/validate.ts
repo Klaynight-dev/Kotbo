@@ -1,4 +1,5 @@
 import { getNodeDef, isTriggerNode, resolveNodeInputs, resolveNodeOutputs } from './catalog.js';
+import { isValidCron } from './cron.js';
 import {
   canConnect,
   DEFAULT_BUDGET,
@@ -228,6 +229,31 @@ export function validateGraph(
           nodeId: node.id,
         });
       }
+    }
+  }
+
+  // ── Planification ────────────────────────────────────────────────────────
+  // Le motif du déclencheur « Planification » vit en configuration, pas sur un
+  // port : les règles d'entrées ci-dessus ne le voient pas. Un motif vide ou
+  // mal formé ne ferait jamais partir le workflow, en silence.
+  for (const node of nodes) {
+    if (node.type !== 'OnSchedule') continue;
+
+    const expression = typeof node.config?.cron === 'string' ? node.config.cron : '';
+    if (!expression.trim()) {
+      issues.push({
+        severity: 'error',
+        code: 'MISSING_SCHEDULE',
+        message: 'La planification n\'est pas renseignée.',
+        nodeId: node.id,
+      });
+    } else if (!isValidCron(expression)) {
+      issues.push({
+        severity: 'error',
+        code: 'INVALID_SCHEDULE',
+        message: `Planification illisible : « ${expression} ».`,
+        nodeId: node.id,
+      });
     }
   }
 

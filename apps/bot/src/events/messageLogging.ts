@@ -76,12 +76,16 @@ export async function flushPendingMessageLogs(): Promise<void> {
  * Determines whether message logging is active for a guild/channel and returns
  * the resolved guild config, or null when logging should be skipped.
  */
-async function resolveLoggingConfig(guildId: string, channelId: string) {
+async function resolveLoggingConfig(guildId: string, channel: Message['channel']) {
   if (!isGuildActivated(guildId)) return null;
   const guildConfig = await getCachedGuild(guildId);
   if (!guildConfig || !guildConfig.messageLoggingEnabled) return null;
   const ignored = (guildConfig.messageLoggingIgnoredChannels ?? []) as string[];
-  if (ignored.includes(channelId)) return null;
+  if (ignored.includes(channel.id)) return null;
+  // Les fils ne sont pas proposés à l'exclusion : exclure un salon doit couvrir
+  // les fils qui y sont ouverts, sans quoi la moitié des messages passe quand
+  // même en base.
+  if (channel.isThread() && channel.parentId && ignored.includes(channel.parentId)) return null;
   return guildConfig;
 }
 
@@ -99,7 +103,7 @@ async function logMessage(message: Message): Promise<void> {
   if (channel.type === ChannelType.DM) return;
   if (!LOGGABLE_CHANNEL_TYPES.has(channel.type)) return;
 
-  const config = await resolveLoggingConfig(guild.id, channel.id);
+  const config = await resolveLoggingConfig(guild.id, channel);
   if (!config) return;
 
   const attachments = extractAttachments(message);
@@ -146,10 +150,10 @@ async function logMessage(message: Message): Promise<void> {
 
 async function updateLoggedMessage(newMessage: Message | PartialMessage): Promise<void> {
   const guildId = newMessage.guild?.id;
-  const channelId = newMessage.channelId;
-  if (!guildId || !channelId) return;
+  const channel = newMessage.channel;
+  if (!guildId || !channel) return;
 
-  const config = await resolveLoggingConfig(guildId, channelId);
+  const config = await resolveLoggingConfig(guildId, channel);
   if (!config) return;
 
   let full: Message;

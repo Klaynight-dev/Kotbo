@@ -305,6 +305,43 @@ export function truncate(str: string, max: number) {
   return str.length > max ? str.slice(0, max - 3) + '...' : str;
 }
 
+/** Longueur maximale de la valeur d'un champ d'embed. Au-delà, Discord refuse le message. */
+export const EMBED_FIELD_VALUE_MAX = 1024;
+
+/**
+ * Joint des entrées dans un champ d'embed sans jamais dépasser la limite.
+ *
+ * Couper au caractère près ne convient pas ici : une mention tronquée s'affiche en texte
+ * brut, et surtout Discord rejette le message entier - pas seulement le champ - dès qu'une
+ * valeur dépasse. On garde donc des entrées complètes et on annonce le reste, la ligne de
+ * report étant fournie par l'appelant, qui seul connaît sa langue.
+ */
+export function joinFieldEntries(
+  entries: string[],
+  options: { more: (count: number) => string; separator?: string; max?: number },
+): string {
+  const separator = options.separator ?? '\n';
+  const max = options.max ?? EMBED_FIELD_VALUE_MAX;
+
+  const all = entries.join(separator);
+  if (all.length <= max) return all;
+
+  const kept: string[] = [];
+  let length = 0;
+  for (const entry of entries) {
+    const addition = (kept.length === 0 ? 0 : separator.length) + entry.length;
+    const report = separator + options.more(entries.length - kept.length - 1);
+    if (length + addition + report.length > max) break;
+    kept.push(entry);
+    length += addition;
+  }
+
+  // Une seule entrée déjà trop longue pour le champ : il ne reste qu'à la couper.
+  if (kept.length === 0) return truncate(entries[0] ?? '', max);
+
+  return kept.join(separator) + separator + options.more(entries.length - kept.length);
+}
+
 export function getCategoryTheme(category: string) {
   const c = category?.toLowerCase() || '';
   if (c.includes('youtube')) return { label: 'YouTube', color: 0xff0000 as ColorResolvable };

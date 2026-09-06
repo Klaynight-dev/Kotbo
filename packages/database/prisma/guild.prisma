@@ -60,6 +60,11 @@ model Guild {
   // null = pas de préférence explicite, on retombe sur interaction.locale/guildLocale.
   language String?
 
+  // Identifiant IANA du fuseau du serveur (`Europe/Paris`, `America/Montreal`…).
+  // Le process tourne en UTC : sans ce champ, toute date saisie ou affichée par
+  // le bot est décalée du fuseau réel du serveur.
+  timezone String @default("Europe/Paris")
+
   globalIncludeKeywords String[] @default([])
   globalExcludeKeywords String[] @default([])
   globalIgnoredKeywords String[] @default([])
@@ -120,6 +125,8 @@ model Guild {
 
   statusCheckChannelId     String?
   logChannelId             String?
+  // Salons dont l'activité ne doit générer aucun log avancé (messages, vocal).
+  logIgnoredChannelIds     String[] @default([])
 
   youtubeEnabled           Boolean @default(false)
   youtubeChannelId         String?
@@ -136,6 +143,10 @@ model Guild {
 
   sanctionSyncEnabled      Boolean @default(false)
   sanctionReportEnabled    Boolean @default(true)
+  // Sanctionner un bot (webhook fou, bot compromis) n'a pas de victime a
+  // documenter ni de membre a qui rendre des comptes : le rapport n'apporte
+  // rien. Desactive par defaut pour ne rien changer aux serveurs en place.
+  sanctionReportSkipBots   Boolean @default(false)
   sanctionAlertChannelId   String?
   newsChannelId            String?
 
@@ -145,6 +156,27 @@ model Guild {
   activated                Boolean   @default(false)
   activatedAt              DateTime?
   activationCode           String?
+  // Fin du parcours de configuration, et rien d'autre : ni l'offre, ni un
+  // acces accorde, ni le statut de la personne connectee ne le remplacent.
+  // Tant que cette date est nulle, le dashboard sert le parcours - c'est la
+  // seule sortie, et elle appartient au serveur, pas au navigateur ni au
+  // visiteur. Ecrite par le paiement (`syncSubscription`) ou par le dernier
+  // ecran quand il n'y a rien a payer.
+  onboardingCompletedAt    DateTime?
+  // Ou l'on en est du parcours, et ce qu'on y a repondu.
+  //
+  // Le parcours vivait dans le seul `localStorage` : changer d'appareil en
+  // cours de route repartait du debut, et le tableau de bord n'avait aucun
+  // moyen de proposer « finissez votre configuration ». Le navigateur reste la
+  // source rapide - il ecrit a chaque clic, sans aller-retour reseau - et cette
+  // colonne recoit la meme chose a chaque etape validee. Au chargement, c'est
+  // la version la plus avancee des deux qui gagne.
+  //
+  // En JSON plutot qu'en colonnes : ce que le parcours retient change a chaque
+  // ecran qu'on lui ajoute, et une migration par question rendrait le parcours
+  // couteux a faire evoluer. Rien ici ne fait foi cote bot - le serveur Discord
+  // reste seul juge de ce qui est reellement pose.
+  onboardingState          Json?
   // true si l'activation provient d'une cascade StaffServerLink (serveur staff lié à un principal activé), pas d'un code direct
   activatedViaStaffLink    Boolean   @default(false)
 
@@ -164,6 +196,50 @@ model Guild {
   // Paliers de rappel (en minutes restantes) déjà notifiés, pour ne jamais renvoyer deux fois le même.
   accessRemindersSent      Int[]     @default([])
 
+  // ── Offre commerciale (facturation Stripe) ─────────────────────────────────
+  // Offre courante : FREE | PLUS | PRO | ULTIMATE | CUSTOM. Décide des modules
+  // ouverts (`planIncludesModule` dans @kotbo/contracts, appliqué par `moduleGate`).
+  // Écrit uniquement par `planService`, jamais à la main depuis une route.
+  plan                     String    @default("FREE")
+  // Client Stripe rattaché au serveur. Créé au premier paiement et réutilisé
+  // ensuite : c'est lui qui porte le moyen de paiement et l'historique de
+  // factures affiché dans le portail client.
+  stripeCustomerId         String?   @unique
+  // Abonnement Stripe en cours. Un serveur n'en a qu'un à la fois : changer
+  // d'offre modifie cet abonnement au lieu d'en ouvrir un second.
+  stripeSubscriptionId     String?   @unique
+  // Dernier statut connu, recopié de Stripe : active, trialing, past_due,
+  // canceled… Sert à afficher un bandeau d'impayé sans interroger l'API.
+  stripeSubscriptionStatus String?
+  // Prix souscrit, seule donnée qui permet de retrouver l'offre et la
+  // périodicité si les variables d'environnement changent de nom.
+  stripePriceId            String?
+  // Résiliation demandée : l'abonnement court jusqu'à la fin de la période
+  // payée puis s'arrête. Le serveur garde son offre jusque-là.
+  stripeCancelAtPeriodEnd  Boolean   @default(false)
+  // Fin de la période payée en cours, telle que Stripe la déclare. C'est elle
+  // qui alimente `accessExpiresAt`, donc les rappels et l'expiration.
+  stripeCurrentPeriodEnd   DateTime?
+  // Utilisateur Discord qui a engagé la dépense : celui qui a lancé le
+  // paiement, ou qui a reçu le serveur en cadeau. C'est lui « le payeur » au
+  // sens de la page Facturation, qui lui reste ouverte même s'il perd ses
+  // droits d'administration Discord - on ne coupe pas quelqu'un de sa propre
+  // facture.
+  billingOwnerId           String?
+  // Ouvre la page Facturation à tout le staff du serveur (niveau modérateur et
+  // au-dessus) et non aux seuls administrateurs. Faux par défaut : un montant
+  // débité et une adresse de facturation n'ont pas à circuler dans une équipe
+  // de modération sans décision explicite.
+  billingStaffAccess       Boolean   @default(false)
+  // Echeance annuelle pour laquelle l'avis de reconduction a deja ete envoye.
+  //
+  // L'article L215-1 du code de la consommation impose de prevenir le
+  // consommateur entre trois mois et un mois avant le terme d'un abonnement a
+  // reconduction tacite. Stocker la date d'echeance visee - et non un simple
+  // booleen - rend l'envoi idempotent d'une annee sur l'autre : a la
+  // reconduction suivante, `stripeCurrentPeriodEnd` change, et l'avis repart.
+  renewalNoticeSentFor     DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -172,6 +248,10 @@ model Guild {
   /// reste pour ne pas casser les bases existantes, mais plus rien ne la lit.
   clansUnique       Boolean @default(true)
   clanAutoAssignOnJoin Boolean @default(false)
+  /// Bilan hebdomadaire publié dans le QG de chaque clan : points de la semaine,
+  /// meilleurs contributeurs, place au classement. Éteint par défaut, le QG étant
+  /// un salon de discussion où personne n'a demandé à recevoir un rapport.
+  clanWeeklyDigest     Boolean @default(false)
   currentClanSeason Int     @default(1)
   clanSeasonStartsAt DateTime?
   clanSeasonEndsAt   DateTime?
@@ -190,6 +270,74 @@ model Guild {
   clanXpPerBoost     Int     @default(100)
   lastWinningClanId  String?
   clanAnnouncementChannelId String?
+
+  // ── Paris entre membres (onglet Paris de l'espace Clans) ──────────────────
+  /// Interrupteur propre à l'onglet. Distinct de `clansEnabled` : les paris
+  /// s'appuient sur les points de clan, mais un serveur peut vouloir des clans
+  /// sans paris. Éteindre les clans éteint les paris, l'inverse n'est pas vrai.
+  betsEnabled Boolean @default(false)
+
+  /// Salon où les paris sont ouverts, et salon où le récapitulatif est publié
+  /// une fois le verdict rendu. Sans valeur, le bot retombe sur les salons
+  /// nommés « faire-des-paris » et « annonce-paris ».
+  betChannelId             String?
+  betAnnouncementChannelId String?
+
+  betMinStake          Int @default(10)
+  betMaxStake          Int @default(10000)
+  /// Paris ouverts simultanément par membre, propositions comprises. Chaque
+  /// pari accepté gèle des points : sans plafond, un membre immobilise tout son
+  /// score et sature le salon de défis que personne n'a demandés.
+  betMaxOpenPerMember  Int @default(5)
+  /// Au-delà, une proposition jamais acceptée cesse d'être cliquable.
+  betAcceptWindowHours Int @default(48)
+
+  /// Formes de paris ouvertes aux membres, en plus du duel qui l'est toujours.
+  betAllowPool  Boolean @default(false)
+  betAllowTeams Boolean @default(false)
+  /// Autorise les paris que n'importe qui peut rejoindre, sans adversaire
+  /// désigné.
+  betAllowOpen  Boolean @default(false)
+
+  /// PER_MEMBER | PER_SIDE : mise fixée par personne, ou par camp et divisée
+  /// entre ses places. `PER_SIDE` impose des camps à effectif fixe, la mise
+  /// individuelle devant être connue avant que chacun ne paie en entrant.
+  betStakeMode String @default("PER_MEMBER")
+
+  /// Participants et camps par pari. Le premier borne la taille du pot, le
+  /// second le nombre de boutons tenables dans une annonce.
+  betMaxParticipants Int @default(10)
+  betMaxSides        Int @default(4)
+
+  /// Récompense le podium des parieurs à la clôture d'une saison.
+  ///
+  /// Le palmarès existe toute la saison mais ne débouchait sur rien : sans
+  /// enjeu à l'arrivée, il n'est qu'un tableau de plus.
+  betSeasonRewardEnabled Boolean @default(false)
+  /// Rôle donné au meilleur parieur, retiré à ses porteurs précédents à chaque
+  /// clôture - comme le rôle de chef de clan.
+  betSeasonRewardRoleId  String?
+  /// Prime en points de clan versée sur la **nouvelle** saison : créditée sur
+  /// l'ancienne, elle serait invisible dans un classement déjà clos. À zéro par
+  /// défaut, pour qu'activer la récompense ne fausse pas un départ de saison
+  /// sans qu'on l'ait voulu.
+  betRewardTop1 Int @default(0)
+  betRewardTop2 Int @default(0)
+  betRewardTop3 Int @default(0)
+
+  /// Autorise à miser des points qu'on n'a pas encore. Le manque devient une
+  /// dette (`ClanPointDebt`) prélevée sur les gains futurs.
+  betAllowDebt Boolean @default(false)
+  /// Plafond de dette par membre. Sans lui, un membre mise indéfiniment des
+  /// points qu'il ne possède pas.
+  betMaxDebt   Int     @default(5000)
+  /// Efface les dettes à la clôture d'une saison. Désactivé par défaut : une
+  /// dette effaçable en attendant la fin de saison revient à offrir la mise à
+  /// qui parie au bon moment.
+  betDebtResetOnSeason Boolean @default(false)
+
+  /// Rôles autorisés à trancher un pari, en plus des administrateurs.
+  betResolverRoleIds String[] @default([])
   clanRewardGiveaway Boolean @default(false)
   clanRewardXpBoost  Boolean @default(false)
   clanRewardXpBoostRate Float @default(1.2)
@@ -207,9 +355,35 @@ model Guild {
   clanPointsDailyAlgoTop2     Int @default(20)
   clanPointsDailyAlgoTop3     Int @default(10)
 
+  // ── Pont RPG → Clans ───────────────────────────────────────────────────────
+  // Même logique que le pont Daily Algo : un interrupteur à part, pour qu'un
+  // serveur puisse couper l'apport du RPG au classement des clans sans avoir à
+  // remettre à zéro les points de chaque monstre du bestiaire.
+  clanPointsFromRpg Boolean @default(false)
+
+  // ── Drops aléatoires (page Drops) ──────────────────────────────────────────
+  /// Interrupteur maître de la page. Chaque type de drop garde le sien : couper
+  /// ici arrête tout sans avoir à éteindre les quatre ressources une par une.
+  dropsEnabled Boolean @default(false)
+  /// Salon de repli, utilisé par les types de drop qui n'en désignent pas.
+  dropChannelId String?
+  /// Rôle mentionné à l'apparition d'un drop. Vide = aucune mention.
+  dropMentionRoleId String?
+  /// Durée de vie d'un drop que personne ne ramasse, en minutes. Le mode
+  /// fenêtre a la sienne : elle est annoncée aux membres, celle-ci non.
+  /// Plancher de cinq minutes appliqué à la lecture (voir `@kotbo/shared`).
+  dropLifetimeMinutes Int @default(60)
+
   clans                 Clan[]
+  dropConfigs           DropConfig[]
+  drops                 Drop[]
   clanMemberContributions ClanMemberContribution[]
   clanContributionEvents ClanContributionEvent[]
+  clanBets ClanBet[]
+  clanBetSeasonAwards ClanBetSeasonAward[]
+  clanWeeklyDigests   ClanWeeklyDigest[]
+  clanPointDebts ClanPointDebt[]
+  clanDebtSnapshots ClanDebtSnapshot[]
   memberLevels MemberLevel[]
   levelRoleRewards LevelRoleReward[]
   levelConfig LevelConfig?
@@ -271,6 +445,7 @@ model Guild {
   customFormSubmissions CustomFormSubmission[]
   banAppealConfig BanAppealConfig?
   banAppeals BanAppeal[]
+  banAppealSanctions BanAppealSanction[]
   banAppealBlacklist BanAppealBlacklist[]
   adminPermissionRequests AdminPermissionRequest[]
   moduleActivationStats ModuleActivationStat[]
@@ -304,6 +479,9 @@ model Guild {
   ticketWelcomeFooter         String   @default("Kotbo · Ticket ID: {ticket_id}")
   ticketAllowOverclaim        Boolean  @default(true)
   ticketOverclaimPermission   String   @default("ANY") // "ANY", "SUPERIOR_OR_EQUAL", "NONE"
+  // Le premier message d'un staff dans un ticket OPEN vaut prise en charge :
+  // evite l'oubli du bouton « Prendre en charge » avant d'intervenir.
+  ticketAutoClaimOnReply      Boolean  @default(false)
   ticketInactivityEnabled     Boolean  @default(false)
   ticketInactivityHours       Int      @default(24)
   ticketInactivityMessage     String   @default("Bonjour {user}, votre ticket est inactif depuis un moment. N'hésitez pas à y répondre si vous avez toujours besoin d'aide !")
@@ -312,6 +490,9 @@ model Guild {
   ticketSatisfactionCommentQuestion String  @default("")
   // Délai (secondes) avant que le bouton « Ajouter un commentaire » n'expire.
   ticketSatisfactionCommentTimeout  Int     @default(120)
+  // Salon où republier chaque avis sous forme d'embed. `null` = pas de relais.
+  ticketSatisfactionLogChannelId    String?
+  ticketSatisfactionLogAnonymous    Boolean @default(false)
   // Salon ouvert mais verrouillé tant qu'aucun staff ne l'a pris en charge :
   // l'auteur et le staff le voient, personne n'y écrit avant le claim.
   ticketLockUntilClaim        Boolean  @default(false)
@@ -320,8 +501,49 @@ model Guild {
   ticketApprovalEnabled       Boolean  @default(false)
   // Salon où atterrissent les demandes à valider. Vide = salon de logs tickets.
   ticketApprovalChannelId     String?
+  // ── Quotas tickets ────────────────────────────────────────────────────────
+  // Chaque quota s'active independamment ; desactive, il n'impose aucune
+  // limite. Un type de ticket peut surcharger les valeurs via `ticketTypes`
+  // (voir `resolveTicketQuotas`) : `null` sur le type = herite du serveur.
+
+  // Tickets ouverts simultanement par un meme membre (PENDING + OPEN + CLAIMED).
+  ticketQuotaOpenEnabled      Boolean  @default(false)
+  ticketQuotaOpenMax          Int      @default(1)
+  // Delai minimum entre deux ouvertures, en minutes.
+  ticketQuotaCooldownEnabled  Boolean  @default(false)
+  ticketQuotaCooldownMinutes  Int      @default(30)
+  // Nombre d'ouvertures tolerees sur une fenetre glissante.
+  ticketQuotaPeriodEnabled    Boolean  @default(false)
+  ticketQuotaPeriodMax        Int      @default(5)
+  ticketQuotaPeriodHours      Int      @default(24)
+  // Charge d'un membre du staff : tickets pris en charge et encore ouverts.
+  // OFF = pas de plafond, WARN = previent sans empecher, BLOCK = refuse.
+  ticketQuotaStaffLoadMode    String   @default("OFF")
+  ticketQuotaStaffLoadMax     Int      @default(5)
+  // Roles qui passent outre le plafond de charge, meme en mode BLOCK : sans
+  // eux, un serveur ou tout le staff est plein ne peut plus prendre un ticket.
+  ticketQuotaStaffLoadBypassRoleIds String[] @default([])
+  // Reouvertures d'un meme ticket. Remplace la constante MAX_TICKET_RESTORES.
+  ticketQuotaReopenEnabled    Boolean  @default(false)
+  ticketQuotaReopenMax        Int      @default(3)
+
+  // Catégorie où sont rangés les salons des tickets archivés. Vide = le salon
+  // reste où il est, seules ses permissions passent en lecture seule.
+  ticketArchiveCategoryId     String?
+  // L'auteur garde-t-il l'accès en lecture à son ticket une fois archivé ?
+  ticketArchiveKeepOpenerView Boolean  @default(false)
+  // Panneau « Mes anciens tickets » sous l'embed d'ouverture : le membre y
+  // retrouve ses tickets clos, leur transcription, et peut demander une
+  // réouverture ou la suppression définitive.
+  ticketHistoryPanelEnabled   Boolean  @default(true)
+  // Le membre peut-il demander lui-même la réouverture d'un de ses tickets ?
+  ticketSelfReopenEnabled     Boolean  @default(true)
+  // Le membre peut-il supprimer définitivement l'un de ses anciens tickets ?
+  ticketSelfDeleteEnabled     Boolean  @default(false)
   tickets                Ticket[]
   ticketBlacklist        TicketBlacklist[]
+  ticketMacros           TicketMacro[]
+  campaigns              Campaign[]
 
   autoThreadEnabled  Boolean   @default(false)
   autoThreadChannels String[]  @default([])
@@ -381,6 +603,13 @@ model Guild {
   funCountingChannelId     String?
   funOneWordStoryChannelId String?
   funGuessNumberChannelId  String?
+  funWordChainChannelId    String?
+  funEmojiRiddleChannelId  String?
+  funNeverSayChannelId     String?
+  funEmojiOnlyChannelId    String?
+  // Comptage et chaîne de mots : une erreur remet le jeu à zéro quand actif ;
+  // sinon le message fautif est juste supprimé, sans casser la progression.
+  funPunitiveMode          Boolean  @default(true)
   funGameState             FunGameState?
 
   // Economy & RPG Module
@@ -397,6 +626,11 @@ model Guild {
   rpgBattles               RpgBattle[]
   rpgFishCatches           RpgFishCatch[]
   rpgBlackMarketSessions   RpgBlackMarketSession[]
+  rpgRaidBosses            RpgRaidBoss[]
+  rpgRaids                 RpgRaid[]
+  rpgQuests                RpgQuest[]
+  rpgQuestProgress         RpgQuestProgress[]
+  rpgQuestTeamProgress     RpgQuestTeamProgress[]
 
   staffTasks StaffTask[]
   staffCalls StaffCall[]
@@ -409,6 +643,8 @@ model Guild {
   channelLinksAsSource ChannelLink[] @relation("GuildChannelLinksSource")
   channelLinksAsTarget ChannelLink[] @relation("GuildChannelLinksTarget")
   channelLinkInvites   ChannelLinkInvite[] @relation("GuildChannelLinkInvites")
+  channelLinkGroups       ChannelLinkGroup[]       @relation("GuildChannelLinkGroups")
+  channelLinkMemberships  ChannelLinkGroupMember[] @relation("GuildChannelLinkMemberships")
 
   // Staff server linking
   staffServerLinksAsMain  StaffServerLink[] @relation("GuildStaffServerMain")
@@ -440,6 +676,15 @@ model Guild {
   // Quand actif, les seuils (vérif auto, escalade) utilisent le score pondéré au lieu du compte brut.
   warnWeightingEnabled Boolean @default(false)
   warnDecayDays        Int?    // null = pas de décroissance. Un warn ne compte plus après N jours.
+
+  // Une sanction archivée est « désactivée mais conservée ». Par défaut elle
+  // sort du score de warns et de l'escalade automatique ; ce commutateur permet
+  // aux serveurs qui veulent un archivage purement visuel de la garder au bilan.
+  countArchivedInWarnScore Boolean @default(false)
+
+  // Archivage automatique des warns au-delà de N jours (null = désactivé).
+  // Le warn quitte le casier actif sans être effacé, comme un archivage manuel.
+  warnAutoArchiveDays Int?
 
   // Statistiques de mots fréquents (agrégats anonymes par jour, sans contenu brut)
   wordStatsEnabled Boolean @default(false)

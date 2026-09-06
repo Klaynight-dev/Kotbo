@@ -62,6 +62,42 @@ export async function getAllLinkedUserIds(guildId: string, userId: string): Prom
 /**
  * Lie deux comptes officiellement
  */
+/**
+ * Replie les comptes liés d'un serveur sur un identifiant unique.
+ *
+ * Un membre qui parie depuis son compte principal et depuis son double compte
+ * apparaîtrait deux fois dans un classement, avec ses victoires et sa meilleure
+ * série coupées en deux. L'identifiant retenu est le plus petit, comme partout
+ * ailleurs dans le bot.
+ *
+ * Une seule requête, quel que soit le nombre de personnes à replier : le faire
+ * compte par compte demanderait autant d'allers-retours que de participants.
+ */
+export async function buildLinkedAccountFolder(guildId: string): Promise<(id: string) => string> {
+  const links = await prisma.linkedAccount.findMany({
+    where: { guildId, status: LinkedAccountStatus.VALIDATED },
+    select: { user1Id: true, user2Id: true },
+  });
+
+  const parents = new Map<string, string>();
+  const rootOf = (id: string): string => {
+    const parent = parents.get(id);
+    if (!parent || parent === id) return id;
+    const root = rootOf(parent);
+    parents.set(id, root);
+    return root;
+  };
+
+  for (const link of links) {
+    const a = rootOf(link.user1Id);
+    const b = rootOf(link.user2Id);
+    if (a === b) continue;
+    parents.set(a < b ? b : a, a < b ? a : b);
+  }
+
+  return rootOf;
+}
+
 export async function linkAccounts(params: {
   guildId: string;
   user1Id: string;

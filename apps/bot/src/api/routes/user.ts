@@ -1,5 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { Client } from 'discord.js';
+import crypto from 'node:crypto';
+import { Client, PermissionFlagsBits } from 'discord.js';
 import { logger } from '../../utils/logger.js';
 import { isGuildActivated } from '../../utils/activation.js';
 import {
@@ -11,6 +12,7 @@ import {
   resolveAdminAccess,
   resolveDashboardAccess,
   hasDashboardAdminPermission,
+  getDiscordClientId,
   DashboardAccessLevel,
 } from '../shared.js';
 import { getCurrentInstance, isWhiteLabelInstance } from '../../utils/instanceContext.js';
@@ -89,7 +91,15 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-type DiscordOAuthGuild = {
+/**
+ * Permissions demandees quand on invite Kotbo sur un serveur.
+ *
+ * Administrateur couvre tous les besoins du bot et simplifie le lien
+ * d'invitation : plus besoin de maintenir un bitfield par fonctionnalite.
+ */
+const BOT_INVITE_PERMISSIONS = PermissionFlagsBits.Administrator.toString();
+
+export type DiscordOAuthGuild = {
   id: string;
   name: string;
   icon: string | null;
@@ -97,22 +107,126 @@ type DiscordOAuthGuild = {
   permissions: string;
 };
 
-async function fetchOAuthGuilds(accessToken: string): Promise<DiscordOAuthGuild[]> {
+type CachedGuilds = {
+  guilds: DiscordOAuthGuild[];
+  fetchedAt: number;
+};
+
+const OAUTH_GUILDS_CACHE_TTL_MS = 60_000;
+const OAUTH_GUILDS_STALE_TTL_MS = 10 * 60_000;
+const oauthGuildsCache = new Map<string, CachedGuilds>();
+const oauthGuildsInFlight = new Map<string, Promise<DiscordOAuthGuild[]>>();
+
+export function clearOAuthGuildsCache(): void {
+  oauthGuildsCache.clear();
+  oauthGuildsInFlight.clear();
+}
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function fetchOAuthGuildsFromDiscord(accessToken: string): Promise<DiscordOAuthGuild[]> {
   const guilds: DiscordOAuthGuild[] = [];
   let after: string | null = null;
+  const MAX_RETRIES = 2;
 
   for (;;) {
     const params = new URLSearchParams({ limit: '200', with_counts: 'false' });
     if (after) params.set('after', after);
-    const response = await fetchExternal(`https://discord.com/api/v10/users/@me/guilds?${params}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!response.ok) throw new Error(`Discord guilds API: ${response.status}`);
-    const page = await response.json() as DiscordOAuthGuild[];
+    const url = `https://discord.com/api/v10/users/@me/guilds?${params.toString()}`;
+
+    let response: Response | null = null;
+    let attempt = 0;
+
+    while (attempt <= MAX_RETRIES) {
+      attempt++;
+      response = await fetchExternal(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (response.status === 429) {
+        let retryAfterMs = 1000;
+        try {
+          const body = (await response.json()) as { retry_after?: number };
+          if (typeof body?.retry_after === 'number' && body.retry_after > 0) {
+            retryAfterMs = Math.ceil(body.retry_after * 1000);
+          }
+        } catch {
+          const header = response.headers.get('retry-after');
+          if (header) {
+            const parsed = parseFloat(header);
+            if (!Number.isNaN(parsed) && parsed > 0) retryAfterMs = Math.ceil(parsed * 1000);
+          }
+        }
+        const waitMs = Math.min(Math.max(retryAfterMs, 500), 3000);
+        logger.warn(
+          'DashboardAPI',
+          `Discord OAuth guilds 429 rate limit, attente de ${waitMs}ms (tentative ${attempt}/${MAX_RETRIES + 1})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+
+      break;
+    }
+
+    if (!response || !response.ok) {
+      throw new Error(`Discord guilds API: ${response?.status ?? 'unknown'}`);
+    }
+
+    const page = (await response.json()) as DiscordOAuthGuild[];
     guilds.push(...page);
     if (page.length < 200) return guilds;
     after = page[page.length - 1]?.id ?? null;
     if (!after) return guilds;
+  }
+}
+
+export async function fetchOAuthGuilds(accessToken: string, forceFresh = false): Promise<DiscordOAuthGuild[]> {
+  const tokenKey = hashToken(accessToken);
+  const now = Date.now();
+  const cached = oauthGuildsCache.get(tokenKey);
+
+  if (!forceFresh && cached && now - cached.fetchedAt < OAUTH_GUILDS_CACHE_TTL_MS) {
+    return cached.guilds;
+  }
+
+  const inFlight = oauthGuildsInFlight.get(tokenKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  if (oauthGuildsCache.size > 500) {
+    for (const [key, entry] of oauthGuildsCache.entries()) {
+      if (now - entry.fetchedAt > OAUTH_GUILDS_STALE_TTL_MS) {
+        oauthGuildsCache.delete(key);
+      }
+    }
+  }
+
+  const promise = (async () => {
+    try {
+      const freshGuilds = await fetchOAuthGuildsFromDiscord(accessToken);
+      oauthGuildsCache.set(tokenKey, { guilds: freshGuilds, fetchedAt: Date.now() });
+      return freshGuilds;
+    } catch (err) {
+      if (cached && Date.now() - cached.fetchedAt < OAUTH_GUILDS_STALE_TTL_MS) {
+        logger.warn(
+          'DashboardAPI',
+          `Échec Discord OAuth (${String(err)}), utilisation du cache stale (${Math.round((Date.now() - cached.fetchedAt) / 1000)}s)`,
+        );
+        return cached.guilds;
+      }
+      throw err;
+    }
+  })();
+
+  oauthGuildsInFlight.set(tokenKey, promise);
+  try {
+    return await promise;
+  } finally {
+    oauthGuildsInFlight.delete(tokenKey);
   }
 }
 
@@ -206,6 +320,106 @@ export async function handleUserRoutes(
     return true;
   }
 
+  // GET /api/user/servers
+  //
+  // La liste des serveurs *que la personne administre*, avec ou sans Kotbo -
+  // `/api/user/guilds` ne rend que ceux ou le bot est deja la, et c'est
+  // precisement l'inverse qu'il faut pour proposer de l'ajouter.
+  if (parts[2] === 'servers' && method === 'GET') {
+    try {
+      if (!user.discordToken) {
+        // Sans jeton OAuth, Discord ne nous dit rien des serveurs de la
+        // personne : mieux vaut une liste vide qu'une liste fausse.
+        json(res, 200, { guilds: [], clientId: getDiscordClientId(), invitePermissions: BOT_INVITE_PERMISSIONS, oauthUnavailable: true });
+        return true;
+      }
+
+      const forceFresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
+      const oauthGuilds = await fetchOAuthGuilds(user.discordToken, forceFresh).catch((err) => {
+        logger.warn('DashboardAPI', `Discord OAuth guild list unavailable: ${String(err)}`);
+        return null;
+      });
+
+      if (!oauthGuilds) {
+        json(res, 200, { guilds: [], clientId: getDiscordClientId(), invitePermissions: BOT_INVITE_PERMISSIONS, oauthUnavailable: true });
+        return true;
+      }
+
+      // Sur une instance marque blanche, un serveur qui n'est pas rattache a
+      // l'instance n'a rien a faire dans la liste : l'y montrer proposerait
+      // d'inviter un bot qui refuserait ensuite de servir ce serveur.
+      let instanceGuildIds: Set<string> | null = null;
+      if (isWhiteLabelInstance()) {
+        const instance = getCurrentInstance();
+        const boundGuilds = await prisma.guild.findMany({
+          where: { instanceId: instance.id },
+          select: { id: true },
+        });
+        instanceGuildIds = new Set(boundGuilds.map((g) => g.id));
+      }
+
+      /**
+       * Les serveurs ou le bot se trouve reellement, tous fragments confondus.
+       *
+       * `client.guilds.cache` ne connait que les serveurs du fragment qui repond
+       * a l'appel : des deux fragments, chacun declarait absents les serveurs de
+       * l'autre. La liste proposait donc de reinviter un bot deja present, et le
+       * tableau de bord d'un de ces serveurs s'ouvrait sur un bot qu'il croyait
+       * parti.
+       *
+       * Sur une instance sans fragmentation, `client.shard` est nul et le cache
+       * local fait foi - il est alors complet. Un fragment injoignable fait
+       * retomber sur ce meme cache plutot que de vider la liste.
+       */
+      const presentGuildIds = await (async (): Promise<Set<string>> => {
+        const sharding = client.shard;
+        if (!sharding) return new Set(client.guilds.cache.keys());
+
+        try {
+          const perShard = await sharding.broadcastEval((shardClient) => [...shardClient.guilds.cache.keys()]);
+          return new Set(perShard.flat());
+        } catch (err) {
+          logger.warn('API', 'Presence du bot lue sur le seul fragment courant :', err);
+          return new Set(client.guilds.cache.keys());
+        }
+      })();
+
+      const manageable = oauthGuilds.filter((guild) => {
+        let permissions = BigInt(0);
+        try {
+          permissions = guild.permissions ? BigInt(guild.permissions) : BigInt(0);
+        } catch {
+          permissions = BigInt(0);
+        }
+        return guild.owner || hasDashboardAdminPermission(permissions);
+      });
+
+      const payload = manageable
+        .map((guild) => {
+          const botPresent = presentGuildIds.has(guild.id);
+          if (instanceGuildIds && !botPresent && !instanceGuildIds.has(guild.id)) return null;
+          return {
+            id: guild.id,
+            name: guild.name,
+            icon: guild.icon ?? null,
+            owner: guild.owner ?? false,
+            botPresent,
+            // Le bot peut etre sur le serveur sans que celui-ci soit active :
+            // l'ecran doit distinguer « a inviter » de « a activer ».
+            activated: botPresent ? isGuildActivated(guild.id) : false,
+          };
+        })
+        .filter((guild): guild is NonNullable<typeof guild> => guild !== null)
+        .sort((a, b) => Number(a.botPresent) - Number(b.botPresent) || a.name.localeCompare(b.name, 'fr'));
+
+      json(res, 200, { guilds: payload, clientId: getDiscordClientId(), invitePermissions: BOT_INVITE_PERMISSIONS, oauthUnavailable: false });
+    } catch (err) {
+      logger.error('API', 'Unexpected error in /api/user/servers:', err);
+      json(res, 500, { error: 'Une erreur interne est survenue' });
+    }
+    return true;
+  }
+
   // GET /api/user/guilds
   if (parts[2] === 'guilds' && method === 'GET') {
     try {
@@ -220,6 +434,7 @@ export async function handleUserRoutes(
         instanceGuildIds = new Set(boundGuilds.map(g => g.id));
       }
 
+      const forceFresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
       const [isGlobalAdmin, staffLinks, oauthGuilds] = await Promise.all([
         resolveAdminAccess(client, user.userId),
         prisma.staffServerLink.findMany({
@@ -227,7 +442,7 @@ export async function handleUserRoutes(
           select: { mainGuildId: true, staffGuildId: true },
         }),
         user.discordToken
-          ? fetchOAuthGuilds(user.discordToken).catch((err) => {
+          ? fetchOAuthGuilds(user.discordToken, forceFresh).catch((err) => {
               logger.warn('DashboardAPI', `Discord OAuth guild list unavailable: ${String(err)}`);
               return null;
             })
@@ -243,6 +458,7 @@ export async function handleUserRoutes(
         accessLevel: Exclude<DashboardAccessLevel, 'none'>;
         isStaffServer: boolean;
         pairedGuildId: string | null;
+        billingAccess: boolean;
       }> = [];
 
       const staffGuildToMain = new Map(staffLinks.map((l) => [l.staffGuildId, l.mainGuildId]));
@@ -296,9 +512,24 @@ export async function handleUserRoutes(
         }
       });
 
+      // Droits de facturation, resolus en une requete pour toute la liste : la
+      // page Facturation n est pas une page comme les autres, elle affiche un
+      // montant debite et une adresse. Elle est ouverte aux administrateurs, a
+      // celui qui paie (`billingOwnerId`, meme s il a perdu ses droits Discord)
+      // et au reste du staff seulement si le serveur l a decide.
+      const resolvedIds = resolved.filter((entry) => entry !== null).map((entry) => entry!.botGuild.id);
+      const billingRows = resolvedIds.length
+        ? await prisma.guild.findMany({
+            where: { id: { in: resolvedIds } },
+            select: { id: true, billingOwnerId: true, billingStaffAccess: true },
+          })
+        : [];
+      const billingById = new Map(billingRows.map((row) => [row.id, row]));
+
       for (const entry of resolved) {
         if (!entry) continue;
         const { botGuild, accessLevel, owner } = entry;
+        const billing = billingById.get(botGuild.id);
         accessibleGuildsList.push({
           id: botGuild.id,
           name: botGuild.name ?? botGuild.id,
@@ -308,6 +539,10 @@ export async function handleUserRoutes(
           accessLevel,
           isStaffServer: staffGuildToMain.has(botGuild.id),
           pairedGuildId: staffGuildToMain.get(botGuild.id) ?? mainGuildToStaff.get(botGuild.id) ?? null,
+          billingAccess:
+            accessLevel === 'admin' ||
+            billing?.billingOwnerId === user.userId ||
+            Boolean(billing?.billingStaffAccess),
         });
       }
 

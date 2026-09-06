@@ -12,11 +12,14 @@
   import Skeleton from '../lib/components/Skeleton.svelte';
   import LoadingHint from '../lib/components/LoadingHint.svelte';
   import ModulePage from '../lib/components/ModulePage.svelte';
+  import ToggleSwitch from '../lib/components/ToggleSwitch.svelte';
   import {
     fetchFunConfig,
     updateFunConfig,
     resetCountingGame,
-    resetGuessNumberGame
+    resetGuessNumberGame,
+    resetWordChainGame,
+    resetEmojiRiddleGame
   } from '../lib/api';
 
   const actionState = createAsyncActionState();
@@ -33,21 +36,34 @@
     funEnabled: false,
     funCountingChannelId: null as string | null,
     funOneWordStoryChannelId: null as string | null,
-    funGuessNumberChannelId: null as string | null
+    funGuessNumberChannelId: null as string | null,
+    funWordChainChannelId: null as string | null,
+    funEmojiRiddleChannelId: null as string | null,
+    funNeverSayChannelId: null as string | null,
+    funEmojiOnlyChannelId: null as string | null,
+    funPunitiveMode: true
   });
 
   let savedConfig = $state({
     funEnabled: false,
     funCountingChannelId: null as string | null,
     funOneWordStoryChannelId: null as string | null,
-    funGuessNumberChannelId: null as string | null
+    funGuessNumberChannelId: null as string | null,
+    funWordChainChannelId: null as string | null,
+    funEmojiRiddleChannelId: null as string | null,
+    funNeverSayChannelId: null as string | null,
+    funEmojiOnlyChannelId: null as string | null,
+    funPunitiveMode: true
   });
 
   let gameState = $state({
     countingCurrent: 0,
     countingLastUserId: null as string | null,
     oneWordStoryLastUserId: null as string | null,
-    guessNumberTarget: 0
+    guessNumberTarget: 0,
+    wordChainLastWord: null as string | null,
+    wordChainLastUserId: null as string | null,
+    emojiRiddleEmojis: null as string | null
   });
 
   // Detect changes and register/deregister with the global bar
@@ -76,28 +92,44 @@
     unsavedChanges.release('fun-settings');
   });
 
+  function mapConfig(source: any) {
+    return {
+      funEnabled: source.funEnabled ?? false,
+      funCountingChannelId: source.funCountingChannelId ?? null,
+      funOneWordStoryChannelId: source.funOneWordStoryChannelId ?? null,
+      funGuessNumberChannelId: source.funGuessNumberChannelId ?? null,
+      funWordChainChannelId: source.funWordChainChannelId ?? null,
+      funEmojiRiddleChannelId: source.funEmojiRiddleChannelId ?? null,
+      funNeverSayChannelId: source.funNeverSayChannelId ?? null,
+      funEmojiOnlyChannelId: source.funEmojiOnlyChannelId ?? null,
+      funPunitiveMode: source.funPunitiveMode ?? true
+    };
+  }
+
+  function mapGameState(source: any) {
+    return {
+      countingCurrent: source.countingCurrent ?? 0,
+      countingLastUserId: source.countingLastUserId ?? null,
+      oneWordStoryLastUserId: source.oneWordStoryLastUserId ?? null,
+      guessNumberTarget: source.guessNumberTarget ?? 0,
+      wordChainLastWord: source.wordChainLastWord ?? null,
+      wordChainLastUserId: source.wordChainLastUserId ?? null,
+      emojiRiddleEmojis: source.emojiRiddleEmojis ?? null
+    };
+  }
+
   onMount(async () => {
     loading = true;
     try {
       await dashboardStore.refresh();
       const res = await fetchFunConfig();
       if (res && res.config) {
-        const loaded = {
-          funEnabled: res.config.funEnabled ?? false,
-          funCountingChannelId: res.config.funCountingChannelId ?? null,
-          funOneWordStoryChannelId: res.config.funOneWordStoryChannelId ?? null,
-          funGuessNumberChannelId: res.config.funGuessNumberChannelId ?? null
-        };
+        const loaded = mapConfig(res.config);
         config = loaded;
         savedConfig = { ...loaded };
       }
       if (res && res.gameState) {
-        gameState = {
-          countingCurrent: res.gameState.countingCurrent ?? 0,
-          countingLastUserId: res.gameState.countingLastUserId ?? null,
-          oneWordStoryLastUserId: res.gameState.oneWordStoryLastUserId ?? null,
-          guessNumberTarget: res.gameState.guessNumberTarget ?? 0
-        };
+        gameState = mapGameState(res.gameState);
       }
     } catch (err) {
       console.error(err);
@@ -112,22 +144,12 @@
     await actionState.run(async () => {
       const res = await updateFunConfig(config);
       if (!res) throw new Error(m.fun_save_error());
-      const saved = {
-        funEnabled: res.config.funEnabled ?? false,
-        funCountingChannelId: res.config.funCountingChannelId ?? null,
-        funOneWordStoryChannelId: res.config.funOneWordStoryChannelId ?? null,
-        funGuessNumberChannelId: res.config.funGuessNumberChannelId ?? null
-      };
+      const saved = mapConfig(res.config);
       config = saved;
       savedConfig = { ...saved };
 
       if (res.gameState) {
-        gameState = {
-          countingCurrent: res.gameState.countingCurrent ?? 0,
-          countingLastUserId: res.gameState.countingLastUserId ?? null,
-          oneWordStoryLastUserId: res.gameState.oneWordStoryLastUserId ?? null,
-          guessNumberTarget: res.gameState.guessNumberTarget ?? 0
-        };
+        gameState = mapGameState(res.gameState);
       }
 
       success = true;
@@ -143,12 +165,7 @@
     await actionState.run(async () => {
       const res = await resetCountingGame();
       if (res && res.gameState) {
-        gameState = {
-          countingCurrent: res.gameState.countingCurrent ?? 0,
-          countingLastUserId: res.gameState.countingLastUserId ?? null,
-          oneWordStoryLastUserId: res.gameState.oneWordStoryLastUserId ?? null,
-          guessNumberTarget: res.gameState.guessNumberTarget ?? 0
-        };
+        gameState = mapGameState(res.gameState);
       }
       return true;
     }, { successMessage: m.fun_reset_counting_toast() });
@@ -161,15 +178,36 @@
     await actionState.run(async () => {
       const res = await resetGuessNumberGame();
       if (res && res.gameState) {
-        gameState = {
-          countingCurrent: res.gameState.countingCurrent ?? 0,
-          countingLastUserId: res.gameState.countingLastUserId ?? null,
-          oneWordStoryLastUserId: res.gameState.oneWordStoryLastUserId ?? null,
-          guessNumberTarget: res.gameState.guessNumberTarget ?? 0
-        };
+        gameState = mapGameState(res.gameState);
       }
       return true;
     }, { successMessage: m.fun_reset_guess_toast() });
+  }
+
+  async function handleResetWordChain() {
+    if (!canManageSettings) return;
+    if (!(await confirmDialog.ask({ title: m.fun_reset_wordchain_confirm_title(), confirmLabel: m.fun_reset_wordchain_confirm_btn(), variant: 'warning' }))) return;
+
+    await actionState.run(async () => {
+      const res = await resetWordChainGame();
+      if (res && res.gameState) {
+        gameState = mapGameState(res.gameState);
+      }
+      return true;
+    }, { successMessage: m.fun_reset_wordchain_toast() });
+  }
+
+  async function handleResetEmojiRiddle() {
+    if (!canManageSettings) return;
+    if (!(await confirmDialog.ask({ title: m.fun_reset_emojiriddle_confirm_title(), confirmLabel: m.fun_reset_emojiriddle_confirm_btn() }))) return;
+
+    await actionState.run(async () => {
+      const res = await resetEmojiRiddleGame();
+      if (res && res.gameState) {
+        gameState = mapGameState(res.gameState);
+      }
+      return true;
+    }, { successMessage: m.fun_reset_emojiriddle_toast() });
   }
 </script>
 
@@ -180,6 +218,21 @@
   featureKey="fun"
 >
   <InlineFeedback state={actionState} />
+
+  {#if !loading}
+    <div class="flex items-center justify-between gap-4 rounded-xl bg-surface-container-low/40 border border-outline-variant/30 p-6 mb-8">
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-on-surface">{m.fun_punitive_title()}</p>
+        <p class="text-xs text-on-surface-variant/70 mt-1">{m.fun_punitive_desc()}</p>
+      </div>
+      <ToggleSwitch
+        checked={config.funPunitiveMode}
+        disabled={!canManageSettings}
+        onToggle={() => (config.funPunitiveMode = !config.funPunitiveMode)}
+        ariaLabel={m.fun_punitive_title()}
+      />
+    </div>
+  {/if}
 
   {#if loading}
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -329,6 +382,157 @@
           <Papicon icon="refresh-cw" size={14} />
           {m.fun_reset_guess_btn()}
         </button>
+      </section>
+
+      <!-- Word Chain Card -->
+      <section class="bg-surface-container-low/40 border border-outline-variant/30 p-8 rounded-xl flex flex-col justify-between gap-6 hover:bg-surface-container-low/60 transition-all duration-300">
+        <div class="space-y-4">
+          <div class="flex items-center gap-3 pb-3 border-b border-outline-variant/15">
+            <div class="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-500 flex items-center justify-center">
+              <Papicon icon="Link" size={20} />
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold tracking-tight text-on-surface">{m.fun_wordchain_title()}</h3>
+              <p class="text-[10px] text-on-surface-variant/55 uppercase font-bold tracking-wider">{m.fun_wordchain_subtitle()}</p>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="wordChainChannel" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.fun_channel_label()}</label>
+            <SearchableSelect
+              id="wordChainChannel"
+              bind:value={config.funWordChainChannelId}
+              options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+              placeholder={m.fun_no_channel()}
+              className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-sky-500/30 transition-all"
+              disabled={!canManageSettings}
+            />
+          </div>
+
+          <div class="p-4 rounded-lg bg-surface-container-high/20 border border-outline-variant/5 space-y-2.5">
+            <p class="text-xs font-medium text-on-surface-variant/50">{m.fun_game_state_title()}</p>
+            <div class="bg-surface-container-high/40 p-3 rounded-xl border border-outline-variant/10 text-center flex flex-col justify-center min-w-0">
+              <span class="text-[10px] text-on-surface-variant/50 uppercase font-bold truncate">{m.fun_wordchain_last_word()}</span>
+              <p class="text-lg font-semibold text-sky-500 mt-0.5 truncate">{gameState.wordChainLastWord || m.fun_none()}</p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onclick={handleResetWordChain}
+          disabled={!canManageSettings || actionState.state.loading}
+          class="w-full py-3.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 rounded-lg text-[13px] font-medium transition-all duration-200 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-40"
+        >
+          <Papicon icon="refresh-cw" size={14} />
+          {m.fun_reset_wordchain_btn()}
+        </button>
+      </section>
+
+      <!-- Emoji Riddle Card -->
+      <section class="bg-surface-container-low/40 border border-outline-variant/30 p-8 rounded-xl flex flex-col justify-between gap-6 hover:bg-surface-container-low/60 transition-all duration-300">
+        <div class="space-y-4">
+          <div class="flex items-center gap-3 pb-3 border-b border-outline-variant/15">
+            <div class="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-500 flex items-center justify-center">
+              <Papicon icon="Puzzle" size={20} />
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold tracking-tight text-on-surface">{m.fun_emojiriddle_title()}</h3>
+              <p class="text-[10px] text-on-surface-variant/55 uppercase font-bold tracking-wider">{m.fun_emojiriddle_subtitle()}</p>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="emojiRiddleChannel" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.fun_channel_label()}</label>
+            <SearchableSelect
+              id="emojiRiddleChannel"
+              bind:value={config.funEmojiRiddleChannelId}
+              options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+              placeholder={m.fun_no_channel()}
+              className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-rose-500/30 transition-all"
+              disabled={!canManageSettings}
+            />
+          </div>
+
+          <div class="p-4 rounded-lg bg-surface-container-high/20 border border-outline-variant/5 space-y-2.5">
+            <p class="text-xs font-medium text-on-surface-variant/50">{m.fun_emojiriddle_current_clue()}</p>
+            <div class="bg-surface-container-high/40 p-3 rounded-xl border border-outline-variant/10 text-center">
+              <p class="text-2xl mt-0.5">{gameState.emojiRiddleEmojis || '❓'}</p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onclick={handleResetEmojiRiddle}
+          disabled={!canManageSettings || actionState.state.loading}
+          class="w-full py-3.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg text-[13px] font-medium transition-all duration-200 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-40"
+        >
+          <Papicon icon="refresh-cw" size={14} />
+          {m.fun_reset_emojiriddle_btn()}
+        </button>
+      </section>
+
+      <!-- Never Say Yes/No Card -->
+      <section class="bg-surface-container-low/40 border border-outline-variant/30 p-8 rounded-xl flex flex-col justify-between gap-6 hover:bg-surface-container-low/60 transition-all duration-300">
+        <div class="space-y-4">
+          <div class="flex items-center gap-3 pb-3 border-b border-outline-variant/15">
+            <div class="w-10 h-10 rounded-xl bg-orange-500/10 text-orange-500 flex items-center justify-center">
+              <Papicon icon="MessageSquareOff" size={20} />
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold tracking-tight text-on-surface">{m.fun_neversay_title()}</h3>
+              <p class="text-[10px] text-on-surface-variant/55 uppercase font-bold tracking-wider">{m.fun_neversay_subtitle()}</p>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="neverSayChannel" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.fun_channel_label()}</label>
+            <SearchableSelect
+              id="neverSayChannel"
+              bind:value={config.funNeverSayChannelId}
+              options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+              placeholder={m.fun_no_channel()}
+              className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-orange-500/30 transition-all"
+              disabled={!canManageSettings}
+            />
+          </div>
+        </div>
+
+        <div class="text-[11px] text-on-surface-variant/40 italic text-center py-2 leading-relaxed font-medium">
+          {m.fun_neversay_hint()}
+        </div>
+      </section>
+
+      <!-- Emoji Only Card -->
+      <section class="bg-surface-container-low/40 border border-outline-variant/30 p-8 rounded-xl flex flex-col justify-between gap-6 hover:bg-surface-container-low/60 transition-all duration-300">
+        <div class="space-y-4">
+          <div class="flex items-center gap-3 pb-3 border-b border-outline-variant/15">
+            <div class="w-10 h-10 rounded-xl bg-teal-500/10 text-teal-500 flex items-center justify-center">
+              <Papicon icon="Sticker" size={20} />
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold tracking-tight text-on-surface">{m.fun_emojionly_title()}</h3>
+              <p class="text-[10px] text-on-surface-variant/55 uppercase font-bold tracking-wider">{m.fun_emojionly_subtitle()}</p>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="emojiOnlyChannel" class="text-[10px] font-bold text-on-surface-variant/60 ml-2 uppercase tracking-widest">{m.fun_channel_label()}</label>
+            <SearchableSelect
+              id="emojiOnlyChannel"
+              bind:value={config.funEmojiOnlyChannelId}
+              options={availableChannels.map(c => ({ id: c.id, name: channelDisplayName(c) }))}
+              placeholder={m.fun_no_channel()}
+              className="w-full bg-surface-container-high/40 border border-outline-variant/10 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-teal-500/30 transition-all"
+              disabled={!canManageSettings}
+            />
+          </div>
+        </div>
+
+        <div class="text-[11px] text-on-surface-variant/40 italic text-center py-2 leading-relaxed font-medium">
+          {m.fun_emojionly_hint()}
+        </div>
       </section>
     </div>
   {/if}

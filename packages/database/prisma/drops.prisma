@@ -1,0 +1,127 @@
+// ============================================================================
+// DROPS ALÉATOIRES (XP, XP RPG, points de clan, pièces)
+// ============================================================================
+
+/// Réglages d'un type de drop pour un serveur (une ligne par ressource).
+///
+/// Table dédiée plutôt que colonnes sur `guilds` : quatre ressources multipliées
+/// par trois modes de ramassage feraient une trentaine de colonnes de plus sur
+/// une table déjà large, et l'ajout d'une cinquième ressource se ferait ici par
+/// une simple ligne au lieu d'une migration de schéma.
+model DropConfig {
+  id      String @id @default(cuid())
+  guildId String
+  /// XP | RPG_XP | CLAN_POINTS | COINS | RPG_ITEM
+  type    String
+
+  enabled   Boolean @default(false)
+  /// Objets pouvant tomber et leur part du tirage : `[{ itemId, weight }]`, le poids
+  /// en pourcentage. Vide, aucun drop n'est publié : mieux vaut pas de drop qu'un
+  /// message annonçant ce que rien ne peut verser. Rien n'est tiré dans tout le
+  /// catalogue, le serveur liste ce qu'il accepte et à quelle fréquence.
+  items     Json     @default("[]")
+  /// Salon de publication. Vide = salon par défaut des réglages globaux.
+  channelId String?
+
+  /// Écart **moyen** entre deux drops, en minutes. L'heure réelle est tirée
+  /// entre la moitié et une fois et demie cet intervalle : un drop prévisible
+  /// se fait camper par les mêmes membres à chaque fois.
+  intervalMinutes Int @default(360)
+
+  /// Mode « premier arrivé » : un seul gagnant.
+  firstEnabled   Boolean @default(true)
+  firstMinAmount Int     @default(50)
+  firstMaxAmount Int     @default(250)
+
+  /// Mode « course » : les N premiers, chacun touchant le montant annoncé.
+  raceEnabled     Boolean @default(false)
+  raceWinnerCount Int     @default(3)
+  raceMinAmount   Int     @default(25)
+  raceMaxAmount   Int     @default(125)
+
+  /// Mode « fenêtre » : ouvert à tous pendant une durée donnée, jamais moins
+  /// de cinq minutes (plancher appliqué à la lecture, voir `@kotbo/shared`).
+  windowEnabled         Boolean @default(false)
+  windowDurationMinutes Int     @default(10)
+  windowMinAmount       Int     @default(15)
+  windowMaxAmount       Int     @default(60)
+
+  /// Prochaine apparition planifiée. Retirée du futur à chaque publication,
+  /// puis retirée au sort pour la suivante.
+  nextDropAt DateTime?
+
+  guild Guild  @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  drops Drop[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, type])
+  /// Balayage du cycle : les types actifs dont l'heure est passée.
+  @@index([enabled, nextDropAt])
+  @@map("drop_configs")
+}
+
+/// Un drop posé dans un salon, et son état de ramassage.
+///
+/// Le montant est tiré à la publication et recopié sur chaque ramassage : c'est
+/// le chiffre annoncé dans le message, il ne doit pas bouger si l'administrateur
+/// change la fourchette entre l'apparition et le clic.
+model Drop {
+  id       String @id @default(cuid())
+  guildId  String
+  configId String
+
+  /// Recopiés depuis la config : un drop reste lisible même si le type est
+  /// éteint ou reconfiguré après coup.
+  type String
+  /// Objet tiré, pour un drop d'objet. Le tirage se fait à la publication : le
+  /// message annonce une pièce précise, elle ne peut pas changer d'ici au clic.
+  itemId String?
+  /// FIRST | RACE | WINDOW
+  mode String
+
+  channelId String
+  messageId String?
+
+  amount Int
+  /// Ramassages autorisés. `0` = sans limite (mode fenêtre, borné par le temps).
+  maxClaims  Int @default(1)
+  /// Compteur incrémenté par une écriture conditionnelle : c'est lui qui
+  /// empêche deux clics simultanés de dépasser le nombre de gagnants.
+  claimCount Int @default(0)
+
+  expiresAt DateTime
+  /// Posée dès que le drop ne peut plus être ramassé (complet ou expiré), pour
+  /// que le balayage sache quels messages restent à clore.
+  closedAt  DateTime?
+
+  guild  Guild       @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  config DropConfig  @relation(fields: [configId], references: [id], onDelete: Cascade)
+  claims DropClaim[]
+
+  createdAt DateTime @default(now())
+
+  /// Balayage des drops arrivés à échéance.
+  @@index([closedAt, expiresAt])
+  @@index([guildId, createdAt])
+  @@map("drops")
+}
+
+/// Ramassage d'un drop par un membre. L'unicité garantit un gain par personne.
+model DropClaim {
+  id      String @id @default(cuid())
+  dropId  String
+  guildId String
+  userId  String
+  /// Recopié du drop : le journal reste juste si la config change ensuite.
+  amount  Int
+
+  drop Drop @relation(fields: [dropId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([dropId, userId])
+  @@index([guildId, createdAt])
+  @@map("drop_claims")
+}

@@ -1,0 +1,189 @@
+/// Facturation Stripe.
+///
+/// L'état commercial d'un serveur (offre, client, abonnement) vit sur `Guild` :
+/// c'est lui qu'on lit à chaque appel de `moduleGate`, il n'a rien à faire dans
+/// une table jointe. Ce fichier ne porte donc que ce qui est propre au flux de
+/// paiement lui-même : la trace des événements reçus.
+
+/// Événement Stripe reçu sur le webhook.
+///
+/// Stripe garantit *au moins* une livraison, pas exactement une : le même
+/// événement peut arriver deux fois (retransmission après un timeout, rejeu
+/// manuel depuis le tableau de bord Stripe). Sans cette table, un
+/// `invoice.paid` rejoué prolongerait l'accès une seconde fois.
+///
+/// L'identifiant est celui de Stripe (`evt_...`) : l'insertion échoue au second
+/// passage, ce qui suffit à rendre le traitement idempotent sans verrou.
+model BillingEvent {
+  /// `evt_...`, tel que fourni par Stripe.
+  id         String   @id
+  /// Type de l'événement (`checkout.session.completed`, `invoice.paid`…).
+  type       String
+  /// Serveur concerné, lu dans les métadonnées de l'objet Stripe. Null quand
+  /// l'événement n'a pas pu être rattaché : on le garde quand même, c'est
+  /// précisément ce cas qu'on veut pouvoir retrouver après coup.
+  guildId    String?
+  /// Payload brut, conservé pour rejouer ou auditer un cas litigieux. Purgé par
+  /// le cron `billing-events-prune` au-delà de la période de rétention.
+  payload    Json
+  /// Message d'erreur si le traitement a échoué. Null quand tout s'est bien passé.
+  error      String?
+  receivedAt DateTime @default(now())
+
+  @@index([guildId, receivedAt])
+  @@index([receivedAt])
+  @@map("billing_events")
+}
+
+/// Essai gratuit consommé.
+///
+/// La règle commerciale est « un essai, une fois » - et la question est : une
+/// fois *pour qui* ? Deux garde-fous cohabitent ici, parce qu'ils ferment deux
+/// portes différentes :
+///
+///   - `discordUserId` (clé primaire) : une personne ne peut pas enchaîner les
+///     essais en créant un serveur neuf à chaque fois.
+///   - `guildId` (unique) : un serveur ne peut pas enchaîner les essais en
+///     faisant cliquer chacun de ses administrateurs à tour de rôle.
+///
+/// La ligne est posée **avant** la redirection vers Stripe : c'est elle qui
+/// réserve l'essai, et son unicité qui rend la réservation atomique - deux
+/// clics simultanés ne peuvent pas ouvrir deux essais. Si le paiement est
+/// abandonné, `checkout.session.expired` la supprime et l'essai redevient
+/// disponible : ouvrir la page Stripe puis fermer l'onglet ne doit rien coûter.
+model BillingTrial {
+  /// Utilisateur Discord qui a déclenché l'essai.
+  discordUserId  String   @id
+  /// Serveur qui en bénéficie.
+  guildId        String   @unique
+  /// Offre et périodicité choisies au moment du clic. Purement informatif :
+  /// l'offre réellement servie reste celle du prix Stripe souscrit.
+  plan           String
+  interval       String
+  /// Session de paiement qui porte la réservation. Sert à retrouver la ligne
+  /// quand Stripe annonce que la session a expiré sans être payée. Null pendant
+  /// le court instant qui sépare la réservation de la réponse de Stripe : la
+  /// ligne est posée d'abord, sans quoi deux clics simultanés ouvriraient deux
+  /// essais avant que le premier ne soit enregistré.
+  checkoutSessionId String?  @unique
+  /// Abonnement issu de l'essai, renseigné quand la session aboutit. Une ligne
+  /// qui l'a encore à `null` est une réservation, pas un essai consommé.
+  subscriptionId String?
+  reservedAt     DateTime @default(now())
+  /// Date de démarrage effectif de l'essai côté Stripe.
+  startedAt      DateTime?
+
+  @@index([guildId])
+  @@map("billing_trials")
+}
+
+/// Kotbo offert à un serveur.
+///
+/// Un cadeau n'est pas un abonnement : c'est un paiement unique (ou un geste
+/// commercial) qui ouvre une offre pour une durée fixe, sans reconduction et
+/// sans carte enregistrée chez le bénéficiaire. Il ne touche donc jamais aux
+/// colonnes `stripeSubscription*` du serveur - seulement à son offre et à sa
+/// date d'expiration d'accès, via `planService` et `accessService`.
+///
+/// Trois façons d'offrir cohabitent, d'où `source` :
+///   - `PURCHASE_CODE`   : payé en ligne, sans destinataire connu au moment de
+///                         l'achat. Produit un `code` à transmettre, que le
+///                         bénéficiaire active depuis sa page Facturation.
+///   - `PURCHASE_DIRECT` : payé en ligne pour un serveur désigné. Appliqué dès
+///                         que Stripe confirme le paiement, sans code.
+///   - `ADMIN`           : posé à la main depuis l'administration Kotbo
+///                         (partenariat, dédommagement, essai prolongé). Aucun
+///                         paiement associé.
+model BillingGift {
+  id             String   @id @default(cuid())
+  /// Code à transmettre au bénéficiaire, pour les cadeaux sans destinataire.
+  /// Null pour un cadeau direct ou administratif : il n'y a rien à activer.
+  code           String?  @unique
+  /// Offre offerte (`PLUS`, `PRO`, `ULTIMATE`…) et durée, en mois.
+  plan           String
+  months         Int
+  /// Qui offre. Compte Discord de l'acheteur, ou de l'administrateur Kotbo qui
+  /// a posé le geste commercial.
+  purchasedById  String
+  /// Serveur depuis lequel l'achat a été lancé. Sert au support à retrouver le
+  /// parcours ; ce n'est pas forcément le bénéficiaire.
+  purchasedFromGuildId String?
+  /// Serveur destinataire choisi à l'achat (`PURCHASE_DIRECT`, `ADMIN`).
+  targetGuildId  String?
+  source         String   @default("PURCHASE_CODE")
+  /// Session Stripe du paiement unique. Null pour un cadeau administratif.
+  /// L'unicité rend le webhook idempotent : une session déjà appliquée ne peut
+  /// pas créditer une seconde fois.
+  stripeSessionId String? @unique
+  /// Montant réellement facturé, en centimes, tel qu'annoncé à l'acheteur.
+  amountCents    Int?
+  /// Renseigné quand Stripe a confirmé l'encaissement. Un cadeau non payé
+  /// n'ouvre rien : c'est cette date qui autorise l'activation.
+  paidAt         DateTime?
+  /// Serveur qui a effectivement reçu l'offre, et quand. Tant que c'est null,
+  /// le cadeau est en attente : code non transmis, ou paiement non confirmé.
+  redeemedByGuildId String?
+  redeemedById   String?
+  redeemedAt     DateTime?
+  /// Fin de la période offerte, recopiée pour l'affichage et le support.
+  expiresAt      DateTime?
+  /// Note libre : nom du bénéficiaire, contexte commercial, motif du geste.
+  note           String?
+  createdAt      DateTime @default(now())
+
+  @@index([purchasedById, createdAt])
+  @@index([targetGuildId])
+  @@index([redeemedByGuildId])
+  @@map("billing_gifts")
+}
+
+/// Consentement recueilli sur la page de paiement.
+///
+/// Deux obligations distinctes tiennent dans une seule case à cocher, et c'est
+/// la raison d'être de cette table :
+///
+///   - l'acceptation des conditions générales de vente ;
+///   - la demande d'exécution immédiate et la renonciation expresse au droit de
+///     rétractation (art. L221-25 et L221-28 du code de la consommation), sans
+///     laquelle Kotbo ne pourrait pas ouvrir les modules avant quatorze jours.
+///
+/// Stripe n'a pas de champ dédié à la renonciation : c'est le texte
+/// d'accompagnement de la case qui la porte, et `session.consent.terms_of_service`
+/// qui atteste qu'elle a été cochée. Encore faut-il pouvoir le produire des mois
+/// plus tard - une renonciation qu'on ne sait pas retrouver ne vaut rien, et la
+/// session Stripe elle-même n'est pas un support durable dont nous soyons
+/// maîtres. D'où cette copie locale.
+///
+/// Elle survit volontairement à tout : changement d'offre, résiliation, départ
+/// du bot, suppression du serveur. C'est une pièce probatoire, pas un état.
+model BillingConsent {
+  /// Session de paiement qui porte le consentement (`cs_...`). L'identité vient
+  /// de Stripe : rejouer le webhook ne crée pas un second enregistrement.
+  checkoutSessionId String   @id
+  /// Serveur concerné. Null pour un cadeau acheté sans destinataire désigné :
+  /// au moment du paiement, personne ne sait encore qui en bénéficiera.
+  guildId           String?
+  /// Compte Discord qui a validé la commande. C'est lui qui a coché la case.
+  discordUserId     String?
+  /// Nature de l'achat : SUBSCRIPTION | GIFT. Le texte affiché diffère, et donc
+  /// la portée exacte de ce qui a été accepté.
+  kind              String
+  /// Version des CGV en vigueur au moment du clic. Sans elle, on saurait qu'un
+  /// client a accepté « les conditions » sans pouvoir dire lesquelles.
+  documentVersion   String
+  /// Horodatage de l'acceptation des CGV, tel que Stripe la rapporte. Null si
+  /// la case n'a pas été recueillie (session antérieure à la mise en place).
+  termsAcceptedAt   DateTime?
+  /// Renonciation à la rétractation. Portée par la même case : le texte affiché
+  /// couvre les deux, on les enregistre séparément pour pouvoir répondre
+  /// précisément à une réclamation.
+  withdrawalWaivedAt DateTime?
+  /// Offre et périodicité concernées, recopiées pour l'auditabilité.
+  plan     String?
+  interval String?
+  createdAt DateTime @default(now())
+
+  @@index([guildId, createdAt])
+  @@index([discordUserId])
+  @@map("billing_consents")
+}

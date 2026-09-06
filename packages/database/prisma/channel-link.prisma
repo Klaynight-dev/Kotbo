@@ -1,6 +1,11 @@
 // ============================================================================
 // CROSS-SERVER CHANNEL LINKING
 // ============================================================================
+//
+// `ChannelLink`, `ChannelLinkMessage` et `ChannelLinkThread` decrivent l'ancien
+// pont a deux salons. Le relais ne les lit plus : il travaille sur les modeles
+// `ChannelLinkGroup*` plus bas, ou leurs donnees ont ete recopiees. Ils restent
+// en base comme filet le temps de la recette, et seront supprimes ensuite.
 
 enum ChannelLinkDirection {
   BIDIRECTIONAL
@@ -79,8 +84,13 @@ model ChannelLinkInvite {
   guildId   String
   channelId String
 
-  direction     ChannelLinkDirection @default(BIDIRECTIONAL)
-  relayMode     ChannelLinkRelayMode @default(WEBHOOK)
+  // Le pont que le code fait rejoindre. Une invitation sans groupe est une
+  // invitation de l'ancien systeme de paires, conservee le temps de la recette.
+  groupId String?
+
+  direction     ChannelLinkDirection  @default(BIDIRECTIONAL)
+  memberMode    ChannelLinkMemberMode @default(BOTH)
+  relayMode     ChannelLinkRelayMode  @default(WEBHOOK)
 
   // Content filters preset
   relayText       Boolean @default(true)
@@ -100,7 +110,8 @@ model ChannelLinkInvite {
 
   createdByUserId String
 
-  guild Guild @relation("GuildChannelLinkInvites", fields: [guildId], references: [id], onDelete: Cascade)
+  guild Guild             @relation("GuildChannelLinkInvites", fields: [guildId], references: [id], onDelete: Cascade)
+  group ChannelLinkGroup? @relation("ChannelLinkGroupInvites", fields: [groupId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -145,4 +156,143 @@ model ChannelLinkThread {
   @@unique([channelLinkId, sourceThreadId])
   @@index([channelLinkId, relayedThreadId])
   @@map("channel_link_threads")
+}
+
+// ============================================================================
+// PONTS MULTI-SERVEURS
+// ============================================================================
+
+/**
+ * Mode de participation d'un salon à un pont.
+ *
+ * Généralise l'ancien `ChannelLinkDirection`, qui ne pouvait décrire qu'une
+ * paire : BIDIRECTIONAL = deux membres BOTH, UNIDIRECTIONAL = un SEND_ONLY et
+ * un RECEIVE_ONLY. À N membres, chacun choisit s'il diffuse, reçoit, ou les deux.
+ */
+enum ChannelLinkMemberMode {
+  BOTH
+  SEND_ONLY
+  RECEIVE_ONLY
+}
+
+model ChannelLinkGroup {
+  id String @id @default(cuid())
+
+  name String?
+
+  // Le serveur qui porte le pont : c'est sa licence qui l'autorise, et c'est
+  // depuis son dashboard qu'il se configure.
+  ownerGuildId String
+
+  relayText      Boolean @default(true)
+  relayImages    Boolean @default(true)
+  relayEmbeds    Boolean @default(false)
+  relayReactions Boolean @default(false)
+  relayEdits     Boolean @default(true)
+  relayDeletes   Boolean @default(true)
+  relayThreads   Boolean @default(false)
+  relayPolls     Boolean @default(false)
+  relayPins      Boolean @default(true)
+
+  updateTopic Boolean @default(true)
+
+  enabled Boolean @default(true)
+
+  createdByUserId String
+
+  ownerGuild Guild @relation("GuildChannelLinkGroups", fields: [ownerGuildId], references: [id], onDelete: Cascade)
+
+  members  ChannelLinkGroupMember[]
+  invites  ChannelLinkInvite[]      @relation("ChannelLinkGroupInvites")
+  messages ChannelLinkGroupMessage[]
+  threads  ChannelLinkGroupThread[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerGuildId])
+  @@index([enabled])
+  @@map("channel_link_groups")
+}
+
+model ChannelLinkGroupMember {
+  id String @id @default(cuid())
+
+  groupId   String
+  guildId   String
+  channelId String
+
+  mode      ChannelLinkMemberMode @default(BOTH)
+  relayMode ChannelLinkRelayMode  @default(WEBHOOK)
+
+  webhookId String?
+
+  enabled Boolean @default(true)
+
+  addedByUserId String
+
+  group ChannelLinkGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  guild Guild            @relation("GuildChannelLinkMemberships", fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([groupId, guildId, channelId])
+  @@index([guildId, channelId])
+  @@index([groupId])
+  @@map("channel_link_group_members")
+}
+
+/**
+ * Correspondance message source → message relayé.
+ *
+ * Contrairement à `ChannelLinkMessage`, la clé inclut le salon de destination :
+ * un même message source possède désormais autant de copies que le pont compte
+ * de destinataires, et éditions, suppressions, réactions et épinglages doivent
+ * toutes les retrouver.
+ */
+model ChannelLinkGroupMessage {
+  id String @id @default(cuid())
+
+  groupId          String
+  sourceMessageId  String
+  sourceChannelId  String
+  relayedMessageId String
+  relayedChannelId String
+  relayedGuildId   String
+  webhookId        String?
+
+  group ChannelLinkGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([groupId, sourceMessageId, relayedChannelId], map: "channel_link_group_messages_origin_dest_key")
+  @@index([groupId, sourceMessageId])
+  @@index([groupId, relayedMessageId])
+  @@index([sourceChannelId, sourceMessageId])
+  @@index([relayedChannelId, relayedMessageId], map: "channel_link_group_messages_dest_lookup_idx")
+  @@index([createdAt])
+  @@map("channel_link_group_messages")
+}
+
+model ChannelLinkGroupThread {
+  id String @id @default(cuid())
+
+  groupId         String
+  sourceThreadId  String
+  sourceGuildId   String
+  sourceChannelId String
+  relayedThreadId String
+  relayedGuildId  String
+  relayedChannelId String
+  webhookId       String?
+
+  group ChannelLinkGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([groupId, sourceThreadId, relayedChannelId], map: "channel_link_group_threads_origin_dest_key")
+  @@index([groupId, sourceThreadId])
+  @@index([groupId, relayedThreadId])
+  @@map("channel_link_group_threads")
 }

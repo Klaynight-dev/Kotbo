@@ -12,7 +12,7 @@ import { Events, type Message, ActionRowBuilder, ButtonBuilder, ButtonStyle, Emb
 import { subscribeForModule } from '../services/core/moduleScope.js';
 import prisma from '../utils/db.js';
 import { COLORS } from '../utils/embeds.js';
-import { relayDmToThread, relayThreadToDm } from '../services/features/ticketService.js';
+import { autoClaimTicketOnStaffMessage, relayDmToThread, relayThreadToDm } from '../services/features/ticketService.js';
 import { logger } from '../utils/logger.js';
 
 const MODULE_NAME = 'tickets';
@@ -114,6 +114,10 @@ export function registerTicketsBusSubscribers(client: Client): void {
       if (!message.guild && message.channel.isDMBased()) {
         await relayDmToThread(client, message);
         return;
+      }
+
+      if (message.guild) {
+        await autoClaimTicketOnStaffMessage(client, message);
       }
 
       if (message.channel.isThread()) {

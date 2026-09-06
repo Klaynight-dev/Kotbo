@@ -22,6 +22,9 @@ import {
   dashboardSensitiveRateLimiter,
   rankCardPreviewRateLimiter,
   setDashboardStateBroadcaster,
+  setDashboardEventBroadcaster,
+  collectShardGuilds,
+  type DashboardEvent,
   type DashboardSanctionType,
   BunServerResponse,
 } from './shared.js';
@@ -37,6 +40,7 @@ import { handleReportFeedbackRoute } from './routes/feedback.js';
 import { handlePartnershipRoute } from './routes/partnership.js';
 import { handleUserRoutes } from './routes/user.js';
 import { handleAdminRoutes } from './routes/admin.js';
+import { startBroadcastScheduler } from '../services/system/broadcastService.js';
 import { handleDashboardRoutes } from './routes/dashboard.js';
 import { handleVerifyRoutes } from './routes/verify.js';
 import { handleMCPRoutes, mcpRateLimiter } from './mcp/mcpServer.js';
@@ -110,19 +114,23 @@ export const startDashboardApi = async (client: Client) => {
     logger.warn('DashboardAPI', `${message}. Les routes OAuth renverront une erreur tant que ces variables ne sont pas définies.`);
   }
 
-  const broadcastDashboardStateChangeLocal = (guildId: string, reason: string) => {
-    const payload = JSON.stringify({
-      type: 'dashboard_state_changed',
-      guildId,
-      reason,
-      at: new Date().toISOString(),
-    });
+  const broadcastDashboardEventLocal = (event: DashboardEvent) => {
+    server.publish(
+      'authenticated-dashboard',
+      JSON.stringify({ at: new Date().toISOString(), ...event }),
+    );
+  };
 
-    server.publish('authenticated-dashboard', payload);
+  const broadcastDashboardStateChangeLocal = (guildId: string, reason: string) => {
+    broadcastDashboardEventLocal({ type: 'dashboard_state_changed', guildId, reason });
   };
 
   setDashboardStateBroadcaster(broadcastDashboardStateChangeLocal);
+  setDashboardEventBroadcaster(broadcastDashboardEventLocal);
   (globalThis as unknown as Record<string, unknown>).KOTBO_WS_BROADCASTER = broadcastDashboardStateChangeLocal;
+  // Point d'entree des diffusions venues des autres shards, qui n'ont pas de
+  // serveur WebSocket a eux (voir `broadcastDashboardEventAcrossShards`).
+  (globalThis as unknown as Record<string, unknown>).KOTBO_WS_EVENT_BROADCASTER = broadcastDashboardEventLocal;
 
   // Clean up expired entries every 10 minutes
   setInterval(() => {
@@ -146,6 +154,11 @@ export const startDashboardApi = async (client: Client) => {
     cleanLimiter(dashboardSensitiveRateLimiter, 60 * 1000);
     cleanLimiter(rankCardPreviewRateLimiter, 60 * 1000);
   }, 10 * 60 * 1000).unref();
+
+  // Annonces globales programmees : le planificateur vit dans le processus qui
+  // porte l'API, seul endroit qui dispose a la fois du client Discord et de la
+  // base. L'etat etant persiste, un redemarrage ne perd aucune annonce.
+  startBroadcastScheduler(client, collectShardGuilds);
 
   const startServer = (listenPort: number) => Bun.serve<WebSocketData>({
     port: listenPort,
@@ -380,6 +393,7 @@ export const startDashboardApi = async (client: Client) => {
 
       const payload = JSON.stringify({
         type: 'new_ticket_message',
+        guildId: ticket.guildId,
         ticketId: ticket.id,
         message: {
           id: msg.id,

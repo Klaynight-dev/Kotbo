@@ -7,7 +7,24 @@ export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Une URL n'est reprise dans un `href` que si son schema est inoffensif.
+ * Sans ce filtre, `[clic](javascript:...)` produisait un lien executable, et
+ * les blancs intercalaires (`java\nscript:`) suffisaient a contourner un test
+ * naif sur le prefixe.
+ */
+const SAFE_URL_SCHEME = /^(?:https?:\/\/|mailto:|\/(?!\/))/i;
+
+export function safeUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  // eslint-disable-next-line no-control-regex -- Retrait intentionnel des caractères de contrôle ASCII
+  const candidate = url.replace(/[\u0000-\u0020\u007f]/g, '');
+  return SAFE_URL_SCHEME.test(candidate) ? candidate : null;
 }
 
 export function parseDiscordEmojisAndMarkdown(text: string | null | undefined): string {
@@ -62,7 +79,11 @@ export function parseDiscordEmojisAndMarkdown(text: string | null | undefined): 
     .replace(/`(.*?)`/g, '<code class="bg-[#1e1f22] px-1.5 py-0.5 rounded font-mono text-xs text-[#e3e5e8] border border-white/5">$1</code>');
 
   // 9. Masked links: [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-[#00a8fc] hover:underline" target="_blank" rel="noopener noreferrer">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => {
+    const href = safeUrl(url);
+    if (!href) return label;
+    return `<a href="${href}" class="text-[#00a8fc] hover:underline" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
 
   // 10. Line breaks
   html = html.replace(/\n/g, '<br />');

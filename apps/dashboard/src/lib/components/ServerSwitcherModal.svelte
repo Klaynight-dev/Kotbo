@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
+  import { router } from 'tinro';
   import Papicon from './Papicon.svelte';
   import { authStore } from '../stores/auth.svelte';
   import { serverSwitcherStore } from '../stores/serverSwitcher.svelte';
@@ -69,6 +70,16 @@
     if (next.has(mainGuildId)) next.delete(mainGuildId);
     else next.add(mainGuildId);
     expandedGroups = next;
+  }
+
+  /**
+   * « Ajouter a un serveur » : cette liste ne montre que les serveurs deja
+   * equipes, donc rien n'y menait jusqu'ici vers ceux qui restent a equiper.
+   * La page /servers, elle, les connait tous.
+   */
+  function goToServers() {
+    close();
+    router.goto('/servers');
   }
 
   function selectGuild(guildId: string) {
@@ -219,6 +230,23 @@
             <p class="text-sm text-on-surface-variant/50">{m.d7_no_server_found()}</p>
           </div>
         {/each}
+      </div>
+
+      <div class="border-t border-outline-variant p-1">
+        <button
+          type="button"
+          onclick={goToServers}
+          class="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left text-on-surface-variant hover:bg-surface-container transition-colors duration-100"
+        >
+          <span class="w-6 h-6 rounded border border-dashed border-outline-variant flex items-center justify-center text-on-surface-variant/60">
+            <Papicon icon="Plus" size={13} />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm leading-none truncate">{m.d7_add_to_server()}</span>
+            <span class="block text-[10px] text-on-surface-variant mt-0.5 truncate">{m.d7_add_to_server_hint()}</span>
+          </span>
+          <Papicon icon="ChevronRight" size={12} class="shrink-0 text-on-surface-variant/40" />
+        </button>
       </div>
 
       <div class="flex items-center gap-3 px-3 py-2 border-t border-outline-variant bg-surface-container">

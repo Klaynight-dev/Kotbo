@@ -192,6 +192,11 @@ model DashboardUserSettings {
   sidebarBehavior String  @default("auto")
   compactMode Boolean     @default(false)
 
+  // Fuseau de lecture des statistiques. Nul = suivre le fuseau du navigateur :
+  // les agregats sont stockes en UTC, et les rendre tels quels annoncait a un
+  // lecteur parisien un pic de 14h comme un pic de midi.
+  timezone    String?
+
   guild     Guild    @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())

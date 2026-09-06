@@ -44,6 +44,7 @@ export type DcSignalType =
   | 'banned_alt'
   | 'repeat_rejoiner'
   | 'shared_sanction_history'
+  | 'cross_server_link'
   // Vocal
   | 'voice_alternation'
   | 'shared_locale'
@@ -94,6 +95,9 @@ export const SIGNAL_FAMILY: Record<DcSignalType, SignalFamily> = {
   banned_alt: 'MODERATION',
   repeat_rejoiner: 'MODERATION',
   shared_sanction_history: 'MODERATION',
+  // Un lien posé par le staff d'un autre serveur est une décision de modération,
+  // pas une empreinte technique : famille MODERATION, distincte de cross_server_alt.
+  cross_server_link: 'MODERATION',
 
   voice_alternation: 'VOICE',
   shared_locale: 'BEHAVIORAL',

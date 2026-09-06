@@ -9,6 +9,7 @@ import {
 import prisma from '../../utils/db.js';
 import { text, successContainer, errorContainer, v2, COLORS_RAW } from '../../utils/embeds.js';
 import { E } from '../../utils/emojis.js';
+import { MAX_XP } from '@kotbo/shared';
 import {
   addXp,
   removeXp,
@@ -45,7 +46,7 @@ const data = new SlashCommandBuilder()
           .addIntegerOption(option => option.setName('montant')
             .setDescription(m.c2_leveling_xp_add_amount_desc({}, { locale: 'en' }))
             .setDescriptionLocalizations({ fr: m.c2_leveling_xp_add_amount_desc({}, { locale: 'fr' }) })
-            .setRequired(true).setMinValue(1))
+            .setRequired(true).setMinValue(1).setMaxValue(MAX_XP))
       )
       .addSubcommand(sub =>
         sub
@@ -59,7 +60,7 @@ const data = new SlashCommandBuilder()
           .addIntegerOption(option => option.setName('montant')
             .setDescription(m.c2_leveling_xp_remove_amount_desc({}, { locale: 'en' }))
             .setDescriptionLocalizations({ fr: m.c2_leveling_xp_remove_amount_desc({}, { locale: 'fr' }) })
-            .setRequired(true).setMinValue(1))
+            .setRequired(true).setMinValue(1).setMaxValue(MAX_XP))
       )
       .addSubcommand(sub =>
         sub
@@ -73,7 +74,7 @@ const data = new SlashCommandBuilder()
           .addIntegerOption(option => option.setName('montant')
             .setDescription(m.c2_leveling_xp_set_amount_desc({}, { locale: 'en' }))
             .setDescriptionLocalizations({ fr: m.c2_leveling_xp_set_amount_desc({}, { locale: 'fr' }) })
-            .setRequired(true).setMinValue(0))
+            .setRequired(true).setMinValue(0).setMaxValue(MAX_XP))
       )
       .addSubcommand(sub =>
         sub

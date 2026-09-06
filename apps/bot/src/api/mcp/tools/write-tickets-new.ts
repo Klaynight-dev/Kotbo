@@ -182,6 +182,8 @@ export function registerWriteTicketsNewTools(ctx: McpToolContext) {
             ticketSatisfactionCommentEnabled: true,
             ticketSatisfactionCommentQuestion: true,
             ticketSatisfactionCommentTimeout: true,
+            ticketSatisfactionLogChannelId: true,
+            ticketSatisfactionLogAnonymous: true,
           }
         });
         return ok(guild);
@@ -208,11 +210,13 @@ export function registerWriteTicketsNewTools(ctx: McpToolContext) {
           satisfaction_comment_enabled: z.boolean().optional().describe('Poser une question commentaire facultative après la note du sondage de satisfaction'),
           satisfaction_comment_question: z.string().max(200).optional().describe('Question posée. Vide = texte par défaut dans la langue du serveur'),
           satisfaction_comment_timeout: z.number().int().min(30).max(900).optional().describe('Délai en secondes avant expiration du bouton de commentaire (30 à 900)'),
+          satisfaction_log_channel_id: z.string().optional().describe('Salon où republier chaque avis de satisfaction en embed. Chaîne vide = relais désactivé'),
+          satisfaction_log_anonymous: z.boolean().optional().describe("Masquer l'auteur de l'avis dans l'embed publié (le dashboard continue de l'afficher)"),
           key_name: z.string().optional(),
         },
         _meta: toolMeta,
       },
-      guard('WRITE_TICKETS', async ({ category_id, log_channel_id, staff_role_id, channel_id, mode, embed_title, embed_desc, embed_button_text, embed_color, inactivity_enabled, inactivity_hours, satisfaction_comment_enabled, satisfaction_comment_question, satisfaction_comment_timeout, key_name }) => {
+      guard('WRITE_TICKETS', async ({ category_id, log_channel_id, staff_role_id, channel_id, mode, embed_title, embed_desc, embed_button_text, embed_color, inactivity_enabled, inactivity_hours, satisfaction_comment_enabled, satisfaction_comment_question, satisfaction_comment_timeout, satisfaction_log_channel_id, satisfaction_log_anonymous, key_name }) => {
         try {
           await prisma.guild.update({
             where: { id: guildId },
@@ -231,6 +235,8 @@ export function registerWriteTicketsNewTools(ctx: McpToolContext) {
               ...(satisfaction_comment_enabled !== undefined ? { ticketSatisfactionCommentEnabled: satisfaction_comment_enabled } : {}),
               ...(satisfaction_comment_question !== undefined ? { ticketSatisfactionCommentQuestion: satisfaction_comment_question.trim().slice(0, 200) } : {}),
               ...(satisfaction_comment_timeout !== undefined ? { ticketSatisfactionCommentTimeout: clampCommentTimeout(satisfaction_comment_timeout) } : {}),
+              ...(satisfaction_log_channel_id !== undefined ? { ticketSatisfactionLogChannelId: satisfaction_log_channel_id || null } : {}),
+              ...(satisfaction_log_anonymous !== undefined ? { ticketSatisfactionLogAnonymous: satisfaction_log_anonymous } : {}),
             }
           });
 

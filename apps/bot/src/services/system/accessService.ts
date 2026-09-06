@@ -561,6 +561,15 @@ export async function expireAccess(client: Client, guildId: string): Promise<voi
 
   logger.info('Access', `Accès ${status.accessType} expiré pour ${guildId} : serveur désactivé.`);
 
+  // Fin d'un acces a duree limitee : essai non converti, cadeau arrive a son
+  // terme, code epuise. Distinct d'une resiliation, qui passe par Stripe.
+  const { trackAcquisitionStep } = await import('../analytics/acquisitionService.js');
+  trackAcquisitionStep({
+    step: 'access_expired',
+    guildId,
+    metadata: { accessType: status.accessType },
+  });
+
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) return;
 

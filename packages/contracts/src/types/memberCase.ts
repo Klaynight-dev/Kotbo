@@ -38,6 +38,12 @@ export type SanctionItem = {
   createdAt: string;
   resolvedAt: string | null;
   resolutionNote: string | null;
+  /** Non nul = sanction archivee : desactivee mais conservee. */
+  archivedAt: string | null;
+  archiveReason: string | null;
+  /** false = contestation verrouillee : le membre ne peut plus faire appel. */
+  appealable: boolean;
+  appealLockReason: string | null;
 };
 
 export type SanctionReportItem = {
@@ -177,6 +183,39 @@ export type CrossServerSanctionSummaryPayload = {
   recent: CrossServerSanctionEntry[];
 };
 
+/** Un serveur tiers portant déjà le lien entre le membre et un autre compte. */
+export type CrossServerLinkGuildEntry = {
+  guildId: string;
+  guildName: string;
+  type: 'MANUAL' | 'AUTOMATIC';
+  status: 'PENDING' | 'VALIDATED' | 'REJECTED';
+  reason: string | null;
+  linkedAt: string;
+};
+
+/**
+ * Suggestion de liaison : ce compte est déjà lié à `userId` sur d'autres serveurs
+ * de la même instance. Le staff décide de reproduire le lien ici ou non.
+ */
+export type CrossServerLinkSuggestionItem = {
+  userId: string;
+  userTag: string | null;
+  avatarUrl: string | null;
+  presentOnGuild: boolean;
+  alreadyLinkedHere: boolean;
+  serverCount: number;
+  manualCount: number;
+  guilds: CrossServerLinkGuildEntry[];
+  /** Bonus de score de détection apporté par ce lien (0-85). */
+  score: number;
+};
+
+export type CrossServerLinkSummaryPayload = {
+  enabled: boolean;
+  serverCount: number;
+  suggestions: CrossServerLinkSuggestionItem[];
+};
+
 export type MemberCaseCandidature = {
   id: string;
   status: string;
@@ -239,5 +278,7 @@ export type MemberCaseResponse = {
   sanctionReports: SanctionReportItem[];
   interactionGraph: MemberCaseInteractionGraph;
   crossServerSanctions: CrossServerSanctionSummaryPayload;
+  /** Liens de double compte déjà posés sur d'autres serveurs de l'instance. */
+  crossServerLinks: CrossServerLinkSummaryPayload;
   verifications: MemberCaseVerifications;
 };

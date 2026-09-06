@@ -16,6 +16,7 @@
 
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import { currentCascadeDepth, runWithCascadeDepth } from './eventCascade.js';
 import type { KotboEventMap, KotboEventName } from './eventBus.types.js';
 
 export type KotboEventHandler<E extends KotboEventName> = (payload: KotboEventMap[E]) => void | Promise<void>;
@@ -58,12 +59,17 @@ class KotboEventBus {
     this.subscriber.on('message', (channel: string, message: string) => {
       const event = channel.replace('kotbo:', '') as KotboEventName;
       try {
-        const { payload, senderId } = JSON.parse(message);
+        const { payload, senderId, cascade } = JSON.parse(message);
         // Skip our own publishes echoed back by Redis - we already emitted
         // them locally and synchronously in publish(). Without this guard,
         // every bus event (welcome, boost, ...) fires twice on this process.
         if (senderId === this.instanceId) return;
-        this.emitter.emit(event, payload);
+        // La profondeur de cascade est retablie avant la livraison : sans elle
+        // une chaine d'automatisations repartirait de zero a chaque saut de
+        // processus, et sa borne ne l'arreterait jamais.
+        runWithCascadeDepth(typeof cascade === 'number' ? cascade : 0, () => {
+          this.emitter.emit(event, payload);
+        });
       } catch { /* malformed message, skip */ }
     });
 
@@ -84,8 +90,9 @@ class KotboEventBus {
 
     // Distributed delivery via Redis Pub/Sub
     if (this.distributed && this.publisher) {
+      const cascade = currentCascadeDepth();
       this.publisher
-        .publish(`kotbo:${event}`, JSON.stringify({ payload, senderId: this.instanceId }))
+        .publish(`kotbo:${event}`, JSON.stringify({ payload, senderId: this.instanceId, cascade }))
         .catch(() => {});
     }
   }

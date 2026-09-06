@@ -3,7 +3,8 @@
  *
  * Avant ce fichier, un module existait à trois endroits sans lien entre eux :
  * le tableau affiché par le dashboard (`api/shared/guildState.ts`), la liste
- * `defaultFeatures` du Centre de gestion, et les colonnes booléennes de `Guild`.
+ * `defaultFeatures` de `dashboardManagementService`, et les colonnes booléennes
+ * de `Guild`.
  * Les trois divergeaient - clés différentes (`traduction` / `translation`),
  * modules présents dans l'une et absents des autres - et surtout aucune n'était
  * consultée par le bot au moment d'exécuter la fonctionnalité. Éteindre un
@@ -263,7 +264,7 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     guildFields: ['autoNicknameModerationEnabled'],
     legacyField: 'autoNicknameModerationEnabled',
     apiSegments: ['nickname-moderation'],
-    paths: ['/nickname-moderation'],
+    paths: ['/security/filters/nicknames', '/nickname-moderation'],
   },
   {
     key: 'double_accounts',
@@ -295,7 +296,7 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     icon: 'Gavel',
     defaultEnabled: false,
     apiSegments: ['ban-appeals'],
-    paths: ['/security/appeals'],
+    paths: ['/security/sanctions/appeals'],
     interactionPrefixes: ['appeal:', 'appeal_modal:', 'banhygiene:'],
   },
   {
@@ -470,7 +471,23 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     requires: ['leveling'],
     apiSegments: ['clans'],
     paths: ['/clans'],
-    interactionPrefixes: ['clan:'],
+    interactionPrefixes: ['clan:', 'bet:'],
+  },
+  {
+    key: 'drops',
+    name: 'Drops',
+    description: "Cadeaux aléatoires posés dans les salons : XP, points de clan ou pièces à ramasser.",
+    category: 'community',
+    icon: 'ArrowDownBox',
+    defaultEnabled: false,
+    guildFields: ['dropsEnabled'],
+    legacyField: 'dropsEnabled',
+    // Volontairement sans `requires` : un serveur peut ne faire tomber que des
+    // pièces, sans module de niveaux ni clans. Chaque type de drop a son propre
+    // interrupteur sur la page.
+    apiSegments: ['drops'],
+    paths: ['/drops'],
+    interactionPrefixes: ['drop_claim:'],
   },
   {
     key: 'economy',
@@ -589,6 +606,18 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     paths: ['/suggestions'],
     interactionPrefixes: ['suggest_vote:'],
   },
+  {
+    key: 'starboard',
+    name: 'Starlight',
+    description: 'Mise en avant des messages plébiscités dans un salon dédié.',
+    category: 'community',
+    icon: 'Star',
+    // Sans salon de highlights, le module n'a nulle part où publier : il
+    // démarre éteint plutôt que de tourner à vide.
+    defaultEnabled: false,
+    apiSegments: ['starboard'],
+    paths: ['/starboard'],
+  },
 
   // ─────────────── Contenu & Communication ───────────────
   {
@@ -608,7 +637,7 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     category: 'content',
     icon: 'DoorOpen',
     defaultEnabled: true,
-    apiSegments: ['welcome'],
+    apiSegments: ['welcome', 'announcement', 'welcome-thread'],
     paths: ['/welcome'],
     interactionPrefixes: ['wpage:'],
   },
@@ -643,7 +672,7 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     guildFields: ['autoThreadEnabled'],
     legacyField: 'autoThreadEnabled',
     apiSegments: ['auto-thread', 'channels-management'],
-    paths: ['/auto-thread', '/channels-management'],
+    paths: ['/channels-management'],
   },
   {
     key: 'news',
@@ -753,7 +782,10 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
     icon: 'Workflow',
     defaultEnabled: true,
     apiSegments: ['workflows'],
-    paths: ['/workflows'],
+    // `/workflows` reste déclaré : la page a été renommée en « Déclencheurs »
+    // mais l'ancienne URL est toujours routée, et un favori doit tomber sur
+    // l'écran « module désactivé » plutôt que sur une erreur d'API.
+    paths: ['/triggers', '/workflows'],
   },
   {
     key: 'channel_health',
@@ -771,7 +803,7 @@ export const MODULE_REGISTRY: ModuleDefinition[] = [
   {
     key: 'channel_links',
     name: 'Liens de salons',
-    description: 'Synchronisation de messages entre salons de serveurs différents.',
+    description: 'Synchronisation de messages entre les salons de plusieurs serveurs.',
     category: 'cross_server',
     icon: 'Link2',
     defaultEnabled: false,

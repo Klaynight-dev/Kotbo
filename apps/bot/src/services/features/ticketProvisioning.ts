@@ -24,7 +24,6 @@ const TICKET_TEXT_FIELDS = [
 
 export type TicketProvisionOutcome = {
   panelChannelId: string;
-  panelCreated: boolean;
 };
 
 /**
@@ -149,5 +148,5 @@ export async function provisionTicketChannels(guild: Guild, input: {
 
   await persist();
 
-  return { panelChannelId: panel.channel.id, panelCreated: panel.entry.created };
+  return { panelChannelId: panel.channel.id };
 }

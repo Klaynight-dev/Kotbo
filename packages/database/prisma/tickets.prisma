@@ -9,6 +9,9 @@ enum TicketStatus {
   OPEN
   CLAIMED
   CLOSED
+  // Ticket clos puis range : le salon survit en lecture seule dans la categorie
+  // d'archives. Rien n'est supprime, et le staff peut desarchiver.
+  ARCHIVED
   // Demande refusee a la validation : aucun salon n'a jamais ete cree.
   REJECTED
 }
@@ -54,6 +57,23 @@ model Ticket {
   reviewedAt       DateTime?
   rejectionReason  String?
 
+  // ── Archivage ─────────────────────────────────────────────────────────────
+  // Le salon reste en place, verrouille en lecture seule. `archivedFromCategoryId`
+  // memorise d'ou il vient pour que le desarchivage le remette a sa place.
+  archivedById            String?
+  archivedByName          String?
+  archivedAt              DateTime?
+  archivedFromCategoryId  String?
+
+  // ── Verrou anti-suppression ───────────────────────────────────────────────
+  // Tant qu'il tient, aucune suppression n'est acceptee, ni depuis Discord ni
+  // depuis le dashboard. `deletionLockedUntil` vide = verrou sans echeance.
+  deletionLocked       Boolean   @default(false)
+  deletionLockedUntil  DateTime?
+  deletionLockedById   String?
+  deletionLockedByName String?
+  deletionLockReason   String?
+
   guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
 
   @@index([guildId, createdAt])
@@ -78,6 +98,11 @@ model TicketBlacklist {
 
   addedByUserId String?
   addedByTag    String?
+
+  /// Un membre blackliste peut malgre tout demander la reouverture d'un de ses
+  /// anciens tickets quand ce drapeau est vrai : la blacklist ferme alors la
+  /// creation, pas le suivi d'un dossier deja ouvert.
+  allowReopen Boolean @default(false)
 
   expiresAt DateTime?
 
@@ -104,4 +129,55 @@ model Transcript {
 
   @@index([guildId, createdAt])
   @@map("transcripts")
+}
+
+/// Reponse pre-ecrite que le staff insere dans un ticket en un clic.
+///
+/// Une macro peut aussi agir : fermer le ticket, requalifier son type, poser un
+/// role, declencher l'enquete de satisfaction. Les compteurs d'usage servent au
+/// classement dans le selecteur - une macro qu'on n'utilise jamais descend.
+model TicketMacro {
+  id       String  @id @default(cuid())
+  guildId  String
+  name     String
+  /// Regroupement libre affiche dans le selecteur Discord.
+  category String?
+  emoji    String?
+  /// Texte insere. Accepte {user}, {staff}, {ticket_id}, {ticket_type}, {server}.
+  content  String
+  enabled  Boolean @default(true)
+  /// Ordre d'affichage a usage egal. Plus petit = plus haut.
+  position Int     @default(0)
+
+  /// Types de ticket auxquels la macro s'applique. Vide = tous.
+  ticketTypeIds String[] @default([])
+  /// Roles staff autorises a l'utiliser. Vide = tout le staff du ticket.
+  allowedRoleIds String[] @default([])
+
+  /// Mots-cles qui font proposer la macro au staff a l'ouverture du ticket.
+  keywords String[] @default([])
+  /// Postee automatiquement a l'ouverture, sans intervention du staff.
+  autoSendOnOpen Boolean @default(false)
+
+  // ── Actions attachees ──────────────────────────────────────────────────────
+  // Appliquees apres l'envoi du message, dans cet ordre.
+  setTicketTypeId     String?
+  addRoleId           String?
+  removeRoleId        String?
+  requestSatisfaction Boolean @default(false)
+  /// Ferme le ticket. Applique en dernier : les autres actions ont besoin
+  /// que le ticket soit encore ouvert.
+  closeTicket         Boolean @default(false)
+
+  usageCount Int       @default(0)
+  lastUsedAt DateTime?
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([guildId, enabled])
+  @@index([guildId, position])
+  @@map("ticket_macros")
 }
