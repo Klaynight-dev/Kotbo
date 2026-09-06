@@ -2,6 +2,7 @@
 FROM oven/bun:1-alpine AS builder
 
 WORKDIR /app
+ENV PRISMA_HIDE_UPDATE_MESSAGE=true
 
 # Copy root monorepo config
 COPY package.json bun.lock tsconfig.json bunfig.toml ./
