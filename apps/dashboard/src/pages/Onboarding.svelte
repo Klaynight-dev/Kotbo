@@ -26,9 +26,11 @@
    * d'un serveur qui se construit sous les yeux.
    */
   import { onMount } from 'svelte';
+  import { router } from 'tinro';
   import { authStore } from '../lib/stores/auth.svelte';
   import { wizard } from '../lib/stores/onboardingWizard.svelte';
   import { onboardingData } from '../lib/stores/onboardingData.svelte';
+  import { globalNotice } from '../lib/stores/globalNotice.svelte';
   import KotboMark from '../lib/components/onboarding/KotboMark.svelte';
   import { MAPPING_STEPS, defaultMapping, type MappingState, type ThemeKey } from '../lib/onboarding';
 
@@ -102,6 +104,15 @@
       // navigateur porte deja de quoi afficher le premier ecran.
       void wizard.hydrateFromServer();
     } catch (err: any) {
+      // Un refus d'acces (par ex. un moderateur qui n'a pas la main sur la mise
+      // en place) n'a rien a faire sur cet ecran : « Reessayer » n'y changerait
+      // rien, et laisser la personne coincee sur un parcours qu'elle ne peut
+      // pas traverser est pire que de la renvoyer choisir un autre serveur.
+      if (err?.status === 403) {
+        globalNotice.show(err.message || "Vous n'avez pas les droits necessaires pour cette action.");
+        router.goto('/servers');
+        return;
+      }
       loadError = err?.message || "La configuration n'a pas pu être chargée.";
     } finally {
       loading = false;

@@ -14,6 +14,7 @@
   import { channelDetailsModal } from "./lib/stores/channelDetailsModal.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import GlobalConfirmDialog from "./lib/components/GlobalConfirmDialog.svelte";
+  import GlobalNoticeModal from "./lib/components/GlobalNoticeModal.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import GlobalErrorOverlay from "./lib/components/GlobalErrorOverlay.svelte";
@@ -1119,6 +1120,7 @@
 
 <ToastContainer />
 <GlobalConfirmDialog />
+<GlobalNoticeModal />
 <CommandPalette />
 
 {#if inviteDetailsModal.open}
