@@ -66,7 +66,7 @@
   let recentAlerts = $state<Array<{ key: string; lastFiredAt: string; lastValue: number | null }>>([]);
 
   // Segments dimension
-  let selectedDimension = $state<AnalyticsDimension>('member_size');
+  let selectedDimension = $state<AnalyticsDimension>('size');
 
   // ── Panneau latéral d'inspection (Drilldown) ──────────────────────────────
   let drawerOpen = $state(false);
@@ -729,11 +729,11 @@
       <div class="flex items-center gap-2 mb-6 flex-wrap">
         <span class="text-xs font-bold text-on-surface-variant uppercase tracking-wider mr-2">Axe d'analyse :</span>
         {#each [
-          { id: 'member_size', label: 'Taille du serveur' },
+          { id: 'size', label: 'Taille du serveur' },
           { id: 'source', label: 'Provenance (CNIL)' },
           { id: 'instance', label: 'Instance (White-label)' },
           { id: 'locale', label: 'Langue' },
-          { id: 'server_kind', label: 'Type de communauté' },
+          { id: 'kind', label: 'Type de communauté' },
         ] as dim}
           <button
             type="button"
