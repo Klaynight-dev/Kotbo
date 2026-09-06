@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { router } from 'tinro';
   import { fade } from 'svelte/transition';
   import { dashboardStore } from '../lib/stores/dashboard.svelte';
   import { unsavedChanges } from '../lib/stores/unsavedChanges.svelte';
@@ -11,20 +12,18 @@
   import Skeleton from '../lib/components/Skeleton.svelte';
   import LoadingHint from '../lib/components/LoadingHint.svelte';
   import { m } from '../lib/i18n';
+  import { resolveTabFromUrl, gotoTab } from '../lib/tabRouting';
   import {
     applyGuildPreset,
     fetchFeatureConfigurations,
     updateFeatureConfiguration,
     updateRoleAccess,
     updateGlobalSettings,
-    updateModuleStatus,
   } from '../lib/api';
 
   import ManagementOverview from '../lib/components/management/ManagementOverview.svelte';
-  import ManagementFeatures from '../lib/components/management/ManagementFeatures.svelte';
   import ManagementChannelsRoles from '../lib/components/management/ManagementChannelsRoles.svelte';
   import ManagementAccess from '../lib/components/management/ManagementAccess.svelte';
-  import ManagementNotifications from '../lib/components/management/ManagementNotifications.svelte';
 
   const OWNER_ID = 'management-center';
 
@@ -84,7 +83,7 @@
   // `youtubeEnabled`, `digestEnabled`, `translationEnabled`, `codePoliceEnabled`,
   // `dailyAlgoEnabled` et `analyticsEnabled` sont les colonnes miroir de modules
   // du registre : les emporter dans ce brouillon les renvoyait telles quelles a
-  // chaque enregistrement, et une bascule faite entre-temps dans « Activation »
+  // chaque enregistrement, et une bascule faite entre-temps sur `/modules`
   // se trouvait annulee par la sauvegarde suivante.
   const GUILD_TOGGLE_KEYS = ['githubReleasesEnabled'] as const;
 
@@ -105,21 +104,33 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  const MANAGEMENT_BASE = '/management';
+  const DEFAULT_SECTION = 'apercu';
+
   const SECTIONS = [
-    { group: 'server', id: 'overview', icon: 'Grid', label: () => m.mgmt_nav_overview() },
-    { group: 'server', id: 'channels', icon: 'Hash', label: () => m.mgmt_tab_channels_roles() },
-    { group: 'modules', id: 'features', icon: 'Package', label: () => m.mgmt_nav_features() },
-    { group: 'modules', id: 'notifications', icon: 'Bell', label: () => m.mgmt_nav_notifications() },
-    { group: 'permissions', id: 'access', icon: 'Shield', label: () => m.mgmt_nav_access() },
+    { group: 'server', id: 'apercu', icon: 'Grid', label: () => m.mgmt_nav_overview() },
+    { group: 'server', id: 'salons', icon: 'Hash', label: () => m.mgmt_tab_channels_roles() },
+    { group: 'permissions', id: 'acces', icon: 'Shield', label: () => m.mgmt_nav_access() },
   ];
+
+  const SECTION_IDS = SECTIONS.map((section) => section.id);
 
   const GROUPS = [
     { id: 'server', label: () => m.mgmt_group_server() },
-    { id: 'modules', label: () => m.mgmt_group_modules() },
     { id: 'permissions', label: () => m.mgmt_group_permissions() },
   ];
 
-  let activeSection = $state('overview');
+  let activeSection = $state(DEFAULT_SECTION);
+
+  // La section vit dans l'URL : sans cela un rechargement, un retour arriere ou
+  // un lien partage ramenaient toujours sur l'apercu.
+  $effect(() => {
+    const _path = $router.path;
+    activeSection = resolveTabFromUrl(MANAGEMENT_BASE, SECTION_IDS, DEFAULT_SECTION);
+  });
+
+  const goToSection = (id: string) => gotoTab(MANAGEMENT_BASE, id, DEFAULT_SECTION);
+
   let loading = $state(true);
   const saveAction = createAsyncActionState();
 
@@ -264,28 +275,6 @@
   }
 
   /**
-   * Allumer un module n'est pas un reglage de plus : le serveur ecrit aussi la
-   * table propre au module, propage la cascade des dependances, refuse les
-   * modules coeur et ceux hors offre, puis purge son cache d'etats. Ecrire
-   * `enabled` sur la ligne de configuration ferait une pastille juste et un bot
-   * qui n'a rien change. La bascule part donc seule, tout de suite.
-   */
-  async function toggleModule(moduleId: string, enabled: boolean) {
-    await saveAction.run(async () => {
-      const ok = await updateModuleStatus(moduleId, enabled ? 'active' : 'inactive');
-      if (!ok) throw new Error(m.mgmt_module_toggle_error());
-
-      // Relire l'etat de guilde suffit : c'est lui qui porte l'etat des modules,
-      // cascade et offre appliquees. Un rechargement complet de la page
-      // emporterait les modifications en attente sur le reste des onglets - un
-      // salon choisi sans avoir encore enregistre disparaitrait au premier
-      // interrupteur touche.
-      await dashboardStore.refresh();
-      return true;
-    });
-  }
-
-  /**
    * Un preset reecrit tous les acces d'un coup : c'est une action, pas une
    * modification en attente. Elle part donc immediatement, et recharge la page
    * plutot que de laisser un brouillon decrire un etat qui n'existe plus.
@@ -359,7 +348,7 @@
                   type="button"
                   class="mgmt__nav-item {activeSection === section.id ? 'is-active' : ''}"
                   aria-current={activeSection === section.id ? 'page' : undefined}
-                  onclick={() => (activeSection = section.id)}
+                  onclick={() => goToSection(section.id)}
                 >
                   <Papicon icon={section.icon} size={16} />
                   <span>{section.label()}</span>
@@ -368,6 +357,17 @@
             </div>
           {/if}
         {/each}
+
+        <!-- L'activation vit sur /modules, qui la propose avec les descriptions,
+             les filtres et le lien vers la page de chaque module. L'entree reste
+             ici : c'est la qu'on la cherche. -->
+        <div class="mgmt__nav-group mgmt__nav-group--out">
+          <a class="mgmt__nav-item" href="/modules">
+            <Papicon icon="Package" size={16} />
+            <span>{m.nav_modules()}</span>
+            <span class="mgmt__nav-out-icon"><Papicon icon="ArrowRight" size={12} /></span>
+          </a>
+        </div>
       </nav>
 
       <div class="mgmt__panel">
@@ -375,16 +375,7 @@
 
         {#key activeSection}
           <div in:fade={{ duration: 150 }}>
-            {#if activeSection === 'overview'}
-              <ManagementOverview
-                {features}
-                {guildSettings}
-                modules={registryModules}
-                onNavigate={(id) => (activeSection = id)}
-              />
-            {:else if activeSection === 'features'}
-              <ManagementFeatures modules={registryModules} onToggleModule={toggleModule} />
-            {:else if activeSection === 'channels'}
+            {#if activeSection === 'salons'}
               <ManagementChannelsRoles
                 bind:features
                 bind:guildSettings
@@ -392,17 +383,21 @@
                 {availableVoiceChannels}
                 {availableRoles}
                 {analyticsActive}
-                onNavigate={(id) => (activeSection = id)}
               />
-            {:else if activeSection === 'access'}
+            {:else if activeSection === 'acces'}
               <ManagementAccess
                 bind:features
                 availableRoles={staffRoles}
                 modules={modulesById}
                 onApplyPreset={handleApplyPreset}
               />
-            {:else if activeSection === 'notifications'}
-              <ManagementNotifications bind:features onNavigate={(id) => (activeSection = id)} />
+            {:else}
+              <ManagementOverview
+                {features}
+                {guildSettings}
+                modules={registryModules}
+                onNavigate={goToSection}
+              />
             {/if}
           </div>
         {/key}
@@ -496,6 +491,7 @@
 
   .mgmt__nav-item {
     display: flex;
+    text-decoration: none;
     align-items: center;
     gap: 0.625rem;
     width: 100%;
@@ -514,6 +510,17 @@
   .mgmt__nav-item:hover {
     background: color-mix(in srgb, var(--on-surface) 6%, transparent);
     color: var(--on-surface);
+  }
+
+  .mgmt__nav-group--out {
+    padding-top: 0.75rem;
+    border-top: 1px solid color-mix(in srgb, var(--outline-variant) 30%, transparent);
+  }
+
+  .mgmt__nav-out-icon {
+    display: flex;
+    margin-left: auto;
+    opacity: 0.5;
   }
 
   .mgmt__nav-item.is-active {
@@ -568,6 +575,13 @@
     .mgmt__nav-item {
       width: auto;
       white-space: nowrap;
+    }
+
+    .mgmt__nav-group--out {
+      padding-top: 0;
+      padding-left: 0.75rem;
+      border-top: none;
+      border-left: 1px solid color-mix(in srgb, var(--outline-variant) 30%, transparent);
     }
   }
 </style>
